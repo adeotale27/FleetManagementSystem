@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import contextvars
 from pathlib import Path
@@ -17,10 +18,24 @@ platform_db = client[f"{BASE_DB}_platform"]
 _tenant = contextvars.ContextVar("tenant_db", default=BASE_DB)
 
 
+def slug_label(text, n=28):
+    t = re.sub(r"[^A-Za-z0-9]+", "_", (text or "").strip())
+    t = re.sub(r"_+", "_", t).strip("_")
+    return (t or "biz")[:n]
+
+
+def tenant_key(business_name, owner_name):
+    """Readable tenant id: BusinessName_OwnerName"""
+    return f"{slug_label(business_name)}_{slug_label(owner_name)}"
+
+
 def tenant_db_name(tenant_id):
     if tenant_id in (None, "", PRIMARY_TENANT):
         return BASE_DB
-    return f"{BASE_DB}_{tenant_id}"
+    # Old licences used a 12-char hex id as the database suffix.
+    if re.fullmatch(r"[a-f0-9]{12}", str(tenant_id)):
+        return f"{BASE_DB}_{tenant_id}"
+    return f"{BASE_DB}_({tenant_id})"
 
 
 def set_tenant(tenant_id):

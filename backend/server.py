@@ -9,7 +9,7 @@ from pydantic import BaseModel
 import ledger as L
 import storage as S
 from auth import current_user, hash_pw, make_token, require_super, seed_owner, verify_pw
-from db import PRIMARY_TENANT, db, new_id, now_iso, platform_db, ser, sers, tenant_db, today
+from db import PRIMARY_TENANT, db, new_id, now_iso, platform_db, ser, sers, tenant_db, tenant_db_name, tenant_key, today
 
 app = FastAPI(title="Fleet Management System")
 api = APIRouter(prefix="/api")
@@ -40,7 +40,8 @@ DEFAULT_SETTINGS = {
         {"id": "rt_wadi_hng", "from_id": "loc_wadi", "to_id": "loc_hinganghat", "name": "Wadi > Hinganghat", "default_amount": 0, "active": True},
     ],
     "expense_categories": ["Fuel", "Toll", "Loading", "Unloading", "Parking", "Repair",
-                           "Service", "Food", "Driver Advance", "Employee Advance", "Other"],
+                           "Service", "Food", "Driver Advance", "Employee Advance",
+                           "Driver Hire", "Vehicle Hire", "Other"],
     "payment_modes": ["Cash", "UPI", "Bank", "Cheque", "Other"],
     "lr": {"prefix": "LR", "next": 1001, "pad": 4},
     "trip": {"prefix": "TRP", "next": 1001, "pad": 4},
@@ -316,7 +317,9 @@ async def create_trip(payload: dict, u=Depends(current_user)):
                        "vehicle_type": temp.get("vehicle_type", ""),
                        "make": temp.get("make", ""), "model": temp.get("model", ""),
                        "owner_name": temp.get("owner_name", ""), "status": "Available",
-                       "archived": False, "created_at": now_iso()}
+                       "archived": False, "created_at": now_iso(),
+                       "joining_date": payload.get("start_date") or today(),
+                       "payment_cycle": temp.get("payment_cycle") or "Owned"}
                 await db.vehicles.insert_one(doc)
                 vehicle_id, vehicle_no = doc["_id"], vno
         else:
@@ -334,7 +337,26 @@ async def create_trip(payload: dict, u=Depends(current_user)):
 
     driver_id = payload.get("driver_id")
     driver_name = payload.get("driver_name", "")
-    if driver_id:
+    temp_drv = payload.get("temp_driver") or {}
+    if not driver_id and temp_drv.get("name"):
+        if payload.get("save_driver"):
+            existing = await db.drivers.find_one({"name": temp_drv["name"].strip(), "archived": {"$ne": True}})
+            if existing and temp_drv.get("mobile") and existing.get("mobile") == temp_drv.get("mobile"):
+                driver_id, driver_name = existing["_id"], existing["name"]
+            else:
+                ddoc = {
+                    "_id": new_id(), "name": temp_drv["name"].strip(),
+                    "mobile": temp_drv.get("mobile", ""), "licence_no": temp_drv.get("licence_no", ""),
+                    "status": "Active", "archived": False, "created_at": now_iso(),
+                    "joining_date": payload.get("start_date") or today(),
+                    "employment": "permanent",
+                    "payment_cycle": temp_drv.get("payment_cycle") or "Monthly",
+                }
+                await db.drivers.insert_one(ddoc)
+                driver_id, driver_name = ddoc["_id"], ddoc["name"]
+        else:
+            driver_name = temp_drv["name"].strip()
+    elif driver_id:
         d = await db.drivers.find_one({"_id": driver_id})
         if not d:
             raise HTTPException(400, "Driver not found")
@@ -364,6 +386,7 @@ async def create_trip(payload: dict, u=Depends(current_user)):
         "vehicle_id": vehicle_id, "vehicle_no": vehicle_no,
         "temp_vehicle": None if vehicle_id else temp,
         "driver_id": driver_id, "driver_name": driver_name,
+        "temp_driver": None if driver_id else (temp_drv if temp_drv.get("name") else None),
         "party_id": party_id, "party_name": party_name,
         "trip_amount": float(payload.get("trip_amount") or 0),
         "expected_collection": float(payload.get("expected_collection") or 0),
@@ -373,7 +396,39 @@ async def create_trip(payload: dict, u=Depends(current_user)):
     }
     await db.trips.insert_one(doc)
     await sync_assets(doc)
+    await record_trip_hire(doc, temp or {}, "Vehicle Hire",
+                           vehicle_id=vehicle_id, vehicle_no=vehicle_no)
+    await record_trip_hire(doc, temp_drv or {}, "Driver Hire", driver_id=driver_id)
     return ser(doc)
+
+
+async def record_trip_hire(trip, hire, category, driver_id=None, vehicle_id=None, vehicle_no=""):
+    """Post this-trip hire into expenses/cash/ledger when amount is given."""
+    amt = float(hire.get("hire_amount") or 0)
+    if amt <= 0:
+        return
+    dt = hire.get("payment_date") or trip.get("start_date") or today()
+    mode = hire.get("pay_mode") or "Cash"
+    who = hire.get("name") or hire.get("vehicle_no") or trip.get("driver_name") or trip.get("vehicle_no") or ""
+    remarks = hire.get("notes") or f"{category} — {who} — trip {trip.get('trip_no')}"
+    paid = bool(hire.get("paid"))
+    if paid:
+        eid = new_id()
+        await db.expenses.insert_one({
+            "_id": eid, "date": dt, "category": category, "amount": amt,
+            "vehicle_id": vehicle_id, "vehicle_no": vehicle_no or trip.get("vehicle_no", ""),
+            "trip_id": trip["_id"], "trip_no": trip.get("trip_no", ""),
+            "driver_id": driver_id, "employee_id": None, "vendor": who, "mode": mode,
+            "proof_url": "", "remarks": remarks, "cancelled": False, "created_at": now_iso(),
+        })
+        await L.cash("cash" if mode in ("Cash", "Other") else "bank", "out", amt, dt, remarks,
+                     "expense", eid, mode=mode)
+        if category == "Driver Hire" and driver_id:
+            await L.post("driver", driver_id, dt, f"{remarks} (paid)", debit=amt,
+                         ref_type="expense", ref_id=eid)
+    elif driver_id and category == "Driver Hire":
+        await L.post("driver", driver_id, dt, f"{remarks} (due)", credit=amt,
+                     ref_type="trip", ref_id=trip["_id"])
 
 
 async def sync_assets(trip):
@@ -1459,12 +1514,19 @@ DEFAULT_FEATURES = {
 async def me_profile(u=Depends(current_user)):
     tenant = await platform_db.tenants.find_one({"_id": u.get("tenant_id")}) if u.get("tenant_id") else None
     feats = {**DEFAULT_FEATURES, **((tenant or {}).get("features") or {})}
+    company = {}
+    if u.get("role") != "superadmin":
+        s = await get_settings()
+        company = s.get("company") or {}
     return {"user": {"username": u["username"], "name": u.get("name"), "role": u.get("role"),
-                     "tenant_id": u.get("tenant_id"), "tenant_name": (tenant or {}).get("name", "")},
+                     "tenant_id": u.get("tenant_id"), "tenant_name": (tenant or {}).get("name", "") or company.get("name", ""),
+                     "photo": company.get("owner_photo", "")},
             "features": feats,
+            "branding": {"logo": company.get("logo", ""), "name": company.get("name", "")},
             "tenant": {"plan": (tenant or {}).get("plan", ""), "license_status": (tenant or {}).get("license_status", ""),
                        "license_expiry": (tenant or {}).get("license_expiry", ""),
-                       "custom_requests": (tenant or {}).get("custom_requests", "")}}
+                       "custom_requests": (tenant or {}).get("custom_requests", ""),
+                       "db_name": tenant_db_name(u.get("tenant_id")) if u.get("tenant_id") else None}}
 
 
 @api.post("/upload")
@@ -1554,7 +1616,8 @@ async def tenant_stats(tid):
 async def platform_tenants(u=Depends(require_super)):
     rows = []
     for t in await platform_db.tenants.find().sort("created_at", -1).to_list(500):
-        rows.append({**ser(t), "stats": await tenant_stats(t["_id"])})
+        rows.append({**ser(t), "stats": await tenant_stats(t["_id"]),
+                     "db_name": t.get("db_name") or tenant_db_name(t["_id"])})
     return rows
 
 
@@ -1585,14 +1648,18 @@ async def create_tenant(body: TenantIn, u=Depends(require_super)):
     username = body.owner_username.strip().lower()
     if await platform_db.users.find_one({"_id": username}):
         raise HTTPException(400, "This login username is already taken")
-    tid = new_id()[:12]
+    base = tenant_key(body.name, body.owner_name)
+    tid, n = base, 2
+    while await platform_db.tenants.find_one({"_id": tid}):
+        tid, n = f"{base}_{n}", n + 1
+    dbn = tenant_db_name(tid)
     await platform_db.tenants.insert_one({
         "_id": tid, "name": body.name.strip(), "owner_name": body.owner_name.strip(),
         "owner_username": username, "mobile": body.mobile, "city": body.city, "state": body.state,
         "plan": body.plan, "license_status": "Active",
         "license_start": date.today().isoformat(),
         "license_expiry": (date.today() + timedelta(days=int(body.license_days or 365))).isoformat(),
-        "created_at": now_iso(),
+        "created_at": now_iso(), "db_name": dbn,
     })
     await platform_db.users.insert_one({
         "_id": username, "name": body.owner_name.strip(), "password": hash_pw(body.owner_password),
@@ -1604,7 +1671,7 @@ async def create_tenant(body: TenantIn, u=Depends(require_super)):
     company["city"] = body.city or ""
     company["state"] = body.state or ""
     await tdb.settings.insert_one({**DEFAULT_SETTINGS, "company": company})
-    return {"id": tid, "ok": True}
+    return {"id": tid, "db_name": dbn, "ok": True}
 
 
 @api.put("/platform/tenants/{tid}")

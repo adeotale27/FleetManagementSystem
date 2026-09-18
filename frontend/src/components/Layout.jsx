@@ -58,14 +58,19 @@ export default function Layout({ user, children }) {
     setEntry(kind);
   };
 
+  const bizLogo = user?.role === "superadmin" ? "/app-icon.png" : (user?.branding?.logo || "/app-icon.png");
+  const bizName = user?.role === "superadmin" ? "ProFleet" : (user?.tenant_name || user?.branding?.name || "ProFleet");
+  const photo = user?.photo;
+  const mobileNav = user?.role === "superadmin"
+    ? [{ to: "/platform", label: "Platform", icon: ShieldCheck }, NAV[0], NAV[5], NAV[7]]
+    : MOBILE_NAV;
+
   const Side = (
     <>
       <div className="flex items-center gap-2.5 px-5 py-5">
-        <div className="grid h-9 w-9 place-items-center rounded-lg bg-brand-500 text-white"><Truck size={19} /></div>
-        <div>
-          <p className="font-head text-[15.5px] font-bold leading-none text-white">
-            {user?.role === "superadmin" ? "Platform Owner" : user?.tenant_name || "New Naidu Transport"}
-          </p>
+        <img src={bizLogo} alt="" className="h-10 w-10 shrink-0 rounded-xl bg-white object-contain ring-1 ring-white/10" />
+        <div className="min-w-0">
+          <p className="truncate font-head text-[15.5px] font-bold leading-none text-white">{bizName}</p>
           <p className="mt-1 text-[11.5px] text-white/40">
             {user?.role === "superadmin" ? "Licence control" : "Transport Office"}
           </p>
@@ -85,9 +90,16 @@ export default function Layout({ user, children }) {
       </nav>
       <div className="border-t border-white/10 px-3 py-3">
         <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-2">
-          <div className="min-w-0">
-            <p className="truncate text-[13.5px] font-semibold text-white">{user?.name || "Owner"}</p>
-            <p className="text-[11.5px] text-white/40">Signed in</p>
+          <div className="flex min-w-0 items-center gap-2">
+            {photo
+              ? <img src={photo} alt="" className="h-9 w-9 shrink-0 rounded-full object-cover ring-2 ring-white/20" />
+              : <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 text-[12px] font-bold text-white">
+                  {(user?.name || "U").slice(0, 1).toUpperCase()}
+                </div>}
+            <div className="min-w-0">
+              <p className="truncate text-[13.5px] font-semibold text-white">{user?.name || "Owner"}</p>
+              <p className="text-[11.5px] text-white/40">Signed in</p>
+            </div>
           </div>
           <button onClick={logout} data-testid="logout-btn" className="rounded-lg p-2 text-white/50 hover:bg-white/10 hover:text-white">
             <LogOut size={17} />
@@ -114,6 +126,7 @@ export default function Layout({ user, children }) {
             <button onClick={() => setMenu(true)} data-testid="menu-btn" className="rounded-lg p-2 text-ink md:hidden">
               <Menu size={21} />
             </button>
+            <img src={bizLogo} alt="" className="h-8 w-8 rounded-lg object-contain md:hidden" />
             <div className="relative flex-1 md:max-w-md">
               <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
               <input data-testid="global-search" value={q} onChange={(e) => setQ(e.target.value)}
@@ -147,12 +160,12 @@ export default function Layout({ user, children }) {
       {/* mobile bottom bar */}
       <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-line bg-white/97 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
         <div className="grid grid-cols-5">
-          {MOBILE_NAV.slice(0, 2).map((n) => <BottomLink key={n.to} n={n} />)}
+          {mobileNav.slice(0, 2).map((n) => <BottomLink key={n.to} n={n} />)}
           <button onClick={() => setSheet(true)} data-testid="mobile-quick-btn" className="flex flex-col items-center py-2">
-            <span className="grid h-11 w-11 -mt-4 place-items-center rounded-full bg-brand-500 text-white shadow-lg"><Plus size={22} /></span>
+            <span className="grid h-11 w-11 -mt-4 place-items-center rounded-full bg-gradient-to-br from-[#0B5C4E] to-[#1D8A4A] text-white shadow-lg"><Plus size={22} /></span>
             <span className="mt-0.5 text-[10.5px] font-semibold text-brand-600">New</span>
           </button>
-          {MOBILE_NAV.slice(2).map((n) => <BottomLink key={n.to} n={n} />)}
+          {mobileNav.slice(2).map((n) => <BottomLink key={n.to} n={n} />)}
         </div>
       </div>
 

@@ -51,7 +51,7 @@ cp frontend/.env.example frontend/.env
 | `PLATFORM_USERNAME` | `superadmin` | Platform owner login |
 | `PLATFORM_PASSWORD` | `super123` | Platform owner password |
 
-Optional (logo / document uploads only): `EMERGENT_LLM_KEY`, `INTEGRATION_PROXY_URL`. The rest of the app works without them.
+Optional (logo / document uploads only): not required. Files save under `backend/data/uploads/`.
 
 ### `frontend/.env`
 
@@ -178,7 +178,7 @@ Money is derived from `ledger` + `cashbook`. Cancel reverses entries; rows are n
 |----------|----------|
 | `fleet_db_platform` | `users`, `tenants` (licences) |
 | `fleet_db` | Primary tenant `naidu` (New Naidu Transport) collections |
-| `fleet_db_<tenant_id>` | Every additional licensed business |
+| `fleet_db_(BusinessName_OwnerName)` | Every additional licensed business (readable name, not a random id) |
 
 Users collection id = username. Roles: `superadmin` (no tenant) or `owner` (has `tenant_id`).
 

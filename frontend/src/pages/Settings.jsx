@@ -33,6 +33,7 @@ export default function Settings() {
       await api.put("/settings", body);
       toast("Settings saved");
       reload();
+      window.dispatchEvent(new Event("fms:branding"));
     } catch (e) { toast(errMsg(e), "err"); } finally { setBusy(false); }
   };
 

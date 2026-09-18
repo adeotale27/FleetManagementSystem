@@ -62,13 +62,13 @@ export default function LRView() {
         <PageHead title={`LR ${lr.lr_no}`} back="/trips?tab=lrs"
           subtitle={`${dmy(lr.date)} · ${lr.from_name} → ${lr.to_name}`}
           actions={
-            <>
+            <div className="flex max-w-full flex-wrap gap-2">
               <Btn variant="s" icon={Printer} data-testid="print-lr" onClick={() => window.print()}>Print</Btn>
               <Btn variant="s" icon={MessageCircle} data-testid="share-lr-whatsapp" onClick={share}>WhatsApp</Btn>
               <Btn variant="s" icon={Download} data-testid="download-lr" onClick={download}>Download</Btn>
               {lr.trip_id && <Btn variant="s" icon={Truck} onClick={() => nav(`/trips/${lr.trip_id}`)}>Open Trip</Btn>}
               {!lr.cancelled && <Btn variant="d" icon={Ban} onClick={cancel}>Cancel LR</Btn>}
-            </>
+            </div>
           } />
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
           {[["Freight", money(lr.freight)], ["Received", money(lr.received)],
@@ -87,7 +87,7 @@ export default function LRView() {
         <div className="flex items-start justify-between gap-4 border-b-2 border-brand-500 px-6 py-5">
           <div className="flex items-start gap-3">
             {c.logo ? <img src={c.logo} alt="logo" className="h-14 w-14 rounded-lg object-contain" />
-              : <div className="grid h-14 w-14 place-items-center rounded-lg bg-brand-500 text-white"><Truck size={26} /></div>}
+              : <img src="/app-icon.png" alt="ProFleet" className="h-14 w-14 rounded-lg object-contain" />}
             <div>
               <h2 className="font-head text-[22px] font-extrabold uppercase leading-tight text-ink">{c.name}</h2>
               <p className="text-[12.5px] text-muted">{c.address}{c.city ? `, ${c.city}` : ""}{c.state ? `, ${c.state}` : ""}</p>
