@@ -51,7 +51,7 @@ export default function App() {
       ) : (
         <Layout user={user}>
           <Routes>
-            <Route path="/" element={<Dashboard />} />
+            <Route path="/" element={user?.role === "superadmin" ? <Navigate to="/platform" replace /> : <Dashboard />} />
             <Route path="/trips" element={<Trips />} />
             <Route path="/trips/new" element={<TripForm />} />
             <Route path="/trips/:id" element={<TripDetail />} />
