@@ -1319,6 +1319,77 @@ async def finance_charts(days: int = 14, u=Depends(current_user)):
             "collection_trend": coll}
 
 
+@api.get("/dashboard/monthly")
+async def dashboard_monthly(months: int = 6, u=Depends(current_user)):
+    from datetime import date
+    t = date.today()
+    keys, labels = [], []
+    y, m = t.year, t.month
+    for _ in range(months):
+        keys.append(f"{y:04d}-{m:02d}")
+        labels.append(date(y, m, 1).strftime("%b %y"))
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    keys.reverse()
+    labels.reverse()
+    start = keys[0] + "-01"
+
+    async def by_month(coll, field="amount", dkey="date"):
+        out = {k: 0.0 for k in keys}
+        async for r in db[coll].aggregate([
+            {"$match": {"cancelled": {"$ne": True}, dkey: {"$gte": start}}},
+            {"$group": {"_id": {"$substr": [f"${dkey}", 0, 7]}, "t": {"$sum": f"${field}"}}}]):
+            if r["_id"] in out:
+                out[r["_id"]] = round(r["t"], 2)
+        return out
+
+    freight = await by_month("lrs", "freight")
+    trips = await by_month("trips", "trip_amount", "start_date")
+    # LRs created from a trip already carry the trip amount — count them once
+    lr_standalone = {k: 0.0 for k in keys}
+    async for r in db.lrs.aggregate([
+        {"$match": {"cancelled": {"$ne": True}, "date": {"$gte": start},
+                    "$or": [{"trip_id": None}, {"trip_id": ""}, {"trip_id": {"$exists": False}}]}},
+        {"$group": {"_id": {"$substr": ["$date", 0, 7]}, "t": {"$sum": "$freight"}}}]):
+        if r["_id"] in lr_standalone:
+            lr_standalone[r["_id"]] = round(r["t"], 2)
+    collections = await by_month("receipts")
+    expenses = await by_month("expenses")
+    fuel = await by_month("fuel")
+    payments = await by_month("payments")
+    lr_count = {k: 0 for k in keys}
+    async for r in db.lrs.aggregate([
+        {"$match": {"cancelled": {"$ne": True}, "date": {"$gte": start}}},
+        {"$group": {"_id": {"$substr": ["$date", 0, 7]}, "n": {"$sum": 1}}}]):
+        if r["_id"] in lr_count:
+            lr_count[r["_id"]] = r["n"]
+    trip_count = {k: 0 for k in keys}
+    async for r in db.trips.aggregate([
+        {"$match": {"cancelled": {"$ne": True}, "start_date": {"$gte": start}}},
+        {"$group": {"_id": {"$substr": ["$start_date", 0, 7]}, "n": {"$sum": 1}}}]):
+        if r["_id"] in trip_count:
+            trip_count[r["_id"]] = r["n"]
+
+    series = []
+    for k, lbl in zip(keys, labels):
+        revenue = round(lr_standalone[k] + trips[k], 2)
+        expense = round(expenses[k] + fuel[k] + payments[k], 2)
+        series.append({"month": lbl, "key": k, "revenue": revenue, "expenses": expense,
+                       "collections": collections[k], "profit": round(revenue - expense, 2),
+                       "diesel": fuel[k], "lrs": lr_count[k], "trips": trip_count[k],
+                       "lr_freight": freight[k]})
+
+    rec = await receivables_rows()
+    top_parties = [{"name": r["party"], "outstanding": r["outstanding"]} for r in rec[:5]]
+    return {"series": series, "top_parties": top_parties,
+            "totals": {
+                "revenue": round(sum(s["revenue"] for s in series), 2),
+                "expenses": round(sum(s["expenses"] for s in series), 2),
+                "collections": round(sum(s["collections"] for s in series), 2),
+                "profit": round(sum(s["profit"] for s in series), 2)}}
+
+
 # ------------------------------------------------------------------ alerts
 def days_to(d):
     from datetime import date

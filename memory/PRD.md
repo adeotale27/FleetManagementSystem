@@ -29,6 +29,14 @@ User choices: simple owner login (owner/owner123), Google Maps key to be supplie
 - Settings: company + logo + LR terms, base locations, indoor routes, LR/trip numbering, due days,
   opening cash/bank, expense categories, payment modes, 3PL partners.
 
+## Implemented (18-06-2026 session 2)
+- `GET /api/dashboard/monthly?months=6` — per-month Revenue (trip amount + standalone LR freight, no double count),
+  Expenses (expenses + diesel + payments), Collections, Profit, Trip/LR counts + top 5 parties by outstanding.
+- Dashboard "Monthly business overview": 6-month stat row + Revenue vs Expenses bar chart, Collections trend line,
+  Trips & LRs volume bars, Top parties by outstanding horizontal bars (Recharts).
+- LR print polish: A4-width framed document, "Original — Consignor Copy" label, freight/payment summary,
+  receiver + authorised signatory blocks; print CSS hides sidebar/header and clears layout padding.
+
 ## Backlog
 - P1: Google Maps key wiring (`REACT_APP_GOOGLE_MAPS_API_KEY`) to enable search + pin drop.
 - P1: Edit existing trip/LR fields from UI (currently status + cancel only for trips).

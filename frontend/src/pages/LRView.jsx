@@ -62,7 +62,8 @@ export default function LRView() {
         </div>
       </div>
 
-      <div id="lr-doc" className="print-area card overflow-hidden bg-white">
+      <div id="lr-doc" className="print-area card mx-auto overflow-hidden border border-ink/25 bg-white"
+        style={{ width: "100%", maxWidth: "210mm" }} data-testid="lr-document">
         <div className="flex items-start justify-between gap-4 border-b-2 border-brand-500 px-6 py-5">
           <div className="flex items-start gap-3">
             {c.logo ? <img src={c.logo} alt="logo" className="h-14 w-14 rounded-lg object-contain" />
@@ -78,7 +79,8 @@ export default function LRView() {
           </div>
           <div className="text-right">
             <p className="rounded bg-ink px-2.5 py-1 text-[11.5px] font-bold uppercase tracking-wider text-white">Lorry Receipt</p>
-            <p className="num mt-2 font-head text-[19px] font-bold">{lr.lr_no}</p>
+            <p className="mt-1.5 text-[10.5px] font-bold uppercase tracking-[0.12em] text-brand-600">Original — Consignor Copy</p>
+            <p className="num mt-1 font-head text-[19px] font-bold">{lr.lr_no}</p>
             <p className="text-[12.5px] text-muted">Date: {dmy(lr.date)}</p>
             {lr.cancelled && <p className="mt-1 text-[12px] font-bold text-red-600">CANCELLED</p>}
           </div>
@@ -134,15 +136,22 @@ export default function LRView() {
 
         {lr.remarks && <p className="border-t border-line px-6 py-3 text-[13px]"><b>Remarks:</b> {lr.remarks}</p>}
 
-        <div className="grid grid-cols-2 gap-6 border-t border-line px-6 py-5 text-[12px] text-muted">
+        <div className="grid grid-cols-2 gap-6 border-t-2 border-brand-500 px-6 py-5 text-[12px] text-muted">
           <div>
-            <p className="font-bold uppercase tracking-wide text-ink">Terms</p>
+            <p className="font-bold uppercase tracking-wide text-ink">Terms &amp; Conditions</p>
             <p className="mt-1 leading-relaxed">{c.terms}</p>
             <p className="mt-3">{c.footer}</p>
+            <div className="mt-6">
+              <p className="border-t border-ink/40 pt-1.5 font-semibold text-ink">Receiver's Signature</p>
+            </div>
           </div>
-          <div className="flex flex-col items-end justify-end">
-            <div className="h-12" />
-            <p className="border-t border-ink/40 pt-1.5 font-semibold text-ink">For {c.name}</p>
+          <div className="flex flex-col items-end justify-between">
+            <p className="text-right text-[11.5px]">Freight Total: <span className="num font-bold text-ink">{money(lr.freight)}</span><br />
+              Payment: <span className="font-bold text-ink">{lr.payment_status}</span></p>
+            <div className="mt-10 w-48 text-right">
+              <p className="border-t border-ink/40 pt-1.5 font-semibold text-ink">For {c.name}</p>
+              <p className="text-[11px]">Authorised Signatory</p>
+            </div>
           </div>
         </div>
       </div>

@@ -1,6 +1,10 @@
 import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  Bar, BarChart, CartesianGrid, Legend, Line, LineChart,
+  ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from "recharts";
+import {
   AlertTriangle, Banknote, CalendarClock, Fuel, IdCard, Receipt, Truck, Users,
   Wallet, ArrowUpRight, ArrowDownRight, HandCoins, FileText,
 } from "lucide-react";
@@ -10,13 +14,14 @@ import { Badge, Card, DataTable, EmptyState, ErrorState, Loader, PageHead, Stat 
 
 export default function Dashboard() {
   const { data: d, loading, error, reload } = useFetch("/dashboard");
+  const mon = useFetch("/dashboard/monthly", { months: 6 });
   const nav = useNavigate();
 
   useEffect(() => {
-    const h = () => reload();
+    const h = () => { reload(); mon.reload(); };
     window.addEventListener("fms:refresh", h);
     return () => window.removeEventListener("fms:refresh", h);
-  }, [reload]);
+  }, [reload, mon.reload]);
 
   if (loading && !d) return <Loader label="Loading your business…" />;
   if (error) return <ErrorState text={error} onRetry={reload} />;
@@ -101,6 +106,8 @@ export default function Dashboard() {
         </div>
       </Section>
 
+      {mon.data && <MonthlyCharts m={mon.data} nav={nav} />}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel title="Today's Trips" action={() => nav("/trips")}>
           <DataTable testid="dash-trips"
@@ -176,6 +183,93 @@ const Section = ({ title, children }) => (
     <p className="mb-2.5 text-[12px] font-bold uppercase tracking-wider text-muted">{title}</p>
     {children}
   </div>
+);
+
+const kfmt = (v) => (Math.abs(v) >= 100000 ? `${(v / 100000).toFixed(1)}L`
+  : Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : `${v}`);
+
+const MonthlyCharts = ({ m, nav }) => {
+  const t = m.totals;
+  return (
+    <Section title="Monthly business overview — last 6 months">
+      <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat testid="stat-rev-6m" label="Revenue (6 months)" value={money0(t.revenue)} icon={ArrowDownRight}
+          tone="text-brand-600" onClick={() => nav("/reports")} />
+        <Stat testid="stat-exp-6m" label="Expenses (6 months)" value={money0(t.expenses)} icon={ArrowUpRight}
+          tone="text-red-600" onClick={() => nav("/finance?tab=expenses")} />
+        <Stat testid="stat-coll-6m" label="Collected (6 months)" value={money0(t.collections)} icon={Banknote}
+          onClick={() => nav("/finance?tab=collections")} />
+        <Stat testid="stat-profit-6m" label="Net (Revenue − Expenses)" value={money0(t.profit)} icon={Wallet}
+          tone={t.profit < 0 ? "text-red-600" : "text-brand-600"} />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ChartCard title="Revenue vs Expenses" sub="Month by month" testid="chart-rev-exp">
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={m.series} barGap={4}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E3E7EB" vertical={false} />
+              <XAxis dataKey="month" fontSize={11} stroke="#69747F" />
+              <YAxis fontSize={11} stroke="#69747F" tickFormatter={kfmt} />
+              <Tooltip formatter={(v) => money(v)} />
+              <Legend iconSize={9} />
+              <Bar dataKey="revenue" name="Revenue" fill="#0B5C4E" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="expenses" name="Expenses" fill="#E0A33E" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard title="Collections Trend" sub="Money actually received each month" testid="chart-collections">
+          <ResponsiveContainer width="100%" height={250}>
+            <LineChart data={m.series}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E3E7EB" vertical={false} />
+              <XAxis dataKey="month" fontSize={11} stroke="#69747F" />
+              <YAxis fontSize={11} stroke="#69747F" tickFormatter={kfmt} />
+              <Tooltip formatter={(v) => money(v)} />
+              <Line type="monotone" dataKey="collections" name="Collected" stroke="#0B5C4E" strokeWidth={2.5} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard title="Trips & LRs per Month" sub="Business volume" testid="chart-volume">
+          <ResponsiveContainer width="100%" height={230}>
+            <BarChart data={m.series} barGap={4}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E3E7EB" vertical={false} />
+              <XAxis dataKey="month" fontSize={11} stroke="#69747F" />
+              <YAxis fontSize={11} stroke="#69747F" allowDecimals={false} />
+              <Tooltip />
+              <Legend iconSize={9} />
+              <Bar dataKey="trips" name="Trips" fill="#1B242F" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="lrs" name="LRs" fill="#2C8474" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard title="Top Parties by Outstanding" sub="Who owes you the most" testid="chart-top-parties">
+          {m.top_parties.length ? (
+            <ResponsiveContainer width="100%" height={230}>
+              <BarChart data={m.top_parties} layout="vertical" margin={{ left: 10, right: 16 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#E3E7EB" horizontal={false} />
+                <XAxis type="number" fontSize={11} stroke="#69747F" tickFormatter={kfmt} />
+                <YAxis type="category" dataKey="name" width={110} fontSize={11} stroke="#69747F" />
+                <Tooltip formatter={(v) => money(v)} />
+                <Bar dataKey="outstanding" name="Outstanding" fill="#C1862A" radius={[0, 3, 3, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : <EmptyState title="Nothing outstanding" text="All party payments are settled." />}
+        </ChartCard>
+      </div>
+    </Section>
+  );
+};
+
+const ChartCard = ({ title, sub, testid, children }) => (
+  <Card className="p-4" data-testid={testid}>
+    <div className="mb-3">
+      <h3 className="font-head text-[15.5px] font-bold text-ink">{title}</h3>
+      {sub && <p className="text-[12.5px] text-muted">{sub}</p>}
+    </div>
+    {children}
+  </Card>
 );
 
 const Panel = ({ title, action, children }) => (

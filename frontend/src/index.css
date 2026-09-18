@@ -50,8 +50,15 @@ body {
 
 /* ---------- print (LR) ---------- */
 @media print {
-  .no-print { display: none !important; }
+  .no-print, aside, header, nav { display: none !important; }
   body { background: #fff; }
-  .print-area { box-shadow: none !important; border: none !important; margin: 0 !important; }
-  @page { size: A4; margin: 10mm; }
+  main { padding: 0 !important; }
+  .print-shell { margin: 0 !important; padding: 0 !important; }
+  .print-area {
+    box-shadow: none !important; margin: 0 !important; border: 1px solid #1B242F !important;
+    width: 100% !important; max-width: none !important; border-radius: 0 !important;
+    page-break-inside: avoid; break-inside: avoid;
+  }
+  .print-area * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  @page { size: A4 portrait; margin: 8mm; }
 }

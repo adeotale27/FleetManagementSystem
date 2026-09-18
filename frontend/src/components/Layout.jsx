@@ -102,7 +102,7 @@ export default function Layout({ user, children }) {
         </div>
       )}
 
-      <div className="md:pl-60">
+      <div className="md:pl-60 print:!pl-0">
         <header className="sticky top-0 z-30 border-b border-line bg-white/95 backdrop-blur">
           <div className="flex items-center gap-2 px-4 py-3 md:px-7">
             <button onClick={() => setMenu(true)} data-testid="menu-btn" className="rounded-lg p-2 text-ink md:hidden">
