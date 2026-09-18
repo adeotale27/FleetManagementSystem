@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Building2, MapPin, Plus, Route, Save, Trash2, Truck, X } from "lucide-react";
-import { api, errMsg } from "../lib/api";
+import { api, errMsg, uploadFile } from "../lib/api";
 import { useFetch, useMaster } from "../lib/hooks";
 import MasterForm from "../components/MasterForm";
 import {
@@ -39,13 +39,26 @@ export default function Settings() {
   const setC = (k) => (e) => setS({ ...s, company: { ...s.company, [k]: e.target.value } });
   const locName = (id) => s.base_locations.find((l) => l.id === id)?.name || "";
 
-  const logoUpload = (e) => {
+  const logoUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 400000) return toast("Please use a logo under 400 KB", "err");
-    const r = new FileReader();
-    r.onload = () => setS({ ...s, company: { ...s.company, logo: r.result } });
-    r.readAsDataURL(file);
+    toast("Uploading logo…");
+    try {
+      const url = await uploadFile(file, "logo");
+      setS((prev) => ({ ...prev, company: { ...prev.company, logo: url } }));
+      toast("Logo uploaded — press Save Settings");
+    } catch (er) { toast(errMsg(er), "err"); }
+  };
+
+  const photoUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    toast("Uploading photo…");
+    try {
+      const url = await uploadFile(file, "owner-photo");
+      setS((prev) => ({ ...prev, company: { ...prev.company, owner_photo: url } }));
+      toast("Photo uploaded — press Save Settings");
+    } catch (er) { toast(errMsg(er), "err"); }
   };
 
   const SaveBar = (
@@ -72,6 +85,7 @@ export default function Settings() {
               <h3 className="font-head text-[16px] font-bold text-ink">Company Details (printed on every LR)</h3></div>
             <div className="grid gap-3.5 md:grid-cols-2">
               <Input label="Company Name" value={s.company.name || ""} onChange={setC("name")} data-testid="set-company-name" />
+              <Input label="Owner Name" value={s.company.owner_name || ""} onChange={setC("owner_name")} data-testid="set-owner-name" />
               <Input label="Mobile" value={s.company.mobile || ""} onChange={setC("mobile")} />
               <Input label="Alternate Mobile" value={s.company.alt_mobile || ""} onChange={setC("alt_mobile")} />
               <Input label="Email" value={s.company.email || ""} onChange={setC("email")} />
@@ -83,19 +97,38 @@ export default function Settings() {
               <TextArea label="LR Terms" className="md:col-span-2" value={s.company.terms || ""} onChange={setC("terms")} />
               <Input label="LR Footer Line" className="md:col-span-2" value={s.company.footer || ""} onChange={setC("footer")} />
             </div>
-            <div className="mt-4">
-              <p className="lbl">Company Logo</p>
-              <div className="flex items-center gap-4">
-                {s.company.logo
-                  ? <img src={s.company.logo} alt="logo" className="h-16 w-16 rounded-lg border border-line object-contain" />
-                  : <div className="grid h-16 w-16 place-items-center rounded-lg bg-brand-500 text-white"><Truck size={26} /></div>}
-                <div>
-                  <input type="file" accept="image/*" onChange={logoUpload} data-testid="set-logo"
-                    className="text-[13px] file:mr-3 file:rounded-lg file:border-0 file:bg-ink file:px-3 file:py-2 file:text-white" />
-                  {s.company.logo && (
-                    <button onClick={() => setS({ ...s, company: { ...s.company, logo: "" } })}
-                      className="mt-2 block text-[12.5px] font-semibold text-red-600">Remove logo</button>
-                  )}
+            <div className="mt-4 grid gap-5 md:grid-cols-2">
+              <div>
+                <p className="lbl">Business Logo (prints on every LR)</p>
+                <div className="flex items-center gap-4">
+                  {s.company.logo
+                    ? <img src={s.company.logo} alt="logo" className="h-16 w-16 rounded-lg border border-line object-contain" />
+                    : <div className="grid h-16 w-16 place-items-center rounded-lg bg-brand-500 text-white"><Truck size={26} /></div>}
+                  <div>
+                    <input type="file" accept="image/*" onChange={logoUpload} data-testid="set-logo"
+                      className="text-[13px] file:mr-3 file:rounded-lg file:border-0 file:bg-ink file:px-3 file:py-2 file:text-white" />
+                    {s.company.logo && (
+                      <button onClick={() => setS({ ...s, company: { ...s.company, logo: "" } })}
+                        className="mt-2 block text-[12.5px] font-semibold text-red-600">Remove logo</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div>
+                <p className="lbl">Owner Photo</p>
+                <div className="flex items-center gap-4">
+                  {s.company.owner_photo
+                    ? <img src={s.company.owner_photo} alt="owner" className="h-16 w-16 rounded-full border border-line object-cover" />
+                    : <div className="grid h-16 w-16 place-items-center rounded-full bg-ink text-white text-[20px] font-bold">
+                        {(s.company.owner_name || "O")[0]}</div>}
+                  <div>
+                    <input type="file" accept="image/*" capture="environment" onChange={photoUpload} data-testid="set-owner-photo"
+                      className="text-[13px] file:mr-3 file:rounded-lg file:border-0 file:bg-ink file:px-3 file:py-2 file:text-white" />
+                    {s.company.owner_photo && (
+                      <button onClick={() => setS({ ...s, company: { ...s.company, owner_photo: "" } })}
+                        className="mt-2 block text-[12.5px] font-semibold text-red-600">Remove photo</button>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>

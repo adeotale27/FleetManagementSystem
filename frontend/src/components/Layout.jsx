@@ -9,14 +9,14 @@ import EntryModal from "./QuickForms";
 import { Badge } from "./ui";
 
 const NAV = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/trips", label: "Trips & LR", icon: Truck },
-  { to: "/vehicles", label: "Vehicles", icon: Gauge },
-  { to: "/parties", label: "Parties", icon: Users },
-  { to: "/team", label: "Team", icon: UsersRound },
-  { to: "/finance", label: "Finance", icon: Wallet },
-  { to: "/reports", label: "Reports", icon: BarChart3 },
-  { to: "/settings", label: "Settings", icon: Cog },
+  { to: "/", label: "Dashboard", icon: LayoutDashboard, key: "dashboard" },
+  { to: "/trips", label: "Trips & LR", icon: Truck, key: "trips" },
+  { to: "/vehicles", label: "Vehicles", icon: Gauge, key: "vehicles" },
+  { to: "/parties", label: "Parties", icon: Users, key: "parties" },
+  { to: "/team", label: "Team", icon: UsersRound, key: "team" },
+  { to: "/finance", label: "Finance", icon: Wallet, key: "finance" },
+  { to: "/reports", label: "Reports", icon: BarChart3, key: "reports" },
+  { to: "/settings", label: "Settings", icon: Cog, key: "settings" },
 ];
 
 const MOBILE_NAV = [NAV[0], NAV[1], NAV[5], NAV[6]];
@@ -74,7 +74,7 @@ export default function Layout({ user, children }) {
       <nav className="flex-1 space-y-0.5 px-3 py-2">
         {(user?.role === "superadmin"
           ? [...NAV, { to: "/platform", label: "Platform", icon: ShieldCheck }]
-          : NAV).map((n) => (
+          : NAV.filter((n) => !n.key || user?.features?.[n.key] !== false)).map((n) => (
           <NavLink key={n.to} to={n.to} end={n.to === "/"} data-testid={`nav-${n.label.toLowerCase().replace(/[^a-z]/g, "-")}`}
             className={({ isActive }) =>
               `flex items-center gap-3 rounded-lg px-3 py-2.5 text-[14.5px] font-medium transition-colors ${

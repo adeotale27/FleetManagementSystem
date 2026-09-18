@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { api, errMsg } from "../lib/api";
+import { Camera } from "lucide-react";
+import { api, errMsg, uploadFile } from "../lib/api";
 import { useFetch, useMaster, opts } from "../lib/hooks";
 import { money, todayISO } from "../lib/format";
 import { Autocomplete, Btn, Input, Modal, Money, Select, TextArea, toast } from "./ui";
@@ -16,6 +17,7 @@ const TITLES = {
 export default function EntryModal({ kind, open, onClose, onDone, preset = {} }) {
   const [f, setF] = useState({});
   const [busy, setBusy] = useState(false);
+  const [up, setUp] = useState(false);
   const [err, setErr] = useState("");
   const [partyText, setPartyText] = useState("");
 
@@ -220,6 +222,33 @@ export default function EntryModal({ kind, open, onClose, onDone, preset = {} })
             <Select label="Mode" value={f.mode} onChange={set("mode")} options={modes} />
             <TextArea label="Remarks" value={f.remarks || ""} onChange={set("remarks")} />
           </>
+        )}
+
+        {["collection", "payment", "expense", "fuel"].includes(kind) && (
+          <div className="rounded-lg border border-line bg-canvas p-3">
+            <p className="lbl">Payment Proof Photo (optional)</p>
+            <div className="flex items-center gap-3">
+              {f.proof_url
+                ? <img src={f.proof_url} alt="proof" className="h-14 w-14 rounded-lg border border-line object-cover" />
+                : <div className="grid h-14 w-14 place-items-center rounded-lg bg-white text-muted"><Camera size={20} /></div>}
+              <div>
+                <input type="file" accept="image/*" capture="environment" data-testid="entry-proof"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setUp(true);
+                    try {
+                      const url = await uploadFile(file, "payment-proof");
+                      setF((s) => ({ ...s, proof_url: url }));
+                      toast("Proof attached");
+                    } catch (er) { toast(errMsg(er), "err"); } finally { setUp(false); }
+                  }}
+                  className="text-[12.5px] file:mr-2 file:rounded-lg file:border-0 file:bg-ink file:px-3 file:py-1.5 file:text-white" />
+                <p className="mt-1 text-[11.5px] text-muted">
+                  {up ? "Uploading…" : "Take a photo of the slip / UPI screenshot"}</p>
+              </div>
+            </div>
+          </div>
         )}
 
         {err && <p data-testid="entry-error" className="rounded-lg bg-red-50 px-3 py-2.5 text-[13.5px] font-medium text-red-600">{err}</p>}

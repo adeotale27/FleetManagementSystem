@@ -1,11 +1,13 @@
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import ledger as L
+import storage as S
 from auth import current_user, hash_pw, make_token, require_super, seed_owner, verify_pw
 from db import PRIMARY_TENANT, db, new_id, now_iso, platform_db, ser, sers, tenant_db, today
 
@@ -724,7 +726,7 @@ async def create_handover(payload: dict, u=Depends(current_user)):
     doc = {"_id": new_id(), "date": dt, "deewanji_id": payload["deewanji_id"],
            "deewanji_name": dw["name"] if dw else "", "amount": amount,
            "to": payload.get("to", "Office"), "mode": mode,
-           "reference": payload.get("reference", ""), "remarks": payload.get("remarks", ""),
+           "reference": payload.get("reference", ""), "proof_url": payload.get("proof_url", ""), "remarks": payload.get("remarks", ""),
            "cancelled": False, "created_at": now_iso()}
     await db.handovers.insert_one(doc)
     desc = f"Handover from {doc['deewanji_name']} to {doc['to']}"
@@ -807,7 +809,7 @@ async def create_expense(payload: dict, u=Depends(current_user)):
            "trip_id": payload.get("trip_id"), "trip_no": payload.get("trip_no", ""),
            "driver_id": payload.get("driver_id"), "employee_id": payload.get("employee_id"),
            "vendor": payload.get("vendor", ""), "mode": mode,
-           "remarks": payload.get("remarks", ""), "cancelled": False, "created_at": now_iso()}
+           "proof_url": payload.get("proof_url", ""), "remarks": payload.get("remarks", ""), "cancelled": False, "created_at": now_iso()}
     if doc["vehicle_id"] and not doc["vehicle_no"]:
         v = await db.vehicles.find_one({"_id": doc["vehicle_id"]})
         doc["vehicle_no"] = v["vehicle_no"] if v else ""
@@ -870,7 +872,7 @@ async def create_fuel(payload: dict, u=Depends(current_user)):
            "pump_id": payload.get("pump_id"), "pump_name": pump["name"] if pump else "",
            "trip_id": payload.get("trip_id"), "quantity": qty, "rate": rate, "amount": amount,
            "odometer": float(payload.get("odometer") or 0), "mode": mode,
-           "remarks": payload.get("remarks", ""), "cancelled": False, "created_at": now_iso()}
+           "proof_url": payload.get("proof_url", ""), "remarks": payload.get("remarks", ""), "cancelled": False, "created_at": now_iso()}
     await db.fuel.insert_one(doc)
     desc = f"Diesel {qty:g} L @ {rate:g} - {doc['vehicle_no']}"
     if mode == "Credit" and doc["pump_id"]:
@@ -935,7 +937,7 @@ async def create_payment(payload: dict, u=Depends(current_user)):
     doc = {"_id": new_id(), "date": dt, "entity_type": etype,
            "entity_id": payload.get("entity_id"), "entity_name": name,
            "purpose": payload.get("purpose", ""), "amount": amount, "mode": mode,
-           "reference": payload.get("reference", ""), "remarks": payload.get("remarks", ""),
+           "reference": payload.get("reference", ""), "proof_url": payload.get("proof_url", ""), "remarks": payload.get("remarks", ""),
            "cancelled": False, "created_at": now_iso()}
     await db.payments.insert_one(doc)
     desc = f"Paid {mode} to {name or etype}" + (f" - {doc['purpose']}" if doc["purpose"] else "")
@@ -989,7 +991,7 @@ async def create_advance(payload: dict, u=Depends(current_user)):
         raise HTTPException(400, "Person not found")
     doc = {"_id": new_id(), "date": dt, "entity_type": etype, "entity_id": p["_id"],
            "entity_name": p["name"], "kind": kind, "amount": amount, "mode": mode,
-           "remarks": payload.get("remarks", ""), "cancelled": False, "created_at": now_iso()}
+           "proof_url": payload.get("proof_url", ""), "remarks": payload.get("remarks", ""), "cancelled": False, "created_at": now_iso()}
     await db.advances.insert_one(doc)
     out_kinds = ("Advance", "Loan", "Pre-salary")
     if kind in out_kinds:
@@ -1447,6 +1449,49 @@ async def lr_stats(days: int = 30, u=Depends(current_user)):
     }
 
 
+DEFAULT_FEATURES = {
+    "trips": True, "vehicles": True, "parties": True, "team": True, "finance": True,
+    "reports": True, "tracking": True, "lr_charts": True, "dashboard_charts": True,
+}
+
+
+@api.get("/me")
+async def me_profile(u=Depends(current_user)):
+    tenant = await platform_db.tenants.find_one({"_id": u.get("tenant_id")}) if u.get("tenant_id") else None
+    feats = {**DEFAULT_FEATURES, **((tenant or {}).get("features") or {})}
+    return {"user": {"username": u["username"], "name": u.get("name"), "role": u.get("role"),
+                     "tenant_id": u.get("tenant_id"), "tenant_name": (tenant or {}).get("name", "")},
+            "features": feats,
+            "tenant": {"plan": (tenant or {}).get("plan", ""), "license_status": (tenant or {}).get("license_status", ""),
+                       "license_expiry": (tenant or {}).get("license_expiry", ""),
+                       "custom_requests": (tenant or {}).get("custom_requests", "")}}
+
+
+@api.post("/upload")
+async def upload_file(kind: str = "misc", file: UploadFile = File(...), u=Depends(current_user)):
+    data = await file.read()
+    if len(data) > 6 * 1024 * 1024:
+        raise HTTPException(400, "Please upload an image under 6 MB")
+    path, ctype = S.build_path(u.get("tenant_id") or PRIMARY_TENANT, kind, file.filename or "photo.jpg")
+    try:
+        res = await run_in_threadpool(S.put_object, path, data, file.content_type or ctype)
+    except Exception as e:
+        raise HTTPException(502, f"Upload failed: {e}")
+    await db.files.insert_one({"_id": new_id(), "storage_path": res["path"], "kind": kind,
+                               "original_filename": file.filename, "content_type": file.content_type or ctype,
+                               "size": res.get("size", len(data)), "is_deleted": False, "created_at": now_iso()})
+    return {"path": res["path"], "url": f"/api/files/{res['path']}"}
+
+
+@api.get("/files/{path:path}")
+async def serve_file(path: str):
+    try:
+        data, ctype = await run_in_threadpool(S.get_object, path)
+    except Exception:
+        raise HTTPException(404, "File not found")
+    return Response(content=data, media_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
+
+
 @api.get("/tracking/live")
 async def tracking_live(u=Depends(current_user)):
     """Live truck location from a WheelsEye GPS device (token is set in Settings)."""
@@ -1566,7 +1611,7 @@ async def create_tenant(body: TenantIn, u=Depends(require_super)):
 async def update_tenant(tid: str, payload: dict, u=Depends(require_super)):
     allowed = {k: v for k, v in payload.items()
                if k in ("name", "owner_name", "mobile", "city", "state", "plan",
-                        "license_status", "license_expiry", "notes")}
+                        "license_status", "license_expiry", "notes", "features", "custom_requests")}
     await platform_db.tenants.update_one({"_id": tid}, {"$set": allowed})
     t = await platform_db.tenants.find_one({"_id": tid})
     return ser(t)

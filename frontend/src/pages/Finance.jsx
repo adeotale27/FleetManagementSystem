@@ -247,6 +247,9 @@ export default function Finance() {
                     { key: "mode", label: "Mode" },
                     { key: "deewanji_name", label: "Collected By", render: (r) => r.deewanji_name || "Office" },
                     { key: "reference", label: "Reference" },
+                    { key: "proof_url", label: "Proof", render: (r) => r.proof_url ? (
+                      <a href={r.proof_url} target="_blank" rel="noreferrer" data-testid={`proof-${r.id}`}
+                        onClick={(e) => e.stopPropagation()} className="font-semibold text-brand-600">View</a>) : "—" },
                     { key: "amount", label: "Amount", type: "money", right: true },
                     { key: "act", label: "", render: (r) => !r.cancelled && (
                       <button onClick={(e) => { e.stopPropagation(); cancelEntry("/receipts", r.id); }}
@@ -322,6 +325,9 @@ export default function Finance() {
                       { key: "to", label: "To" },
                       { key: "mode", label: "Mode" },
                       { key: "reference", label: "Reference" },
+                    { key: "proof_url", label: "Proof", render: (r) => r.proof_url ? (
+                      <a href={r.proof_url} target="_blank" rel="noreferrer" data-testid={`proof-${r.id}`}
+                        onClick={(e) => e.stopPropagation()} className="font-semibold text-brand-600">View</a>) : "—" },
                       { key: "amount", label: "Amount", type: "money", right: true },
                     ]}
                     rows={hands.data || []}

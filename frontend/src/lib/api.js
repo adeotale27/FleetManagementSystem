@@ -22,3 +22,10 @@ api.interceptors.response.use(
 
 export const errMsg = (e) =>
   e?.response?.data?.detail || e?.message || "Something went wrong. Please try again.";
+
+export const uploadFile = async (file, kind = "misc") => {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await api.post(`/upload?kind=${kind}`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+  return `${BASE}${r.data.url}`;
+};

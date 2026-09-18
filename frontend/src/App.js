@@ -27,12 +27,16 @@ export default function App() {
 
   useEffect(() => {
     if (!localStorage.getItem("fms_token")) return setState("out");
-    api.get("/auth/me")
-      .then((r) => { setUser(r.data); setState("in"); })
+    api.get("/me")
+      .then((r) => { setUser({ ...r.data.user, features: r.data.features, tenant: r.data.tenant }); setState("in"); })
       .catch(() => setState("out"));
   }, []);
 
-  const onLogin = (u) => { setUser(u); setState("in"); };
+  const onLogin = () => {
+    api.get("/me")
+      .then((r) => { setUser({ ...r.data.user, features: r.data.features, tenant: r.data.tenant }); setState("in"); })
+      .catch(() => setState("out"));
+  };
 
   if (state === "checking") return <div className="grid h-screen place-items-center"><Loader label="Starting…" /></div>;
 

@@ -2,13 +2,24 @@ import React, { useState } from "react";
 import {
   Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
-import { Building2, KeyRound, Plus, ShieldCheck, Truck, Wallet } from "lucide-react";
+import { Building2, KeyRound, Plus, ShieldCheck, SlidersHorizontal, Truck, Wallet } from "lucide-react";
 import { api, errMsg } from "../lib/api";
 import { useFetch } from "../lib/hooks";
 import { money, money0, dmy } from "../lib/format";
 import {
-  Badge, Btn, Card, DataTable, ErrorState, Input, Loader, Modal, PageHead, Select, Stat, toast,
+  Badge, Btn, Card, DataTable, ErrorState, Input, Loader, Modal, PageHead, Select, Stat, TextArea, toast,
 } from "../components/ui";
+
+const DEFAULT_FEATURES = {
+  trips: true, vehicles: true, parties: true, team: true, finance: true,
+  reports: true, tracking: true, lr_charts: true, dashboard_charts: true,
+};
+
+const FEATURE_LABELS = {
+  trips: "Trips & LR", vehicles: "Vehicles", parties: "Parties", team: "Team & Payroll",
+  finance: "Finance", reports: "Reports", tracking: "GPS Live Tracking",
+  lr_charts: "LR Charts", dashboard_charts: "Dashboard Charts",
+};
 
 const blank = {
   name: "", owner_name: "", owner_username: "", owner_password: "",
@@ -20,6 +31,7 @@ export default function Platform() {
   const [form, setForm] = useState(null);
   const [pwFor, setPwFor] = useState(null);
   const [pw, setPw] = useState("");
+  const [cust, setCust] = useState(null);
   const [busy, setBusy] = useState(false);
 
   if (loading && !data) return <Loader label="Loading platform data…" />;
@@ -43,6 +55,17 @@ export default function Platform() {
       await api.put(`/platform/tenants/${row.id}`, { license_status: next });
       toast(`Licence ${next.toLowerCase()}`); reload();
     } catch (e) { toast(errMsg(e), "err"); }
+  };
+
+  const saveCust = async () => {
+    setBusy(true);
+    try {
+      await api.put(`/platform/tenants/${cust.id}`, {
+        features: cust.features, custom_requests: cust.custom_requests,
+        plan: cust.plan, license_expiry: cust.license_expiry,
+      });
+      toast("Saved for this business only"); setCust(null); reload();
+    } catch (e) { toast(errMsg(e), "err"); } finally { setBusy(false); }
   };
 
   const resetPw = async () => {
@@ -106,6 +129,11 @@ export default function Platform() {
                     className="rounded-md border border-line px-2 py-1 text-[12px] font-semibold hover:border-brand-400">
                     <KeyRound size={13} className="inline" /> Password
                   </button>
+                  <button data-testid={`customise-${r.id}`}
+                    onClick={() => setCust({ id: r.id, name: r.name, features: { ...DEFAULT_FEATURES, ...(r.features || {}) }, custom_requests: r.custom_requests || "", plan: r.plan, license_expiry: r.license_expiry })}
+                    className="rounded-md border border-line px-2 py-1 text-[12px] font-semibold hover:border-brand-400">
+                    <SlidersHorizontal size={13} className="inline" /> Customise
+                  </button>
                 </div>
               ),
             },
@@ -151,6 +179,37 @@ export default function Platform() {
         footer={<><Btn variant="s" onClick={() => setPwFor(null)}>Cancel</Btn>
           <Btn disabled={busy || pw.length < 6} data-testid="save-password" onClick={resetPw}>Update Password</Btn></>}>
         <Input label="New Password" value={pw} data-testid="new-password" hint="Minimum 6 characters" onChange={(e) => setPw(e.target.value)} />
+      </Modal>
+      <Modal open={!!cust} onClose={() => setCust(null)} title={`Customise — ${cust?.name || ""}`}
+        subtitle="Turn modules on or off for this business only. Other businesses stay untouched."
+        footer={<><Btn variant="s" onClick={() => setCust(null)}>Cancel</Btn>
+          <Btn disabled={busy} data-testid="save-customise" onClick={saveCust}>Save for this Business</Btn></>}>
+        {cust && (
+          <div className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <Select label="Plan" value={cust.plan} onChange={(e) => setCust({ ...cust, plan: e.target.value })}
+                options={["Starter", "Business", "Enterprise"]} />
+              <label className="block"><span className="lbl">Licence Valid Till</span>
+                <input type="date" className="fld" value={cust.license_expiry || ""}
+                  data-testid="cust-expiry" onChange={(e) => setCust({ ...cust, license_expiry: e.target.value })} /></label>
+            </div>
+            <div>
+              <p className="lbl">Modules for this business</p>
+              <div className="grid gap-2 md:grid-cols-2">
+                {Object.keys(DEFAULT_FEATURES).map((k) => (
+                  <label key={k} className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2 text-[13.5px]">
+                    <input type="checkbox" checked={cust.features[k] !== false} data-testid={`feat-${k}`}
+                      onChange={(e) => setCust({ ...cust, features: { ...cust.features, [k]: e.target.checked } })} />
+                    <span className="font-medium capitalize">{FEATURE_LABELS[k] || k}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <TextArea label="Custom Requirement Notes" value={cust.custom_requests} data-testid="cust-notes"
+              onChange={(e) => setCust({ ...cust, custom_requests: e.target.value })}
+              hint="Write what this specific business asked for — kept against their licence only" />
+          </div>
+        )}
       </Modal>
     </div>
   );
