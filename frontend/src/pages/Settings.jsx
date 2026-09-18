@@ -27,6 +27,8 @@ export default function Settings() {
         company: s.company, base_locations: s.base_locations, routes: s.routes,
         expense_categories: s.expense_categories, payment_modes: s.payment_modes,
         lr: s.lr, trip: s.trip, receivable_due_days: Number(s.receivable_due_days || 30),
+        opening_cash: Number(s.opening_cash || 0), opening_bank: Number(s.opening_bank || 0),
+        opening_cash: Number(s.opening_cash || 0), opening_bank: Number(s.opening_bank || 0),
       };
       await api.put("/settings", body);
       toast("Settings saved");
@@ -108,6 +110,22 @@ export default function Settings() {
               <Input label="Payment Due Days" type="number" value={s.receivable_due_days}
                 onChange={(e) => setS({ ...s, receivable_due_days: e.target.value })}
                 hint="Used for overdue and aging" />
+            </div>
+            <h3 className="mb-3 mt-6 font-head text-[16px] font-bold">Opening Balances</h3>
+            <div className="grid gap-3.5 md:grid-cols-2">
+              <Money label="Opening Cash in Hand" value={s.opening_cash ?? ""} data-testid="set-opening-cash"
+                onChange={(e) => setS({ ...s, opening_cash: e.target.value })}
+                hint="Cash you already had before using this app" />
+              <Money label="Opening Bank Balance" value={s.opening_bank ?? ""} data-testid="set-opening-bank"
+                onChange={(e) => setS({ ...s, opening_bank: e.target.value })} />
+            </div>
+            <h3 className="mb-3 mt-6 font-head text-[16px] font-bold">Opening Balances</h3>
+            <div className="grid gap-3.5 md:grid-cols-2">
+              <Money label="Opening Cash in Hand" value={s.opening_cash ?? ""} data-testid="set-opening-cash"
+                onChange={(e) => setS({ ...s, opening_cash: e.target.value })}
+                hint="Cash you already had before using this app" />
+              <Money label="Opening Bank Balance" value={s.opening_bank ?? ""} data-testid="set-opening-bank"
+                onChange={(e) => setS({ ...s, opening_bank: e.target.value })} />
             </div>
             <p className="mt-3 rounded-lg bg-canvas px-3 py-2.5 text-[13px] text-muted">
               Next LR will be <b className="text-ink">{s.lr.prefix}{String(s.lr.next).padStart(s.lr.pad || 4, "0")}</b> ·

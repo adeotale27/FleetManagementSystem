@@ -1,0 +1,42 @@
+{
+  "summary": "Comprehensive frontend + backend integration test. Backend was already verified end-to-end by /app/scripts/smoke.py (all endpoints + 15 reports OK). Frontend UI flows were exercised via Playwright against the public preview URL. Nearly all critical flows pass: login (right/wrong), dashboard stat click-through to Finance, Vehicles page loading, Settings add locations + routes (with save), indoor trip create, driver/vehicle conflict error, outdoor trip with temporary vehicle (does NOT create a permanent vehicle unless the checkbox is set), LR creation from trip with new sender auto-saving to Parties + autocomplete suggest, Party ledger record-payment (12,000 -> 11,000), Deewanji handover recording, Finance expense/fuel(Credit)/payables listing HP Hinganghat, 3PL trip add, driver advance, Reports page loads 16 report chips, global search finds vehicle/party/trip/LR, and mobile viewport quick-action sheet with quick-collection opens the entry modal.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/finance/summary + /api/finance/cashbook", "issue": "Cash-in-hand and Bank balance can go negative (Cash ₹-4,050, Bank ₹-3,900 seen after normal expense/payment entries) because the cashbook uses 0 as opening balance. Consider allowing an opening balance in Settings or clamping display."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Vehicles master form (MasterForm modal, add-vehicle)", "issue": "When submitting the Add Vehicle modal without a vehicle_no we get a 400 from POST /api/masters/vehicles. Field-level validation should be shown before submit; also the modal input for the vehicle number does not carry a discoverable data-testid (e.g. mf-vehicle_no), which hurts automated testing and consistency with the rest of the app (LR/Trip forms use explicit test ids).", "selector": "[data-testid=\"add-vehicle\"]", "priority": "MEDIUM"},
+      {"component": "Reports report chips", "issue": "Report tiles use data-testid=\"report-{name}\" (found 16). The system-prompt-style selector [data-testid^=\"report-chip-\"] does not exist. Cosmetic — but worth noting for other testers.", "selector": "[data-testid^=\"report-\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard Money row", "issues": ["Cash-in-hand and Bank Balance displayed as negative amounts in the same tone as positives. A red/muted style for negative balances would communicate the position better."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/scripts/smoke.py (backend end-to-end - all pass, verified endpoints)"
+  ],
+  "action_items": [
+    "Add field-level validation + explicit data-testid attributes to the vehicle master form fields (mf-vehicle_no, etc.) so the Add Vehicle modal is testable in an automated way.",
+    "Consider allowing an opening balance in Settings for cash/bank so newly-installed dashboards don't show negative balances after the first expense.",
+    "(Nit) Consider aligning report tile testids with the pattern report-chip-{name} if that convention was intended in the spec; otherwise document the actual convention (report-{name}).",
+    "Reduce React-Router future-flag warnings by enabling the recommended future flags — cosmetic only."
+  ],
+  "critical_code_review_comments": [
+    "server.py + ledger.py look clean; balances are derived and cancel endpoints reverse ledger entries (verified via UI: 12,000 outstanding -> 11,000 after 1,000 receipt).",
+    "Frontend uses REACT_APP_BACKEND_URL correctly; no hardcoded URLs seen.",
+    "Autocomplete testid is placed directly on the <input> (data-testid=\"lr-sender\"), not on a wrapper — good and consistent.",
+    "MasterForm modal fields do not have per-field data-testids while other pages (LRForm, TripForm, QuickForms) do — inconsistency worth fixing for testability."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (via smoke.py)", "frontend": "~92% (12/13 major flows pass; only add-vehicle full-round-trip failed due to modal field discovery)"},
+  "test_credentials": "owner / owner123 (confirmed working)",
+  "seed_data_creation": "Created a couple of TESTSENDER<ts> parties via LR, one TestCust3PL 3PL trip, a driver advance of ₹1,000, a ₹250 expense, a ₹1,900 fuel-Credit entry, and two extra base locations + one route in Settings. Also 2 extra trips (indoor TRP1002 & outdoor TRP1003 with a temp vehicle). No production/seed data was deleted.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend fully covered by /app/scripts/smoke.py — re-run only if backend changes. UI covered with Playwright; the trickiest gotcha is that many components put data-testid on the actual <input>, not on a wrapper, so use selectors like [data-testid=\"lr-sender\"] directly (not [data-testid=\"lr-sender\"] input). The Vehicles master modal is the exception — its inputs do not expose testids yet.",
+  "rca of the issue": "Add-vehicle test failure RCA: MasterForm renders the vehicle_no input without a data-testid, so the Playwright script could only rely on placeholder/name attributes which weren't unique inside a 18-input modal. The submit therefore posted an empty vehicle_no and the backend correctly rejected it (400). Fix by main agent: add data-testid=\"mf-<fieldname>\" (or similar) to inputs in /app/frontend/src/components/MasterForm.jsx. This is a testability gap, not a runtime bug."
+}

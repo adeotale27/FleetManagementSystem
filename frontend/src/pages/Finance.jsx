@@ -98,8 +98,8 @@ export default function Finance() {
                 <Stat label="Paid Today" value={money0(s.paid_today)} onClick={() => setSp({ tab: "payments" })} />
               </div>
               <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-5">
-                <Stat label="Cash in Hand" value={money0(s.cash)} onClick={() => setSp({ tab: "cash" })} />
-                <Stat label="Bank Balance" value={money0(s.bank)} onClick={() => setSp({ tab: "cash" })} />
+                <Stat label="Cash in Hand" value={money0(s.cash)} tone={s.cash < 0 ? "text-red-600" : ""} onClick={() => setSp({ tab: "cash" })} />
+                <Stat label="Bank Balance" value={money0(s.bank)} tone={s.bank < 0 ? "text-red-600" : ""} onClick={() => setSp({ tab: "cash" })} />
                 <Stat label="Deewanji Cash" value={money0(s.deewanji_cash)} tone="text-amber-600" onClick={() => setSp({ tab: "deewanji" })} />
                 <Stat label="Driver Advances" value={money0(s.driver_advances)} onClick={() => nav("/team")} />
                 <Stat label="Team Advances" value={money0(s.employee_advances)} onClick={() => nav("/team?tab=team")} />
@@ -437,8 +437,8 @@ export default function Finance() {
             cash.loading && !cash.data ? <Loader /> : (
               <>
                 <div className="mb-4 grid grid-cols-3 gap-3">
-                  <Stat label="Cash in Hand" value={money0(cash.data?.position?.cash)} />
-                  <Stat label="Bank Balance" value={money0(cash.data?.position?.bank)} />
+                  <Stat label="Cash in Hand" value={money0(cash.data?.position?.cash)} tone={cash.data?.position?.cash < 0 ? "text-red-600" : ""} />
+                  <Stat label="Bank Balance" value={money0(cash.data?.position?.bank)} tone={cash.data?.position?.bank < 0 ? "text-red-600" : ""} />
                   <Stat label="Cash With Deewanji" value={money0(cash.data?.position?.deewanji)} tone="text-amber-600" />
                 </div>
                 <Card className="overflow-hidden">

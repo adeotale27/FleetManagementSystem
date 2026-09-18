@@ -69,8 +69,8 @@ export default function Dashboard() {
             onClick={() => nav("/finance?tab=deewanji")} />
           <Stat testid="stat-deewanji-cash" label="Cash With Deewanji" value={money0(c.cash_with_deewanji)} icon={HandCoins}
             tone="text-amber-600" onClick={() => nav("/finance?tab=deewanji")} />
-          <Stat label="Cash in Hand" value={money0(m.cash)} icon={Wallet} onClick={() => nav("/finance?tab=cash")} />
-          <Stat label="Bank Balance" value={money0(m.bank)} icon={Wallet} onClick={() => nav("/finance?tab=cash")} />
+          <Stat label="Cash in Hand" value={money0(m.cash)} icon={Wallet} tone={m.cash < 0 ? "text-red-600" : ""} onClick={() => nav("/finance?tab=cash")} />
+          <Stat label="Bank Balance" value={money0(m.bank)} icon={Wallet} tone={m.bank < 0 ? "text-red-600" : ""} onClick={() => nav("/finance?tab=cash")} />
         </div>
       </Section>
 

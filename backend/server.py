@@ -43,7 +43,17 @@ DEFAULT_SETTINGS = {
     "lr": {"prefix": "LR", "next": 1001, "pad": 4},
     "trip": {"prefix": "TRP", "next": 1001, "pad": 4},
     "receivable_due_days": 30,
+    "opening_cash": 0,
+    "opening_bank": 0,
 }
+
+
+async def cash_position():
+    pos = await L.cash_position()
+    s = await get_settings()
+    pos["cash"] = round(pos.get("cash", 0) + float(s.get("opening_cash") or 0), 2)
+    pos["bank"] = round(pos.get("bank", 0) + float(s.get("opening_bank") or 0), 2)
+    return pos
 
 
 async def get_settings():
@@ -1217,7 +1227,7 @@ async def advances_outstanding(etype):
 @api.get("/finance/summary")
 async def finance_summary(u=Depends(current_user)):
     t = today()
-    cashpos = await L.cash_position()
+    cashpos = await cash_position()
     rec = await receivables_rows()
     pay = await payables_rows()
     return {
@@ -1269,7 +1279,7 @@ async def finance_cashbook(frm: Optional[str] = None, to: Optional[str] = None,
     rows = sers(await db.cashbook.find(query).sort("date", -1).to_list(1000))
     for r in rows:
         r.pop("meta", None)
-    return {"rows": rows, "position": await L.cash_position()}
+    return {"rows": rows, "position": await cash_position()}
 
 
 @api.get("/finance/charts")
