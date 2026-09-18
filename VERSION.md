@@ -1,5 +1,16 @@
 # Version history
 
+## v1.1.0 — 19 September 2026
+
+### Added / fixed
+- Logo and owner photo upload now save on this computer (no Emergent cloud). 502 on `/api/upload` is gone.
+- Business logo shows before the company name in the sidebar (and on phones). Owner photo shows beside the signed-in name.
+- ProFleet brand on login, favicon, app icon, and LR print fallback.
+- Login no longer pre-fills or prints default passwords.
+- Create trip: add a vehicle **or** a driver that is not in the list — temporary (this trip) or permanent (saved to master from the trip date). This-trip hire can be paid now (expense + cash) or left due on the driver ledger. Permanent driver uses a monthly payment cycle.
+- New tenant MongoDB name: `fleet_db_(BusinessName_OwnerName)` instead of a random id.
+- Rounder gradient buttons; LR actions wrap on small screens.
+
 ## v1.0.0 — 18 September 2026
 
 First documented local-run release of **Fleet Manager**.

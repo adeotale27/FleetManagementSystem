@@ -111,6 +111,7 @@ export default function Platform() {
             { key: "name", label: "Business", strong: true },
             { key: "owner_name", label: "Owner" },
             { key: "owner_username", label: "Login" },
+            { key: "db_name", label: "Database", render: (r) => <span className="num text-[12px]">{r.db_name || `fleet_db_(${r.id})`}</span> },
             { key: "plan", label: "Plan" },
             { key: "license_expiry", label: "Valid Till", render: (r) => dmy(r.license_expiry) },
             { key: "vehicles", label: "Vehicles", right: true, render: (r) => r.stats.vehicles },

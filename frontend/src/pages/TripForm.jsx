@@ -21,6 +21,7 @@ export default function TripForm() {
     from_name: "", to_name: "", trip_amount: "", expected_collection: "", remarks: "",
   });
   const [temp, setTemp] = useState(null);
+  const [tempDrv, setTempDrv] = useState(null);
   const [partyText, setPartyText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -50,6 +51,7 @@ export default function TripForm() {
     try {
       const body = { ...f, trip_amount: Number(f.trip_amount || 0), expected_collection: Number(f.expected_collection || 0) };
       if (temp?.vehicle_no) { body.temp_vehicle = temp; body.save_vehicle = !!temp.save; body.vehicle_id = null; }
+      if (tempDrv?.name) { body.temp_driver = tempDrv; body.save_driver = !!tempDrv.save; body.driver_id = null; }
       const r = await api.post("/trips", body);
       toast(`Trip ${r.data.trip_no} created`);
       nav(`/trips/${r.data.id}`);
@@ -144,43 +146,91 @@ export default function TripForm() {
                 This vehicle is already on trip {vehicle.current_trip.trip_no}.
               </p>
             )}
-            <button onClick={() => setTemp({ vehicle_no: "", vehicle_type: "", save: false })}
-              data-testid="add-temp-vehicle" className="text-[13.5px] font-semibold text-brand-600 hover:underline">
-              + Add temporary vehicle (only for this trip)
+            <button onClick={() => setTemp({ vehicle_no: "", vehicle_type: "", save: false, hire_amount: "", payment_date: f.start_date, pay_mode: "Cash", paid: false, payment_cycle: "this_trip" })}
+              data-testid="add-temp-vehicle" className="text-left text-[13.5px] font-semibold text-brand-600 hover:underline">
+              + Add temporary (only for this trip) or permanent vehicle if it is not added previously
             </button>
           </>
         ) : (
           <div className="space-y-3 rounded-xl border border-dashed border-brand-400 bg-brand-50/40 p-3.5">
-            <div className="flex items-center justify-between">
-              <span className="font-head text-[14.5px] font-bold">Temporary Vehicle</span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-head text-[14.5px] font-bold">New vehicle</span>
               <button onClick={() => setTemp(null)} className="text-[13px] font-semibold text-muted hover:text-ink">Use saved vehicle</button>
             </div>
+            <p className="text-[12.5px] text-muted">Temporary = this trip only. Tick permanent to keep it in your fleet from the trip start date.</p>
             <div className="grid gap-3 md:grid-cols-2">
               <Input label="Vehicle Number" required value={temp.vehicle_no} data-testid="temp-vehicle-no"
                 onChange={(e) => setTemp({ ...temp, vehicle_no: e.target.value.toUpperCase() })} placeholder="MH 34 AB 1234" />
               <Input label="Vehicle Type" value={temp.vehicle_type} onChange={(e) => setTemp({ ...temp, vehicle_type: e.target.value })} placeholder="Truck / Tempo" />
               <Input label="Owner (optional)" value={temp.owner_name || ""} onChange={(e) => setTemp({ ...temp, owner_name: e.target.value })} />
               <Input label="Make & Model (optional)" value={temp.make || ""} onChange={(e) => setTemp({ ...temp, make: e.target.value })} />
+              <Input label="On fleet / hire from" type="date" value={temp.payment_date || f.start_date}
+                onChange={(e) => setTemp({ ...temp, payment_date: e.target.value })} />
+              <Money label="This-trip hire (₹) if hired" value={temp.hire_amount || ""} onChange={(e) => setTemp({ ...temp, hire_amount: e.target.value })} />
             </div>
             <label className="flex items-center gap-2.5 text-[13.5px] font-medium">
               <input type="checkbox" data-testid="temp-save-permanent" checked={!!temp.save}
-                onChange={(e) => setTemp({ ...temp, save: e.target.checked })} className="h-4 w-4 accent-[#0B5C4E]" />
-              Also save as a permanent vehicle
+                onChange={(e) => setTemp({ ...temp, save: e.target.checked, payment_cycle: e.target.checked ? "Owned" : "this_trip" })} className="h-4 w-4 accent-[#0B5C4E]" />
+              Save as a permanent fleet vehicle
             </label>
+            {Number(temp.hire_amount) > 0 && (
+              <label className="flex items-center gap-2.5 text-[13.5px] font-medium">
+                <input type="checkbox" checked={!!temp.paid} onChange={(e) => setTemp({ ...temp, paid: e.target.checked })} className="h-4 w-4 accent-[#0B5C4E]" />
+                Hire paid now ({temp.pay_mode || "Cash"})
+              </label>
+            )}
           </div>
         )}
       </Card>
 
       <Card className="mb-4 space-y-4 p-4">
         <p className="lbl">Driver</p>
-        <Select label="Select Driver" value={f.driver_id} onChange={set("driver_id")} data-testid="trip-driver"
-          options={(drivers.data || []).map((d) => ({
-            value: d.id, label: `${d.name} · ${d.current_trip ? `On trip ${d.current_trip.trip_no}` : "Available"}` }))} />
-        {driver && (
-          <div className="flex items-center gap-2 text-[13px]">
-            <Badge>{driver.current_trip ? "On Trip" : "Available"}</Badge>
-            <span className="text-muted">{driver.mobile}</span>
-            {driver.balance > 0 && <span className="text-amber-600">Advance {money(driver.balance)}</span>}
+        {!tempDrv ? (
+          <>
+            <Select label="Select Driver" value={f.driver_id} onChange={set("driver_id")} data-testid="trip-driver"
+              options={(drivers.data || []).map((d) => ({
+                value: d.id, label: `${d.name} · ${d.current_trip ? `On trip ${d.current_trip.trip_no}` : "Available"}` }))} />
+            {driver && (
+              <div className="flex flex-wrap items-center gap-2 text-[13px]">
+                <Badge>{driver.current_trip ? "On Trip" : "Available"}</Badge>
+                <span className="text-muted">{driver.mobile}</span>
+                {driver.balance > 0 && <span className="text-amber-600">Advance {money(driver.balance)}</span>}
+              </div>
+            )}
+            <button onClick={() => setTempDrv({ name: "", mobile: "", licence_no: "", save: false, hire_amount: "", payment_date: f.start_date, pay_mode: "Cash", paid: false, payment_cycle: "this_trip" })}
+              data-testid="add-temp-driver" className="text-left text-[13.5px] font-semibold text-brand-600 hover:underline">
+              + Add temporary (only for this trip) or permanent driver if they are not added previously
+            </button>
+          </>
+        ) : (
+          <div className="space-y-3 rounded-xl border border-dashed border-brand-400 bg-brand-50/40 p-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-head text-[14.5px] font-bold">New driver</span>
+              <button onClick={() => setTempDrv(null)} className="text-[13px] font-semibold text-muted hover:text-ink">Use saved driver</button>
+            </div>
+            <p className="text-[12.5px] text-muted">Temporary = this trip only. Tick permanent to add them to Team from the trip start date, with monthly salary cycle.</p>
+            <div className="grid gap-3 md:grid-cols-2">
+              <Input label="Driver Name" required value={tempDrv.name} data-testid="temp-driver-name"
+                onChange={(e) => setTempDrv({ ...tempDrv, name: e.target.value })} />
+              <Input label="Mobile" value={tempDrv.mobile || ""} onChange={(e) => setTempDrv({ ...tempDrv, mobile: e.target.value })} />
+              <Input label="Licence no. (optional)" value={tempDrv.licence_no || ""} onChange={(e) => setTempDrv({ ...tempDrv, licence_no: e.target.value })} />
+              <Input label="Join / trip date" type="date" value={tempDrv.payment_date || f.start_date}
+                onChange={(e) => setTempDrv({ ...tempDrv, payment_date: e.target.value })} />
+              <Money label="This-trip hire / wage (₹)" value={tempDrv.hire_amount || ""} onChange={(e) => setTempDrv({ ...tempDrv, hire_amount: e.target.value })} />
+              <Select label="Pay mode" value={tempDrv.pay_mode || "Cash"} onChange={(e) => setTempDrv({ ...tempDrv, pay_mode: e.target.value })}
+                options={["Cash", "UPI", "Bank"]} />
+            </div>
+            <label className="flex items-center gap-2.5 text-[13.5px] font-medium">
+              <input type="checkbox" data-testid="temp-save-driver" checked={!!tempDrv.save}
+                onChange={(e) => setTempDrv({ ...tempDrv, save: e.target.checked, payment_cycle: e.target.checked ? "Monthly" : "this_trip" })} className="h-4 w-4 accent-[#0B5C4E]" />
+              Save as a permanent driver (monthly payment cycle)
+            </label>
+            {Number(tempDrv.hire_amount) > 0 && (
+              <label className="flex items-center gap-2.5 text-[13.5px] font-medium">
+                <input type="checkbox" checked={!!tempDrv.paid} onChange={(e) => setTempDrv({ ...tempDrv, paid: e.target.checked })} className="h-4 w-4 accent-[#0B5C4E]" />
+                Wage paid now
+              </label>
+            )}
           </div>
         )}
       </Card>

@@ -25,18 +25,20 @@ export default function App() {
   const [state, setState] = useState("checking");
   const [user, setUser] = useState(null);
 
+  const applyMe = (r) => {
+    setUser({ ...r.data.user, features: r.data.features, tenant: r.data.tenant, branding: r.data.branding });
+    setState("in");
+  };
+
   useEffect(() => {
     if (!localStorage.getItem("fms_token")) return setState("out");
-    api.get("/me")
-      .then((r) => { setUser({ ...r.data.user, features: r.data.features, tenant: r.data.tenant }); setState("in"); })
-      .catch(() => setState("out"));
+    api.get("/me").then(applyMe).catch(() => setState("out"));
+    const onBrand = () => api.get("/me").then(applyMe).catch(() => {});
+    window.addEventListener("fms:branding", onBrand);
+    return () => window.removeEventListener("fms:branding", onBrand);
   }, []);
 
-  const onLogin = () => {
-    api.get("/me")
-      .then((r) => { setUser({ ...r.data.user, features: r.data.features, tenant: r.data.tenant }); setState("in"); })
-      .catch(() => setState("out"));
-  };
+  const onLogin = () => { api.get("/me").then(applyMe).catch(() => setState("out")); };
 
   if (state === "checking") return <div className="grid h-screen place-items-center"><Loader label="Starting…" /></div>;
 

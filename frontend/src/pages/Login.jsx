@@ -1,9 +1,11 @@
 import React, { useState } from "react";
-import { Truck, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { api, errMsg } from "../lib/api";
 
+const PILLARS = ["Track", "Manage", "Move", "Grow"];
+
 export default function Login({ onLogin }) {
-  const [f, setF] = useState({ username: "owner", password: "" });
+  const [f, setF] = useState({ username: "", password: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -18,63 +20,63 @@ export default function Login({ onLogin }) {
   };
 
   return (
-    <div className="grid min-h-screen bg-ink md:grid-cols-2">
-      <div className="relative hidden flex-col justify-between overflow-hidden p-12 md:flex">
-        <div className="absolute -left-24 top-24 h-80 w-80 rounded-full bg-brand-500/30 blur-3xl" />
-        <div className="absolute bottom-0 right-0 h-72 w-72 rounded-full bg-amber-500/10 blur-3xl" />
-        <div className="relative flex items-center gap-3 text-white">
-          <div className="grid h-11 w-11 place-items-center rounded-xl bg-brand-500"><Truck size={22} /></div>
-          <span className="font-head text-[19px] font-bold tracking-tight">Fleet Manager</span>
-        </div>
+    <div className="grid min-h-screen bg-[#071018] md:grid-cols-2">
+      <div className="relative hidden flex-col justify-between overflow-hidden px-12 py-10 md:flex">
+        <div className="absolute -left-20 top-10 h-96 w-96 rounded-full bg-[#1D6FEA]/30 blur-3xl" />
+        <div className="absolute bottom-10 right-0 h-80 w-80 rounded-full bg-[#22C55E]/20 blur-3xl" />
+        <img src="/profleet-logo.png" alt="ProFleet" className="relative w-[min(100%,420px)] object-contain drop-shadow-xl" />
         <div className="relative max-w-md">
-          <h1 className="font-head text-[40px] font-extrabold leading-[1.08] text-white">
-            Your whole transport business, on one screen.
+          <p className="text-[13px] font-semibold uppercase tracking-[0.28em] text-white/50">ProFleet Management</p>
+          <h1 className="mt-3 font-head text-[42px] font-extrabold leading-[1.05] text-white">
+            Track. Manage.<br />Move. Grow.
           </h1>
           <p className="mt-5 text-[15px] leading-relaxed text-white/60">
-            Trips, LR, parties, diesel, collections and every rupee — tracked automatically.
-            Built for the daily work of a transport office.
+            One office for trips, LR, diesel, collections and every rupee — built for the transport floor, not a boardroom ERP.
           </p>
-          <div className="mt-8 flex flex-wrap gap-2.5">
-            {["Trips & LR", "Party Ledger", "Deewanji Collection", "Diesel & Expenses", "Reports"].map((t) => (
-              <span key={t} className="rounded-full border border-white/15 px-3 py-1.5 text-[12.5px] font-medium text-white/70">{t}</span>
+          <div className="mt-8 grid grid-cols-2 gap-2.5">
+            {["Real-time tracking", "Better safety", "Higher efficiency", "Lower costs"].map((t) => (
+              <span key={t} className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2.5 text-[12.5px] font-semibold text-white/80">{t}</span>
             ))}
           </div>
         </div>
-        <p className="relative text-[12.5px] text-white/35">Records stay safe — cancellations are reversed, never deleted.</p>
+        <p className="relative text-[12.5px] text-white/35">{PILLARS.join("  ·  ")}</p>
       </div>
 
-      <div className="flex items-center justify-center bg-canvas px-5 py-14">
+      <div className="flex items-center justify-center bg-canvas px-5 py-12">
         <form onSubmit={submit} className="w-full max-w-sm" data-testid="login-form">
-          <div className="mb-8 flex items-center gap-3 md:hidden">
-            <div className="grid h-11 w-11 place-items-center rounded-xl bg-brand-500 text-white"><Truck size={22} /></div>
-            <span className="font-head text-[19px] font-bold">Fleet Manager</span>
+          <div className="mb-8 flex flex-col items-center text-center md:hidden">
+            <img src="/profleet-logo.png" alt="ProFleet" className="h-28 w-auto object-contain" />
           </div>
-          <h2 className="font-head text-[26px] font-bold text-ink">Sign in</h2>
-          <p className="mt-1 text-[14px] text-muted">Enter your details to open the office dashboard.</p>
+          <div className="hidden items-center gap-3 md:flex">
+            <img src="/app-icon.png" alt="" className="h-12 w-12 rounded-2xl shadow-md" />
+            <div>
+              <p className="font-head text-[18px] font-bold leading-none">ProFleet</p>
+              <p className="mt-1 text-[12px] font-semibold uppercase tracking-[0.16em] text-muted">Management</p>
+            </div>
+          </div>
+          <h2 className="mt-8 font-head text-[26px] font-bold text-ink">Welcome back</h2>
+          <p className="mt-1 text-[14px] text-muted">Sign in to your office or platform console.</p>
 
           <div className="mt-7 space-y-4">
             <label className="block">
               <span className="lbl">User name</span>
-              <input data-testid="login-username" className="fld" value={f.username} autoCapitalize="none"
+              <input data-testid="login-username" className="fld rounded-2xl" value={f.username} autoCapitalize="none"
+                autoComplete="username" placeholder="Your login"
                 onChange={(e) => setF({ ...f, username: e.target.value })} />
             </label>
             <label className="block">
               <span className="lbl">Password</span>
-              <input data-testid="login-password" type="password" className="fld" value={f.password}
-                onChange={(e) => setF({ ...f, password: e.target.value })} placeholder="••••••••" />
+              <input data-testid="login-password" type="password" className="fld rounded-2xl" value={f.password}
+                autoComplete="current-password" placeholder="••••••••"
+                onChange={(e) => setF({ ...f, password: e.target.value })} />
             </label>
           </div>
 
-          {err && <p data-testid="login-error" className="mt-4 rounded-lg bg-red-50 px-3 py-2.5 text-[13.5px] font-medium text-red-600">{err}</p>}
+          {err && <p data-testid="login-error" className="mt-4 rounded-2xl bg-red-50 px-3 py-2.5 text-[13.5px] font-medium text-red-600">{err}</p>}
 
-          <button data-testid="login-submit" disabled={busy} className="btn-p mt-6 w-full py-3">
-            {busy && <Loader2 size={17} className="animate-spin" />} {busy ? "Signing in…" : "Sign in"}
+          <button data-testid="login-submit" disabled={busy} className="btn-p mt-6 w-full rounded-2xl py-3.5 text-[15px]">
+            {busy && <Loader2 size={17} className="animate-spin" />} {busy ? "Signing in…" : "Let’s go"}
           </button>
-          <p className="mt-6 text-center text-[12.5px] text-muted">
-            Business owner — <span className="font-semibold text-ink">owner / owner123</span>
-            <br />
-            Platform owner — <span className="font-semibold text-ink">superadmin / super123</span>
-          </p>
         </form>
       </div>
     </div>
