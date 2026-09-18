@@ -70,7 +70,11 @@ export default function Login({ onLogin }) {
           <button data-testid="login-submit" disabled={busy} className="btn-p mt-6 w-full py-3">
             {busy && <Loader2 size={17} className="animate-spin" />} {busy ? "Signing in…" : "Sign in"}
           </button>
-          <p className="mt-6 text-center text-[12.5px] text-muted">Default login — owner / owner123</p>
+          <p className="mt-6 text-center text-[12.5px] text-muted">
+            Business owner — <span className="font-semibold text-ink">owner / owner123</span>
+            <br />
+            Platform owner — <span className="font-semibold text-ink">superadmin / super123</span>
+          </p>
         </form>
       </div>
     </div>

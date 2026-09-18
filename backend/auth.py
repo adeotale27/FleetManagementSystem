@@ -31,13 +31,15 @@ def make_token(username: str) -> str:
 
 async def upsert_user(username, name, password, role, tenant_id):
     existing = await platform_db.users.find_one({"_id": username})
+    fields = {"name": name, "role": role, "tenant_id": tenant_id, "active": True}
     if existing:
-        await platform_db.users.update_one(
-            {"_id": username}, {"$set": {"name": name, "role": role, "tenant_id": tenant_id}})
+        stored = existing.get("password") or ""
+        if not stored or not verify_pw(password, stored):
+            fields["password"] = hash_pw(password)
+        await platform_db.users.update_one({"_id": username}, {"$set": fields})
         return
     await platform_db.users.insert_one({
-        "_id": username, "name": name, "password": hash_pw(password),
-        "role": role, "tenant_id": tenant_id, "active": True,
+        "_id": username, "password": hash_pw(password), **fields,
     })
 
 

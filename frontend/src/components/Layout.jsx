@@ -73,7 +73,7 @@ export default function Layout({ user, children }) {
       </div>
       <nav className="flex-1 space-y-0.5 px-3 py-2">
         {(user?.role === "superadmin"
-          ? [...NAV, { to: "/platform", label: "Platform", icon: ShieldCheck }]
+          ? [{ to: "/platform", label: "Platform", icon: ShieldCheck }, ...NAV]
           : NAV.filter((n) => !n.key || user?.features?.[n.key] !== false)).map((n) => (
           <NavLink key={n.to} to={n.to} end={n.to === "/"} data-testid={`nav-${n.label.toLowerCase().replace(/[^a-z]/g, "-")}`}
             className={({ isActive }) =>
