@@ -1,0 +1,219 @@
+import React, { useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { Check, Truck } from "lucide-react";
+import { api, errMsg } from "../lib/api";
+import { useFetch, useMaster, opts } from "../lib/hooks";
+import { money, todayISO, nowTime } from "../lib/format";
+import LocationPicker from "../components/LocationPicker";
+import {
+  Autocomplete, Badge, Btn, Card, Input, Money, PageHead, Select, TextArea, toast,
+} from "../components/ui";
+
+export default function TripForm() {
+  const nav = useNavigate();
+  const [sp] = useSearchParams();
+  const [f, setF] = useState({
+    mode: sp.get("mode") || "indoor",
+    trip_type: "One Way",
+    start_date: todayISO(),
+    start_time: nowTime(),
+    route_id: "", vehicle_id: "", driver_id: "",
+    from_name: "", to_name: "", trip_amount: "", expected_collection: "", remarks: "",
+  });
+  const [temp, setTemp] = useState(null);
+  const [partyText, setPartyText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const settings = useFetch("/settings");
+  const vehicles = useMaster("vehicles");
+  const drivers = useMaster("drivers");
+
+  const set = (k) => (e) => setF((s) => ({ ...s, [k]: e?.target ? e.target.value : e }));
+  const routes = (settings.data?.routes || []).filter((r) => r.active !== false);
+  const route = routes.find((r) => r.id === f.route_id);
+  const locs = settings.data?.base_locations || [];
+  const locName = (id) => locs.find((l) => l.id === id)?.name || "";
+
+  const vehicle = (vehicles.data || []).find((v) => v.id === f.vehicle_id);
+  const driver = (drivers.data || []).find((d) => d.id === f.driver_id);
+
+  const canSave = useMemo(() => {
+    if (f.mode === "indoor" && !f.route_id) return false;
+    if (f.mode === "outdoor" && (!f.from_name || !f.to_name)) return false;
+    if (!f.vehicle_id && !temp?.vehicle_no) return false;
+    return true;
+  }, [f, temp]);
+
+  const save = async () => {
+    setBusy(true); setErr("");
+    try {
+      const body = { ...f, trip_amount: Number(f.trip_amount || 0), expected_collection: Number(f.expected_collection || 0) };
+      if (temp?.vehicle_no) { body.temp_vehicle = temp; body.save_vehicle = !!temp.save; body.vehicle_id = null; }
+      const r = await api.post("/trips", body);
+      toast(`Trip ${r.data.trip_no} created`);
+      nav(`/trips/${r.data.id}`);
+    } catch (e) { setErr(errMsg(e)); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <PageHead title="Create Trip" subtitle="Two steps — route and vehicle. Everything else is optional." back="/trips" />
+
+      <Card className="mb-4 p-4">
+        <p className="lbl">Trip Kind</p>
+        <div className="grid grid-cols-2 gap-3">
+          {[["indoor", "Indoor Trip", "Regular route from Settings"], ["outdoor", "Outdoor Trip", "Any custom source & destination"]].map(([v, t, s]) => (
+            <button key={v} data-testid={`mode-${v}`} onClick={() => setF({ ...f, mode: v })}
+              className={`rounded-xl border p-3.5 text-left transition-all ${
+                f.mode === v ? "border-brand-500 bg-brand-50 ring-2 ring-brand-500/20" : "border-line hover:border-brand-400"}`}>
+              <div className="flex items-center justify-between">
+                <span className="font-head text-[15px] font-bold">{t}</span>
+                {f.mode === v && <Check size={17} className="text-brand-600" />}
+              </div>
+              <p className="mt-1 text-[12.5px] text-muted">{s}</p>
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      <Card className="mb-4 space-y-4 p-4">
+        <p className="lbl">Route</p>
+        {f.mode === "indoor" ? (
+          <>
+            <Select label="Select Route" required value={f.route_id} data-testid="trip-route"
+              onChange={(e) => {
+                const r = routes.find((x) => x.id === e.target.value);
+                setF((s) => ({ ...s, route_id: e.target.value, trip_amount: r?.default_amount || s.trip_amount }));
+              }}
+              options={routes.map((r) => ({ value: r.id, label: r.name }))}
+              placeholder="Choose a route" hint="Routes and base locations come from Settings" />
+            {route && (
+              <div className="grid gap-3 rounded-lg bg-canvas p-3 text-[13.5px] md:grid-cols-2">
+                <div><span className="text-muted">From: </span><b>{locName(route.from_id)}</b>
+                  <p className="text-[12.5px] text-muted">{locs.find((l) => l.id === route.from_id)?.address}</p></div>
+                <div><span className="text-muted">To: </span><b>{locName(route.to_id)}</b>
+                  <p className="text-[12.5px] text-muted">{locs.find((l) => l.id === route.to_id)?.address}</p></div>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="space-y-4">
+            <LocationPicker label="Source" value={f.from_name} onChange={(v) => setF((s) => ({ ...s, from_name: v }))}
+              latlng={f.from_latlng} onLatLng={(ll) => setF((s) => ({ ...s, from_latlng: ll }))} />
+            <LocationPicker label="Destination" value={f.to_name} onChange={(v) => setF((s) => ({ ...s, to_name: v }))}
+              latlng={f.to_latlng} onLatLng={(ll) => setF((s) => ({ ...s, to_latlng: ll }))} />
+          </div>
+        )}
+
+        <div>
+          <p className="lbl">Trip Type</p>
+          <div className="flex gap-2">
+            {["One Way", "Round Trip"].map((t) => (
+              <button key={t} data-testid={`triptype-${t.replace(" ", "-").toLowerCase()}`} onClick={() => setF({ ...f, trip_type: t })}
+                className={`flex-1 rounded-lg border px-3 py-2.5 text-[14px] font-semibold transition-colors ${
+                  f.trip_type === t ? "border-brand-500 bg-brand-500 text-white" : "border-line bg-white text-ink"}`}>
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <Input label="Start Date" type="date" value={f.start_date} onChange={set("start_date")} data-testid="trip-start-date" />
+          <Input label="Start Time" type="time" value={f.start_time} onChange={set("start_time")} />
+          {f.trip_type === "Round Trip" && (
+            <>
+              <Input label="Return Date" type="date" value={f.return_date || ""} onChange={set("return_date")} data-testid="trip-return-date" />
+              <Input label="Return Time" type="time" value={f.return_time || ""} onChange={set("return_time")} />
+            </>
+          )}
+        </div>
+      </Card>
+
+      <Card className="mb-4 space-y-4 p-4">
+        <p className="lbl">Vehicle</p>
+        {!temp ? (
+          <>
+            <Select label="Select Vehicle" required value={f.vehicle_id} onChange={set("vehicle_id")}
+              data-testid="trip-vehicle"
+              options={(vehicles.data || []).map((v) => ({
+                value: v.id, label: `${v.vehicle_no} · ${v.status}${v.current_trip ? ` (on ${v.current_trip.trip_no})` : ""}` }))} />
+            {vehicle?.current_trip && (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-[13px] font-medium text-amber-600">
+                This vehicle is already on trip {vehicle.current_trip.trip_no}.
+              </p>
+            )}
+            <button onClick={() => setTemp({ vehicle_no: "", vehicle_type: "", save: false })}
+              data-testid="add-temp-vehicle" className="text-[13.5px] font-semibold text-brand-600 hover:underline">
+              + Add temporary vehicle (only for this trip)
+            </button>
+          </>
+        ) : (
+          <div className="space-y-3 rounded-xl border border-dashed border-brand-400 bg-brand-50/40 p-3.5">
+            <div className="flex items-center justify-between">
+              <span className="font-head text-[14.5px] font-bold">Temporary Vehicle</span>
+              <button onClick={() => setTemp(null)} className="text-[13px] font-semibold text-muted hover:text-ink">Use saved vehicle</button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <Input label="Vehicle Number" required value={temp.vehicle_no} data-testid="temp-vehicle-no"
+                onChange={(e) => setTemp({ ...temp, vehicle_no: e.target.value.toUpperCase() })} placeholder="MH 34 AB 1234" />
+              <Input label="Vehicle Type" value={temp.vehicle_type} onChange={(e) => setTemp({ ...temp, vehicle_type: e.target.value })} placeholder="Truck / Tempo" />
+              <Input label="Owner (optional)" value={temp.owner_name || ""} onChange={(e) => setTemp({ ...temp, owner_name: e.target.value })} />
+              <Input label="Make & Model (optional)" value={temp.make || ""} onChange={(e) => setTemp({ ...temp, make: e.target.value })} />
+            </div>
+            <label className="flex items-center gap-2.5 text-[13.5px] font-medium">
+              <input type="checkbox" data-testid="temp-save-permanent" checked={!!temp.save}
+                onChange={(e) => setTemp({ ...temp, save: e.target.checked })} className="h-4 w-4 accent-[#0B5C4E]" />
+              Also save as a permanent vehicle
+            </label>
+          </div>
+        )}
+      </Card>
+
+      <Card className="mb-4 space-y-4 p-4">
+        <p className="lbl">Driver</p>
+        <Select label="Select Driver" value={f.driver_id} onChange={set("driver_id")} data-testid="trip-driver"
+          options={(drivers.data || []).map((d) => ({
+            value: d.id, label: `${d.name} · ${d.current_trip ? `On trip ${d.current_trip.trip_no}` : "Available"}` }))} />
+        {driver && (
+          <div className="flex items-center gap-2 text-[13px]">
+            <Badge>{driver.current_trip ? "On Trip" : "Available"}</Badge>
+            <span className="text-muted">{driver.mobile}</span>
+            {driver.balance > 0 && <span className="text-amber-600">Advance {money(driver.balance)}</span>}
+          </div>
+        )}
+      </Card>
+
+      <Card className="mb-4 space-y-4 p-4">
+        <p className="lbl">Amount & Party (optional)</p>
+        <Autocomplete label="Party / Customer" value={partyText} testid="trip-party"
+          onChange={(v) => { setPartyText(v); setF((s) => ({ ...s, party_id: null, party_name: v })); }}
+          onPick={(p) => { setPartyText(p.name); setF((s) => ({ ...s, party_id: p.id, party_name: p.name })); }}
+          fetcher={async (q) => (await api.get("/parties/suggest", { params: { q } })).data}
+          hint="New name will be saved to your party list"
+          renderItem={(p) => (
+            <div className="flex justify-between gap-3">
+              <div><p className="text-[14.5px] font-semibold">{p.name}</p>
+                <p className="text-[12.5px] text-muted">{p.mobile || "no mobile"} · {p.city || "—"}</p></div>
+              <span className="num text-[13px] text-amber-600">{money(p.balance)}</span>
+            </div>
+          )} />
+        <div className="grid gap-3 md:grid-cols-2">
+          <Money label="Trip Amount" value={f.trip_amount} onChange={set("trip_amount")} data-testid="trip-amount" />
+          <Money label="Expected Collection" value={f.expected_collection} onChange={set("expected_collection")} />
+        </div>
+        <TextArea label="Remarks" value={f.remarks} onChange={set("remarks")} />
+      </Card>
+
+      {err && <p data-testid="trip-error" className="mb-3 rounded-lg bg-red-50 px-3 py-2.5 text-[13.5px] font-medium text-red-600">{err}</p>}
+
+      <div className="sticky bottom-20 z-20 flex gap-2 md:bottom-4">
+        <Btn variant="s" className="flex-1" onClick={() => nav("/trips")}>Cancel</Btn>
+        <Btn icon={Truck} className="flex-[2]" data-testid="save-trip" disabled={!canSave || busy} onClick={save}>
+          {busy ? "Saving…" : "Create Trip"}
+        </Btn>
+      </div>
+    </div>
+  );
+}

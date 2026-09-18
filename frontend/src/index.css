@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand: #0b5c4e;
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: #f3f5f7;
+  color: #111820;
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+* { -webkit-tap-highlight-color: transparent; }
+
+::selection { background: #0b5c4e; color: #fff; }
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: #c9d0d7; border-radius: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+@layer components {
+  .fld {
+    @apply w-full rounded-lg border border-line bg-white px-3 py-2.5 text-[15px] text-ink
+      outline-none transition-colors placeholder:text-muted/70 focus:border-brand-500
+      focus:ring-2 focus:ring-brand-500/15 disabled:bg-canvas;
+  }
+  .lbl { @apply mb-1.5 block text-[12.5px] font-semibold uppercase tracking-wide text-muted; }
+  .card { @apply rounded-xl border border-line bg-white shadow-card; }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-[14.5px]
+      font-semibold transition-all duration-150 active:scale-[.98] disabled:opacity-50;
+  }
+  .btn-p { @apply btn bg-brand-500 text-white hover:bg-brand-600 shadow-sm; }
+  .btn-s { @apply btn border border-line bg-white text-ink hover:border-brand-400 hover:text-brand-600; }
+  .btn-g { @apply btn bg-ink-soft text-white hover:bg-ink; }
+  .btn-d { @apply btn border border-red-200 bg-white text-red-600 hover:bg-red-50; }
+  .th { @apply whitespace-nowrap px-3 py-2.5 text-left text-[11.5px] font-bold uppercase tracking-wider text-muted; }
+  .td { @apply whitespace-nowrap px-3 py-3 text-[14px] text-ink; }
+  .num { @apply font-mono tabular-nums; }
+  .row-anim { animation: rise .32s cubic-bezier(.22,.8,.3,1) both; }
+}
+
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes fadein { from { opacity: 0 } to { opacity: 1 } }
+.fadein { animation: fadein .25s ease both; }
+
+/* ---------- print (LR) ---------- */
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; }
+  .print-area { box-shadow: none !important; border: none !important; margin: 0 !important; }
+  @page { size: A4; margin: 10mm; }
+}

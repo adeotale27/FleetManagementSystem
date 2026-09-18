@@ -1,0 +1,1589 @@
+import os
+from typing import Optional
+
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+import ledger as L
+from auth import current_user, make_token, seed_owner, verify_pw
+from db import db, new_id, now_iso, ser, sers, today
+
+app = FastAPI(title="Fleet Management System")
+api = APIRouter(prefix="/api")
+
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
+)
+
+DEFAULT_SETTINGS = {
+    "_id": "settings",
+    "company": {
+        "name": "Shri Transport Company", "logo": "", "address": "",
+        "city": "Hinganghat", "state": "Maharashtra", "mobile": "",
+        "alt_mobile": "", "email": "", "gstin": "", "pan": "",
+        "footer": "Thank you for your business.",
+        "terms": "Goods are transported at owner's risk. Subject to Hinganghat jurisdiction.",
+    },
+    "base_locations": [
+        {"id": "loc_hinganghat", "name": "Hinganghat", "address": "Hinganghat, Maharashtra", "city": "Hinganghat", "state": "Maharashtra", "active": True},
+        {"id": "loc_nagpur", "name": "Nagpur", "address": "Nagpur, Maharashtra", "city": "Nagpur", "state": "Maharashtra", "active": True},
+        {"id": "loc_wadi", "name": "Wadi", "address": "Wadi, Nagpur, Maharashtra", "city": "Wadi", "state": "Maharashtra", "active": True},
+    ],
+    "routes": [
+        {"id": "rt_hng_ngp", "from_id": "loc_hinganghat", "to_id": "loc_nagpur", "name": "Hinganghat > Nagpur", "default_amount": 0, "active": True},
+        {"id": "rt_ngp_hng", "from_id": "loc_nagpur", "to_id": "loc_hinganghat", "name": "Nagpur > Hinganghat", "default_amount": 0, "active": True},
+        {"id": "rt_hng_wadi", "from_id": "loc_hinganghat", "to_id": "loc_wadi", "name": "Hinganghat > Wadi", "default_amount": 0, "active": True},
+        {"id": "rt_wadi_hng", "from_id": "loc_wadi", "to_id": "loc_hinganghat", "name": "Wadi > Hinganghat", "default_amount": 0, "active": True},
+    ],
+    "expense_categories": ["Fuel", "Toll", "Loading", "Unloading", "Parking", "Repair",
+                           "Service", "Food", "Driver Advance", "Employee Advance", "Other"],
+    "payment_modes": ["Cash", "UPI", "Bank", "Cheque", "Other"],
+    "lr": {"prefix": "LR", "next": 1001, "pad": 4},
+    "trip": {"prefix": "TRP", "next": 1001, "pad": 4},
+    "receivable_due_days": 30,
+}
+
+
+async def get_settings():
+    s = await db.settings.find_one({"_id": "settings"})
+    if not s:
+        await db.settings.insert_one(dict(DEFAULT_SETTINGS))
+        s = await db.settings.find_one({"_id": "settings"})
+    return s
+
+
+async def next_number(kind):
+    s = await db.settings.find_one_and_update(
+        {"_id": "settings"}, {"$inc": {f"{kind}.next": 1}}
+    )
+    cfg = s.get(kind, {})
+    return f"{cfg.get('prefix', kind.upper())}{str(cfg.get('next', 1)).zfill(cfg.get('pad', 4))}"
+
+
+@app.on_event("startup")
+async def startup():
+    await seed_owner()
+    await get_settings()
+    for c, f in [("trips", "trip_no"), ("lrs", "lr_no"), ("ledger", "entity_id"),
+                 ("cashbook", "date"), ("parties", "name")]:
+        try:
+            await db[c].create_index(f)
+        except Exception:
+            pass
+
+
+# ------------------------------------------------------------------ auth
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+@api.post("/auth/login")
+async def login(body: LoginIn):
+    user = await db.users.find_one({"_id": body.username.strip().lower()})
+    if not user or not verify_pw(body.password, user["password"]):
+        raise HTTPException(status_code=401, detail="Wrong username or password")
+    return {"token": make_token(user["_id"]), "user": {"username": user["_id"], "name": user.get("name")}}
+
+
+@api.get("/auth/me")
+async def me(u=Depends(current_user)):
+    return u
+
+
+# ------------------------------------------------------------------ settings
+@api.get("/settings")
+async def read_settings(u=Depends(current_user)):
+    return ser(await get_settings())
+
+
+@api.put("/settings")
+async def update_settings(payload: dict, u=Depends(current_user)):
+    payload.pop("id", None)
+    payload.pop("_id", None)
+    await db.settings.update_one({"_id": "settings"}, {"$set": payload})
+    return ser(await get_settings())
+
+
+# ------------------------------------------------------------------ masters
+MASTERS = {
+    "vehicles": ["vehicle_no", "make", "model", "vehicle_type", "owner_name"],
+    "drivers": ["name", "mobile", "licence_no"],
+    "team": ["name", "mobile", "role"],
+    "parties": ["name", "mobile", "city", "gstin"],
+    "fuel_pumps": ["name", "location", "contact"],
+    "partners": ["name", "contact_person", "mobile", "city"],
+}
+LEDGER_ENTITY = {"parties": "party", "drivers": "driver", "team": "employee",
+                 "fuel_pumps": "fuel_pump", "partners": "partner"}
+
+
+def check_master(res):
+    if res not in MASTERS:
+        raise HTTPException(status_code=404, detail="Unknown resource")
+
+
+@api.get("/masters/{res}")
+async def list_master(res: str, q: Optional[str] = None, status: Optional[str] = None,
+                      u=Depends(current_user)):
+    check_master(res)
+    query = {"archived": {"$ne": True}}
+    if status:
+        query["status"] = status
+    if q:
+        query["$or"] = [{f: {"$regex": q, "$options": "i"}} for f in MASTERS[res]]
+    rows = sers(await db[res].find(query).sort("name" if res != "vehicles" else "vehicle_no", 1).to_list(2000))
+    ent = LEDGER_ENTITY.get(res)
+    if ent:
+        bal = await L.balances(ent)
+        for r in rows:
+            b = bal.get(r["id"], {})
+            r["balance"] = b.get("balance", 0)
+            r["last_txn_date"] = b.get("last_date")
+    if res == "vehicles" or res == "drivers":
+        key = "vehicle_id" if res == "vehicles" else "driver_id"
+        active = await db.trips.find(
+            {"status": {"$in": ["Assigned", "Started", "In Transit", "Delivered"]}}
+        ).to_list(500)
+        m = {t.get(key): t for t in active if t.get(key)}
+        for r in rows:
+            t = m.get(r["id"])
+            r["current_trip"] = {"id": t["_id"], "trip_no": t["trip_no"],
+                                 "route": f"{t['from_name']} > {t['to_name']}",
+                                 "status": t["status"]} if t else None
+            if res == "vehicles" and t:
+                r["current_driver_name"] = t.get("driver_name")
+    return rows
+
+
+@api.post("/masters/{res}")
+async def create_master(res: str, payload: dict, u=Depends(current_user)):
+    check_master(res)
+    payload.pop("id", None)
+    if res == "vehicles":
+        payload["vehicle_no"] = (payload.get("vehicle_no") or "").upper().replace(" ", "")
+        if not payload["vehicle_no"]:
+            raise HTTPException(400, "Vehicle number is required")
+        if await db.vehicles.find_one({"vehicle_no": payload["vehicle_no"], "archived": {"$ne": True}}):
+            raise HTTPException(400, "This vehicle number already exists")
+    else:
+        if not (payload.get("name") or "").strip():
+            raise HTTPException(400, "Name is required")
+        payload["name"] = payload["name"].strip()
+    payload.setdefault("status", "Active" if res != "vehicles" else "Available")
+    opening = float(payload.pop("opening_balance", 0) or 0)
+    doc = {"_id": new_id(), **payload, "archived": False, "created_at": now_iso()}
+    await db[res].insert_one(doc)
+    ent = LEDGER_ENTITY.get(res)
+    if ent and opening:
+        await L.post(ent, doc["_id"], payload.get("created_date") or today(),
+                     "Opening balance", debit=max(opening, 0), credit=max(-opening, 0),
+                     ref_type="opening", ref_id=doc["_id"])
+    return ser(doc)
+
+
+@api.get("/masters/{res}/{item_id}")
+async def get_master(res: str, item_id: str, u=Depends(current_user)):
+    check_master(res)
+    doc = await db[res].find_one({"_id": item_id})
+    if not doc:
+        raise HTTPException(404, "Not found")
+    out = ser(doc)
+    ent = LEDGER_ENTITY.get(res)
+    if ent:
+        out["balance"] = (await L.balance_of(ent, item_id))["balance"]
+    return out
+
+
+@api.put("/masters/{res}/{item_id}")
+async def update_master(res: str, item_id: str, payload: dict, u=Depends(current_user)):
+    check_master(res)
+    for k in ("id", "_id", "balance", "current_trip", "opening_balance"):
+        payload.pop(k, None)
+    if res == "vehicles" and payload.get("vehicle_no"):
+        payload["vehicle_no"] = payload["vehicle_no"].upper().replace(" ", "")
+    await db[res].update_one({"_id": item_id}, {"$set": payload})
+    return await get_master(res, item_id, u)
+
+
+@api.delete("/masters/{res}/{item_id}")
+async def archive_master(res: str, item_id: str, u=Depends(current_user)):
+    check_master(res)
+    ent = LEDGER_ENTITY.get(res)
+    if ent:
+        b = await L.balance_of(ent, item_id)
+        if abs(b["balance"]) > 0.5:
+            raise HTTPException(400, "Cannot remove: outstanding balance exists. Settle first.")
+    await db[res].update_one({"_id": item_id}, {"$set": {"archived": True, "status": "Inactive"}})
+    return {"ok": True}
+
+
+# party autocomplete -------------------------------------------------
+@api.get("/parties/suggest")
+async def suggest_parties(q: str = "", u=Depends(current_user)):
+    query = {"archived": {"$ne": True}}
+    if q:
+        query["$or"] = [{"name": {"$regex": q, "$options": "i"}},
+                        {"mobile": {"$regex": q, "$options": "i"}}]
+    rows = sers(await db.parties.find(query).limit(10).to_list(10))
+    bal = await L.balances("party")
+    for r in rows:
+        r["balance"] = bal.get(r["id"], {}).get("balance", 0)
+    return rows
+
+
+async def find_or_create_party(name, mobile=None, extra=None):
+    name = (name or "").strip()
+    if not name:
+        return None, None
+    q = {"name": {"$regex": f"^{name}$", "$options": "i"}, "archived": {"$ne": True}}
+    if mobile:
+        q["mobile"] = mobile
+    doc = await db.parties.find_one(q)
+    if doc:
+        return doc["_id"], doc["name"]
+    doc = {"_id": new_id(), "name": name, "mobile": mobile or "", "status": "Active",
+           "archived": False, "auto_created": True, "created_at": now_iso(),
+           **(extra or {})}
+    await db.parties.insert_one(doc)
+    return doc["_id"], doc["name"]
+
+
+# ------------------------------------------------------------------ trips
+ACTIVE_TRIP = ["Assigned", "Started", "In Transit", "Delivered"]
+
+
+async def resolve_endpoint(payload, key):
+    """key = 'from' | 'to'. Indoor uses base locations, outdoor free/map."""
+    s = await get_settings()
+    loc_id = payload.get(f"{key}_id")
+    if loc_id:
+        loc = next((l for l in s["base_locations"] if l["id"] == loc_id), None)
+        if loc:
+            return loc_id, loc["name"], loc.get("address", "")
+    return None, payload.get(f"{key}_name") or "", payload.get(f"{key}_address") or ""
+
+
+@api.post("/trips")
+async def create_trip(payload: dict, u=Depends(current_user)):
+    s = await get_settings()
+    mode = payload.get("mode", "indoor")
+    if mode == "indoor":
+        route = next((r for r in s["routes"] if r["id"] == payload.get("route_id")), None)
+        if not route:
+            raise HTTPException(400, "Please select a route")
+        locs = {l["id"]: l for l in s["base_locations"]}
+        f, t = locs.get(route["from_id"], {}), locs.get(route["to_id"], {})
+        from_id, from_name, from_addr = route["from_id"], f.get("name", ""), f.get("address", "")
+        to_id, to_name, to_addr = route["to_id"], t.get("name", ""), t.get("address", "")
+    else:
+        from_id, from_name, from_addr = await resolve_endpoint(payload, "from")
+        to_id, to_name, to_addr = await resolve_endpoint(payload, "to")
+        if not from_name or not to_name:
+            raise HTTPException(400, "Source and destination are required")
+
+    # vehicle (existing or temporary)
+    vehicle_id = payload.get("vehicle_id")
+    temp = payload.get("temp_vehicle") or {}
+    if not vehicle_id and temp.get("vehicle_no"):
+        vno = temp["vehicle_no"].upper().replace(" ", "")
+        if payload.get("save_vehicle"):
+            existing = await db.vehicles.find_one({"vehicle_no": vno})
+            if existing:
+                vehicle_id, vehicle_no = existing["_id"], vno
+            else:
+                doc = {"_id": new_id(), "vehicle_no": vno,
+                       "vehicle_type": temp.get("vehicle_type", ""),
+                       "make": temp.get("make", ""), "model": temp.get("model", ""),
+                       "owner_name": temp.get("owner_name", ""), "status": "Available",
+                       "archived": False, "created_at": now_iso()}
+                await db.vehicles.insert_one(doc)
+                vehicle_id, vehicle_no = doc["_id"], vno
+        else:
+            vehicle_no = vno
+    elif vehicle_id:
+        v = await db.vehicles.find_one({"_id": vehicle_id})
+        if not v:
+            raise HTTPException(400, "Vehicle not found")
+        vehicle_no = v["vehicle_no"]
+        busy = await db.trips.find_one({"vehicle_id": vehicle_id, "status": {"$in": ACTIVE_TRIP}})
+        if busy and not payload.get("force"):
+            raise HTTPException(400, f"Vehicle {vehicle_no} is already on trip {busy['trip_no']}")
+    else:
+        raise HTTPException(400, "Select a vehicle or add a temporary vehicle")
+
+    driver_id = payload.get("driver_id")
+    driver_name = payload.get("driver_name", "")
+    if driver_id:
+        d = await db.drivers.find_one({"_id": driver_id})
+        if not d:
+            raise HTTPException(400, "Driver not found")
+        driver_name = d["name"]
+        busy = await db.trips.find_one({"driver_id": driver_id, "status": {"$in": ACTIVE_TRIP}})
+        if busy and not payload.get("force"):
+            raise HTTPException(400, f"{driver_name} is already on trip {busy['trip_no']}")
+
+    party_id = payload.get("party_id")
+    party_name = payload.get("party_name", "")
+    if not party_id and party_name:
+        party_id, party_name = await find_or_create_party(party_name, payload.get("party_mobile"))
+
+    trip_no = await next_number("trip")
+    doc = {
+        "_id": new_id(), "trip_no": trip_no, "mode": mode,
+        "trip_type": payload.get("trip_type", "One Way"),
+        "route_id": payload.get("route_id"),
+        "from_id": from_id, "from_name": from_name, "from_address": from_addr,
+        "from_latlng": payload.get("from_latlng"),
+        "to_id": to_id, "to_name": to_name, "to_address": to_addr,
+        "to_latlng": payload.get("to_latlng"),
+        "start_date": payload.get("start_date") or today(),
+        "start_time": payload.get("start_time", ""),
+        "return_date": payload.get("return_date", ""),
+        "return_time": payload.get("return_time", ""),
+        "vehicle_id": vehicle_id, "vehicle_no": vehicle_no,
+        "temp_vehicle": None if vehicle_id else temp,
+        "driver_id": driver_id, "driver_name": driver_name,
+        "party_id": party_id, "party_name": party_name,
+        "trip_amount": float(payload.get("trip_amount") or 0),
+        "expected_collection": float(payload.get("expected_collection") or 0),
+        "remarks": payload.get("remarks", ""),
+        "status": payload.get("status") or ("Assigned" if driver_id else "New"),
+        "posted": False, "created_at": now_iso(),
+    }
+    await db.trips.insert_one(doc)
+    await sync_assets(doc)
+    return ser(doc)
+
+
+async def sync_assets(trip):
+    on = trip["status"] in ACTIVE_TRIP
+    if trip.get("vehicle_id"):
+        v = await db.vehicles.find_one({"_id": trip["vehicle_id"]})
+        if v and v.get("status") in (None, "Available", "On Trip"):
+            await db.vehicles.update_one({"_id": trip["vehicle_id"]},
+                                         {"$set": {"status": "On Trip" if on else "Available"}})
+    if trip.get("driver_id"):
+        await db.drivers.update_one({"_id": trip["driver_id"]},
+                                    {"$set": {"status": "On Trip" if on else "Active"}})
+
+
+@api.get("/trips")
+async def list_trips(q: Optional[str] = None, status: Optional[str] = None,
+                     vehicle_id: Optional[str] = None, driver_id: Optional[str] = None,
+                     route_id: Optional[str] = None, mode: Optional[str] = None,
+                     trip_type: Optional[str] = None, frm: Optional[str] = None,
+                     to: Optional[str] = None, limit: int = 300, u=Depends(current_user)):
+    query = {}
+    for k, v in [("status", status), ("vehicle_id", vehicle_id), ("driver_id", driver_id),
+                 ("route_id", route_id), ("mode", mode), ("trip_type", trip_type)]:
+        if v:
+            query[k] = v
+    if frm or to:
+        query["start_date"] = {}
+        if frm:
+            query["start_date"]["$gte"] = frm
+        if to:
+            query["start_date"]["$lte"] = to
+    if q:
+        query["$or"] = [{f: {"$regex": q, "$options": "i"}} for f in
+                        ("trip_no", "vehicle_no", "driver_name", "from_name", "to_name", "party_name")]
+    rows = sers(await db.trips.find(query).sort("created_at", -1).to_list(limit))
+    lr_counts = {}
+    async for r in db.lrs.aggregate([{"$match": {"cancelled": False}},
+                                     {"$group": {"_id": "$trip_id", "n": {"$sum": 1}}}]):
+        lr_counts[r["_id"]] = r["n"]
+    for r in rows:
+        r["lr_count"] = lr_counts.get(r["id"], 0)
+    return rows
+
+
+@api.get("/trips/{trip_id}")
+async def get_trip(trip_id: str, u=Depends(current_user)):
+    t = await db.trips.find_one({"_id": trip_id})
+    if not t:
+        raise HTTPException(404, "Trip not found")
+    out = ser(t)
+    out["lrs"] = sers(await db.lrs.find({"trip_id": trip_id}).to_list(100))
+    out["expenses"] = sers(await db.expenses.find({"trip_id": trip_id, "cancelled": False}).to_list(100))
+    out["fuel"] = sers(await db.fuel.find({"trip_id": trip_id, "cancelled": False}).to_list(100))
+    return out
+
+
+@api.put("/trips/{trip_id}")
+async def update_trip(trip_id: str, payload: dict, u=Depends(current_user)):
+    t = await db.trips.find_one({"_id": trip_id})
+    if not t:
+        raise HTTPException(404, "Trip not found")
+    for k in ("id", "_id", "trip_no", "posted", "lrs", "expenses", "fuel"):
+        payload.pop(k, None)
+    if payload.get("driver_id") and payload["driver_id"] != t.get("driver_id"):
+        d = await db.drivers.find_one({"_id": payload["driver_id"]})
+        payload["driver_name"] = d["name"] if d else ""
+    await db.trips.update_one({"_id": trip_id}, {"$set": payload})
+    t = await db.trips.find_one({"_id": trip_id})
+    await sync_assets(t)
+    # trip amount becomes receivable once completed (only if no LR carries the freight)
+    if t["status"] == "Completed" and not t.get("posted") and t.get("party_id") and t.get("trip_amount"):
+        has_lr = await db.lrs.find_one({"trip_id": trip_id, "cancelled": False})
+        if not has_lr:
+            await L.post("party", t["party_id"], t.get("start_date") or today(),
+                         f"Trip {t['trip_no']} {t['from_name']} > {t['to_name']}",
+                         debit=t["trip_amount"], ref_type="trip", ref_id=trip_id)
+            await db.trips.update_one({"_id": trip_id}, {"$set": {"posted": True}})
+    return await get_trip(trip_id, u)
+
+
+@api.post("/trips/{trip_id}/cancel")
+async def cancel_trip(trip_id: str, u=Depends(current_user)):
+    t = await db.trips.find_one({"_id": trip_id})
+    if not t:
+        raise HTTPException(404, "Trip not found")
+    await L.reverse("trip", trip_id)
+    await db.trips.update_one({"_id": trip_id}, {"$set": {"status": "Cancelled", "posted": False}})
+    t["status"] = "Cancelled"
+    await sync_assets(t)
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ LR
+@api.post("/lrs")
+async def create_lr(payload: dict, u=Depends(current_user)):
+    trip = None
+    if payload.get("trip_id"):
+        trip = await db.trips.find_one({"_id": payload["trip_id"]})
+    sender = payload.get("sender") or {}
+    party_id = sender.get("party_id")
+    if not party_id:
+        party_id, pname = await find_or_create_party(
+            sender.get("name"), sender.get("mobile"),
+            {"address": sender.get("address", ""), "city": sender.get("city", ""),
+             "state": sender.get("state", ""), "pincode": sender.get("pincode", ""),
+             "gstin": sender.get("gstin", "")})
+        if not party_id:
+            raise HTTPException(400, "Sender name is required")
+        sender["party_id"] = party_id
+        sender["name"] = pname
+    else:
+        p = await db.parties.find_one({"_id": party_id})
+        if p:
+            sender["name"] = p["name"]
+            sender.setdefault("mobile", p.get("mobile", ""))
+
+    items = payload.get("items") or []
+    for it in items:
+        it["quantity"] = float(it.get("quantity") or 0)
+        it["weight"] = float(it.get("weight") or 0)
+        it["rate"] = float(it.get("rate") or 0)
+        it["amount"] = round(it.get("amount") if it.get("amount") else it["quantity"] * it["rate"], 2)
+    freight = float(payload.get("freight") or sum(i["amount"] for i in items) or 0)
+
+    lr_no = payload.get("lr_no") or await next_number("lr")
+    dt = payload.get("date") or (trip or {}).get("start_date") or today()
+    doc = {
+        "_id": new_id(), "lr_no": lr_no, "date": dt,
+        "trip_id": payload.get("trip_id"), "trip_no": (trip or {}).get("trip_no", ""),
+        "from_name": payload.get("from_name") or (trip or {}).get("from_name", ""),
+        "to_name": payload.get("to_name") or (trip or {}).get("to_name", ""),
+        "vehicle_no": payload.get("vehicle_no") or (trip or {}).get("vehicle_no", ""),
+        "driver_id": payload.get("driver_id") or (trip or {}).get("driver_id"),
+        "driver_name": payload.get("driver_name") or (trip or {}).get("driver_name", ""),
+        "sender": sender, "receiver": payload.get("receiver") or {},
+        "goods_description": payload.get("goods_description", ""),
+        "articles": payload.get("articles", ""),
+        "quantity": float(payload.get("quantity") or sum(i["quantity"] for i in items) or 0),
+        "weight": float(payload.get("weight") or sum(i["weight"] for i in items) or 0),
+        "items": items, "freight": freight,
+        "freight_type": payload.get("freight_type", "NOT PAID"),
+        "payment_status": payload.get("payment_status") or ("Paid" if payload.get("freight_type") == "PAID" else "Pending"),
+        "due_date": payload.get("due_date", ""),
+        "remarks": payload.get("remarks", ""),
+        "optional": payload.get("optional") or {},
+        "cancelled": False, "created_at": now_iso(),
+    }
+    await db.lrs.insert_one(doc)
+    if freight:
+        await L.post("party", party_id, dt, f"LR {lr_no} {doc['from_name']} > {doc['to_name']}",
+                     debit=freight, ref_type="lr", ref_id=doc["_id"])
+        if doc["payment_status"] == "Paid":
+            await receipt_core({
+                "date": dt, "party_id": party_id, "lr_id": doc["_id"], "lr_no": lr_no,
+                "trip_id": doc["trip_id"], "amount": freight, "mode": payload.get("paid_mode", "Cash"),
+                "collected_by_type": "office", "remarks": f"Freight paid with LR {lr_no}",
+            })
+    return ser(doc)
+
+
+@api.get("/lrs")
+async def list_lrs(q: Optional[str] = None, party_id: Optional[str] = None,
+                   payment_status: Optional[str] = None, frm: Optional[str] = None,
+                   to: Optional[str] = None, trip_id: Optional[str] = None,
+                   limit: int = 300, u=Depends(current_user)):
+    query = {}
+    if party_id:
+        query["sender.party_id"] = party_id
+    if payment_status:
+        query["payment_status"] = payment_status
+    if trip_id:
+        query["trip_id"] = trip_id
+    if frm or to:
+        query["date"] = {}
+        if frm:
+            query["date"]["$gte"] = frm
+        if to:
+            query["date"]["$lte"] = to
+    if q:
+        query["$or"] = [{f: {"$regex": q, "$options": "i"}} for f in
+                        ("lr_no", "vehicle_no", "sender.name", "receiver.name",
+                         "from_name", "to_name", "goods_description")]
+    rows = sers(await db.lrs.find(query).sort("created_at", -1).to_list(limit))
+    paid = {}
+    async for r in db.receipts.aggregate([{"$match": {"cancelled": False, "lr_id": {"$ne": None}}},
+                                          {"$group": {"_id": "$lr_id", "t": {"$sum": "$amount"}}}]):
+        paid[r["_id"]] = r["t"]
+    for r in rows:
+        r["received"] = round(paid.get(r["id"], 0), 2)
+        r["outstanding"] = round(r["freight"] - r["received"], 2)
+    return rows
+
+
+@api.get("/lrs/{lr_id}")
+async def get_lr(lr_id: str, u=Depends(current_user)):
+    d = await db.lrs.find_one({"_id": lr_id})
+    if not d:
+        raise HTTPException(404, "LR not found")
+    out = ser(d)
+    out["company"] = (await get_settings())["company"]
+    rec = await db.receipts.find({"lr_id": lr_id, "cancelled": False}).to_list(100)
+    out["received"] = round(sum(r["amount"] for r in rec), 2)
+    out["outstanding"] = round(out["freight"] - out["received"], 2)
+    out["receipts"] = sers(rec)
+    return out
+
+
+@api.put("/lrs/{lr_id}")
+async def update_lr(lr_id: str, payload: dict, u=Depends(current_user)):
+    d = await db.lrs.find_one({"_id": lr_id})
+    if not d:
+        raise HTTPException(404, "LR not found")
+    for k in ("id", "_id", "lr_no", "company", "received", "outstanding", "receipts"):
+        payload.pop(k, None)
+    if "freight" in payload and float(payload["freight"]) != d["freight"]:
+        await db.ledger.update_many({"ref_type": "lr", "ref_id": lr_id, "credit": 0},
+                                    {"$set": {"debit": float(payload["freight"])}})
+    await db.lrs.update_one({"_id": lr_id}, {"$set": payload})
+    return await get_lr(lr_id, u)
+
+
+@api.post("/lrs/{lr_id}/cancel")
+async def cancel_lr(lr_id: str, u=Depends(current_user)):
+    await L.reverse("lr", lr_id)
+    await db.lrs.update_one({"_id": lr_id}, {"$set": {"cancelled": True, "payment_status": "Cancelled"}})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ receipts / collections
+async def receipt_core(p):
+    mode = p.get("mode", "Cash")
+    by_type = p.get("collected_by_type", "office")
+    amount = float(p.get("amount") or 0)
+    if amount <= 0:
+        raise HTTPException(400, "Amount must be more than zero")
+    if not p.get("party_id"):
+        raise HTTPException(400, "Please select a party")
+    dt = p.get("date") or today()
+    doc = {"_id": new_id(), "date": dt, "party_id": p["party_id"],
+           "party_name": p.get("party_name", ""), "lr_id": p.get("lr_id"),
+           "lr_no": p.get("lr_no", ""), "trip_id": p.get("trip_id"),
+           "amount": amount, "mode": mode, "reference": p.get("reference", ""),
+           "collected_by_type": by_type, "deewanji_id": p.get("deewanji_id"),
+           "deewanji_name": p.get("deewanji_name", ""), "remarks": p.get("remarks", ""),
+           "cancelled": False, "created_at": now_iso()}
+    if not doc["party_name"]:
+        party = await db.parties.find_one({"_id": p["party_id"]})
+        doc["party_name"] = party["name"] if party else ""
+    if by_type == "deewanji" and doc["deewanji_id"] and not doc["deewanji_name"]:
+        dw = await db.team.find_one({"_id": doc["deewanji_id"]})
+        doc["deewanji_name"] = dw["name"] if dw else ""
+    await db.receipts.insert_one(doc)
+    desc = f"Payment received {mode}" + (f" against LR {doc['lr_no']}" if doc["lr_no"] else "")
+    if by_type == "deewanji":
+        desc += f" via {doc['deewanji_name']}"
+    await L.post("party", doc["party_id"], dt, desc, credit=amount,
+                 ref_type="receipt", ref_id=doc["_id"])
+    if by_type == "deewanji":
+        account = "deewanji"
+    else:
+        account = "cash" if mode in ("Cash", "Other") else "bank"
+    await L.cash(account, "in", amount, dt, desc, "receipt", doc["_id"],
+                 deewanji_id=doc.get("deewanji_id"), mode=mode)
+    if doc["lr_id"]:
+        lr = await db.lrs.find_one({"_id": doc["lr_id"]})
+        if lr:
+            rec = await db.receipts.find({"lr_id": doc["lr_id"], "cancelled": False}).to_list(200)
+            tot = sum(r["amount"] for r in rec)
+            st = "Paid" if tot >= lr["freight"] - 0.5 else ("Partial" if tot > 0 else "Pending")
+            await db.lrs.update_one({"_id": doc["lr_id"]}, {"$set": {"payment_status": st}})
+    return ser(doc)
+
+
+@api.post("/receipts")
+async def create_receipt(payload: dict, u=Depends(current_user)):
+    return await receipt_core(payload)
+
+
+@api.get("/receipts")
+async def list_receipts(frm: Optional[str] = None, to: Optional[str] = None,
+                        party_id: Optional[str] = None, deewanji_id: Optional[str] = None,
+                        mode: Optional[str] = None, q: Optional[str] = None,
+                        limit: int = 500, u=Depends(current_user)):
+    query = {}
+    if party_id:
+        query["party_id"] = party_id
+    if deewanji_id:
+        query["deewanji_id"] = deewanji_id
+    if mode:
+        query["mode"] = mode
+    if frm or to:
+        query["date"] = {}
+        if frm:
+            query["date"]["$gte"] = frm
+        if to:
+            query["date"]["$lte"] = to
+    if q:
+        query["$or"] = [{f: {"$regex": q, "$options": "i"}} for f in
+                        ("party_name", "lr_no", "reference", "deewanji_name")]
+    return sers(await db.receipts.find(query).sort("created_at", -1).to_list(limit))
+
+
+@api.post("/receipts/{rid}/cancel")
+async def cancel_receipt(rid: str, u=Depends(current_user)):
+    r = await db.receipts.find_one({"_id": rid})
+    if not r:
+        raise HTTPException(404, "Not found")
+    await L.reverse("receipt", rid)
+    await db.receipts.update_one({"_id": rid}, {"$set": {"cancelled": True}})
+    if r.get("lr_id"):
+        lr = await db.lrs.find_one({"_id": r["lr_id"]})
+        rec = await db.receipts.find({"lr_id": r["lr_id"], "cancelled": False}).to_list(200)
+        tot = sum(x["amount"] for x in rec)
+        if lr:
+            st = "Paid" if tot >= lr["freight"] - 0.5 else ("Partial" if tot > 0 else "Pending")
+            await db.lrs.update_one({"_id": r["lr_id"]}, {"$set": {"payment_status": st}})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ handovers
+@api.post("/handovers")
+async def create_handover(payload: dict, u=Depends(current_user)):
+    amount = float(payload.get("amount") or 0)
+    if amount <= 0:
+        raise HTTPException(400, "Amount must be more than zero")
+    if not payload.get("deewanji_id"):
+        raise HTTPException(400, "Select the Deewanji")
+    dw = await db.team.find_one({"_id": payload["deewanji_id"]})
+    held = (await L.deewanji_cash()).get(payload["deewanji_id"], 0)
+    if amount > held + 0.5:
+        raise HTTPException(400, f"Only Rs {held:,.0f} is with {dw['name'] if dw else 'this person'}")
+    dt = payload.get("date") or today()
+    mode = payload.get("mode", "Cash")
+    doc = {"_id": new_id(), "date": dt, "deewanji_id": payload["deewanji_id"],
+           "deewanji_name": dw["name"] if dw else "", "amount": amount,
+           "to": payload.get("to", "Office"), "mode": mode,
+           "reference": payload.get("reference", ""), "remarks": payload.get("remarks", ""),
+           "cancelled": False, "created_at": now_iso()}
+    await db.handovers.insert_one(doc)
+    desc = f"Handover from {doc['deewanji_name']} to {doc['to']}"
+    await L.cash("deewanji", "out", amount, dt, desc, "handover", doc["_id"],
+                 deewanji_id=doc["deewanji_id"], mode=mode)
+    await L.cash("cash" if mode == "Cash" else "bank", "in", amount, dt, desc,
+                 "handover", doc["_id"], mode=mode)
+    return ser(doc)
+
+
+@api.get("/handovers")
+async def list_handovers(frm: Optional[str] = None, to: Optional[str] = None,
+                         deewanji_id: Optional[str] = None, u=Depends(current_user)):
+    query = {}
+    if deewanji_id:
+        query["deewanji_id"] = deewanji_id
+    if frm or to:
+        query["date"] = {}
+        if frm:
+            query["date"]["$gte"] = frm
+        if to:
+            query["date"]["$lte"] = to
+    return sers(await db.handovers.find(query).sort("created_at", -1).to_list(500))
+
+
+@api.post("/handovers/{hid}/cancel")
+async def cancel_handover(hid: str, u=Depends(current_user)):
+    await L.reverse("handover", hid)
+    await db.handovers.update_one({"_id": hid}, {"$set": {"cancelled": True}})
+    return {"ok": True}
+
+
+@api.get("/deewanji/daily")
+async def deewanji_daily(frm: Optional[str] = None, to: Optional[str] = None,
+                         u=Depends(current_user)):
+    frm = frm or today()
+    to = to or today()
+    rec = await db.receipts.find({"cancelled": False, "collected_by_type": "deewanji",
+                                 "date": {"$gte": frm, "$lte": to}}).to_list(2000)
+    hand = await db.handovers.find({"cancelled": False, "date": {"$gte": frm, "$lte": to}}).to_list(2000)
+    held = await L.deewanji_cash()
+    team = {t["_id"]: t for t in await db.team.find({"archived": {"$ne": True}}).to_list(200)}
+    days = {}
+    for r in rec:
+        k = (r["date"], r.get("deewanji_id") or "unknown")
+        d = days.setdefault(k, {"date": r["date"], "deewanji_id": r.get("deewanji_id"),
+                                "deewanji_name": r.get("deewanji_name") or "-",
+                                "cash": 0, "upi": 0, "bank": 0, "other": 0,
+                                "total": 0, "handed_over": 0, "entries": 0})
+        m = (r.get("mode") or "Cash").lower()
+        d[m if m in ("cash", "upi", "bank") else "other"] += r["amount"]
+        d["total"] += r["amount"]
+        d["entries"] += 1
+    for h in hand:
+        k = (h["date"], h.get("deewanji_id") or "unknown")
+        d = days.setdefault(k, {"date": h["date"], "deewanji_id": h.get("deewanji_id"),
+                                "deewanji_name": h.get("deewanji_name") or "-",
+                                "cash": 0, "upi": 0, "bank": 0, "other": 0,
+                                "total": 0, "handed_over": 0, "entries": 0})
+        d["handed_over"] += h["amount"]
+    rows = sorted(days.values(), key=lambda r: (r["date"], r["deewanji_name"]), reverse=True)
+    for r in rows:
+        r["cash_with_deewanji"] = round(held.get(r["deewanji_id"], 0), 2)
+    people = [{"id": k, "name": v["name"], "cash_with": round(held.get(k, 0), 2)}
+              for k, v in team.items() if (v.get("role") or "").lower() == "deewanji" or held.get(k)]
+    return {"rows": rows, "people": people, "total_held": round(sum(held.values()), 2)}
+
+
+# ------------------------------------------------------------------ expenses
+@api.post("/expenses")
+async def create_expense(payload: dict, u=Depends(current_user)):
+    amount = float(payload.get("amount") or 0)
+    if amount <= 0:
+        raise HTTPException(400, "Amount must be more than zero")
+    dt = payload.get("date") or today()
+    mode = payload.get("mode", "Cash")
+    cat = payload.get("category") or "Other"
+    doc = {"_id": new_id(), "date": dt, "category": cat, "amount": amount,
+           "vehicle_id": payload.get("vehicle_id"), "vehicle_no": payload.get("vehicle_no", ""),
+           "trip_id": payload.get("trip_id"), "trip_no": payload.get("trip_no", ""),
+           "driver_id": payload.get("driver_id"), "employee_id": payload.get("employee_id"),
+           "vendor": payload.get("vendor", ""), "mode": mode,
+           "remarks": payload.get("remarks", ""), "cancelled": False, "created_at": now_iso()}
+    if doc["vehicle_id"] and not doc["vehicle_no"]:
+        v = await db.vehicles.find_one({"_id": doc["vehicle_id"]})
+        doc["vehicle_no"] = v["vehicle_no"] if v else ""
+    await db.expenses.insert_one(doc)
+    desc = f"{cat} expense" + (f" - {doc['vehicle_no']}" if doc["vehicle_no"] else "") + \
+           (f" ({doc['remarks']})" if doc["remarks"] else "")
+    await L.cash("cash" if mode in ("Cash", "Other") else "bank", "out", amount, dt, desc,
+                 "expense", doc["_id"], mode=mode)
+    if cat == "Driver Advance" and doc["driver_id"]:
+        await L.post("driver", doc["driver_id"], dt, "Advance given (expense entry)",
+                     debit=amount, ref_type="expense", ref_id=doc["_id"])
+    if cat == "Employee Advance" and doc["employee_id"]:
+        await L.post("employee", doc["employee_id"], dt, "Advance given (expense entry)",
+                     debit=amount, ref_type="expense", ref_id=doc["_id"])
+    return ser(doc)
+
+
+@api.get("/expenses")
+async def list_expenses(frm: Optional[str] = None, to: Optional[str] = None,
+                        category: Optional[str] = None, vehicle_id: Optional[str] = None,
+                        trip_id: Optional[str] = None, q: Optional[str] = None,
+                        limit: int = 500, u=Depends(current_user)):
+    query = {}
+    for k, v in [("category", category), ("vehicle_id", vehicle_id), ("trip_id", trip_id)]:
+        if v:
+            query[k] = v
+    if frm or to:
+        query["date"] = {}
+        if frm:
+            query["date"]["$gte"] = frm
+        if to:
+            query["date"]["$lte"] = to
+    if q:
+        query["$or"] = [{f: {"$regex": q, "$options": "i"}} for f in
+                        ("category", "vehicle_no", "vendor", "remarks", "trip_no")]
+    return sers(await db.expenses.find(query).sort("created_at", -1).to_list(limit))
+
+
+@api.post("/expenses/{eid}/cancel")
+async def cancel_expense(eid: str, u=Depends(current_user)):
+    await L.reverse("expense", eid)
+    await db.expenses.update_one({"_id": eid}, {"$set": {"cancelled": True}})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ fuel
+@api.post("/fuel")
+async def create_fuel(payload: dict, u=Depends(current_user)):
+    qty = float(payload.get("quantity") or 0)
+    rate = float(payload.get("rate") or 0)
+    amount = float(payload.get("amount") or round(qty * rate, 2))
+    if amount <= 0:
+        raise HTTPException(400, "Enter quantity and rate")
+    dt = payload.get("date") or today()
+    mode = payload.get("mode", "Credit")
+    v = await db.vehicles.find_one({"_id": payload.get("vehicle_id")}) if payload.get("vehicle_id") else None
+    pump = await db.fuel_pumps.find_one({"_id": payload.get("pump_id")}) if payload.get("pump_id") else None
+    doc = {"_id": new_id(), "date": dt, "vehicle_id": payload.get("vehicle_id"),
+           "vehicle_no": v["vehicle_no"] if v else payload.get("vehicle_no", ""),
+           "pump_id": payload.get("pump_id"), "pump_name": pump["name"] if pump else "",
+           "trip_id": payload.get("trip_id"), "quantity": qty, "rate": rate, "amount": amount,
+           "odometer": float(payload.get("odometer") or 0), "mode": mode,
+           "remarks": payload.get("remarks", ""), "cancelled": False, "created_at": now_iso()}
+    await db.fuel.insert_one(doc)
+    desc = f"Diesel {qty:g} L @ {rate:g} - {doc['vehicle_no']}"
+    if mode == "Credit" and doc["pump_id"]:
+        await L.post("fuel_pump", doc["pump_id"], dt, desc, credit=amount,
+                     ref_type="fuel", ref_id=doc["_id"])
+    else:
+        await L.cash("cash" if mode in ("Cash", "Other") else "bank", "out", amount, dt,
+                     desc, "fuel", doc["_id"], mode=mode)
+        if doc["pump_id"]:
+            await L.post("fuel_pump", doc["pump_id"], dt, desc + " (paid)", credit=amount,
+                         ref_type="fuel", ref_id=doc["_id"])
+            await L.post("fuel_pump", doc["pump_id"], dt, f"Paid {mode} for above", debit=amount,
+                         ref_type="fuel", ref_id=doc["_id"])
+    return ser(doc)
+
+
+@api.get("/fuel")
+async def list_fuel(frm: Optional[str] = None, to: Optional[str] = None,
+                    vehicle_id: Optional[str] = None, pump_id: Optional[str] = None,
+                    q: Optional[str] = None, limit: int = 500, u=Depends(current_user)):
+    query = {}
+    for k, v in [("vehicle_id", vehicle_id), ("pump_id", pump_id)]:
+        if v:
+            query[k] = v
+    if frm or to:
+        query["date"] = {}
+        if frm:
+            query["date"]["$gte"] = frm
+        if to:
+            query["date"]["$lte"] = to
+    if q:
+        query["$or"] = [{f: {"$regex": q, "$options": "i"}} for f in ("vehicle_no", "pump_name", "remarks")]
+    return sers(await db.fuel.find(query).sort("created_at", -1).to_list(limit))
+
+
+@api.post("/fuel/{fid}/cancel")
+async def cancel_fuel(fid: str, u=Depends(current_user)):
+    await L.reverse("fuel", fid)
+    await db.fuel.update_one({"_id": fid}, {"$set": {"cancelled": True}})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ payments out (payables)
+@api.post("/payments")
+async def create_payment(payload: dict, u=Depends(current_user)):
+    """Money paid out to fuel pump / 3PL partner / driver / employee / vendor."""
+    amount = float(payload.get("amount") or 0)
+    if amount <= 0:
+        raise HTTPException(400, "Amount must be more than zero")
+    etype = payload.get("entity_type")
+    if etype not in ("fuel_pump", "partner", "driver", "employee", "vendor"):
+        raise HTTPException(400, "Select whom you are paying")
+    dt = payload.get("date") or today()
+    mode = payload.get("mode", "Cash")
+    name = payload.get("entity_name", "")
+    if payload.get("entity_id") and not name:
+        coll = {"fuel_pump": "fuel_pumps", "partner": "partners",
+                "driver": "drivers", "employee": "team"}.get(etype)
+        if coll:
+            d = await db[coll].find_one({"_id": payload["entity_id"]})
+            name = d["name"] if d else ""
+    doc = {"_id": new_id(), "date": dt, "entity_type": etype,
+           "entity_id": payload.get("entity_id"), "entity_name": name,
+           "purpose": payload.get("purpose", ""), "amount": amount, "mode": mode,
+           "reference": payload.get("reference", ""), "remarks": payload.get("remarks", ""),
+           "cancelled": False, "created_at": now_iso()}
+    await db.payments.insert_one(doc)
+    desc = f"Paid {mode} to {name or etype}" + (f" - {doc['purpose']}" if doc["purpose"] else "")
+    await L.cash("cash" if mode in ("Cash", "Other") else "bank", "out", amount, dt, desc,
+                 "payment", doc["_id"], mode=mode)
+    if payload.get("entity_id") and etype != "vendor":
+        await L.post(etype, payload["entity_id"], dt, desc, debit=amount,
+                     ref_type="payment", ref_id=doc["_id"])
+    return ser(doc)
+
+
+@api.get("/payments")
+async def list_payments(frm: Optional[str] = None, to: Optional[str] = None,
+                        entity_type: Optional[str] = None, entity_id: Optional[str] = None,
+                        limit: int = 500, u=Depends(current_user)):
+    query = {}
+    for k, v in [("entity_type", entity_type), ("entity_id", entity_id)]:
+        if v:
+            query[k] = v
+    if frm or to:
+        query["date"] = {}
+        if frm:
+            query["date"]["$gte"] = frm
+        if to:
+            query["date"]["$lte"] = to
+    return sers(await db.payments.find(query).sort("created_at", -1).to_list(limit))
+
+
+@api.post("/payments/{pid}/cancel")
+async def cancel_payment(pid: str, u=Depends(current_user)):
+    await L.reverse("payment", pid)
+    await db.payments.update_one({"_id": pid}, {"$set": {"cancelled": True}})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ advances (driver / employee)
+@api.post("/advances")
+async def create_advance(payload: dict, u=Depends(current_user)):
+    amount = float(payload.get("amount") or 0)
+    if amount <= 0:
+        raise HTTPException(400, "Amount must be more than zero")
+    etype = payload.get("entity_type")
+    if etype not in ("driver", "employee"):
+        raise HTTPException(400, "Invalid person type")
+    kind = payload.get("kind", "Advance")  # Advance | Loan | Pre-salary | Repayment | Deduction | Salary Paid
+    dt = payload.get("date") or today()
+    mode = payload.get("mode", "Cash")
+    coll = "drivers" if etype == "driver" else "team"
+    p = await db[coll].find_one({"_id": payload.get("entity_id")})
+    if not p:
+        raise HTTPException(400, "Person not found")
+    doc = {"_id": new_id(), "date": dt, "entity_type": etype, "entity_id": p["_id"],
+           "entity_name": p["name"], "kind": kind, "amount": amount, "mode": mode,
+           "remarks": payload.get("remarks", ""), "cancelled": False, "created_at": now_iso()}
+    await db.advances.insert_one(doc)
+    out_kinds = ("Advance", "Loan", "Pre-salary")
+    if kind in out_kinds:
+        await L.post(etype, p["_id"], dt, f"{kind} given", debit=amount,
+                     ref_type="advance", ref_id=doc["_id"])
+        await L.cash("cash" if mode in ("Cash", "Other") else "bank", "out", amount, dt,
+                     f"{kind} to {p['name']}", "advance", doc["_id"], mode=mode)
+    elif kind == "Salary Paid":
+        await L.cash("cash" if mode in ("Cash", "Other") else "bank", "out", amount, dt,
+                     f"Salary paid to {p['name']}", "advance", doc["_id"], mode=mode)
+        await db.advances.update_one({"_id": doc["_id"]}, {"$set": {"salary_payment": True}})
+    else:  # Repayment / Deduction
+        await L.post(etype, p["_id"], dt, kind, credit=amount,
+                     ref_type="advance", ref_id=doc["_id"])
+        if kind == "Repayment":
+            await L.cash("cash" if mode in ("Cash", "Other") else "bank", "in", amount, dt,
+                         f"{kind} from {p['name']}", "advance", doc["_id"], mode=mode)
+    return ser(doc)
+
+
+@api.get("/advances")
+async def list_advances(entity_type: Optional[str] = None, entity_id: Optional[str] = None,
+                        frm: Optional[str] = None, to: Optional[str] = None,
+                        limit: int = 500, u=Depends(current_user)):
+    query = {}
+    for k, v in [("entity_type", entity_type), ("entity_id", entity_id)]:
+        if v:
+            query[k] = v
+    if frm or to:
+        query["date"] = {}
+        if frm:
+            query["date"]["$gte"] = frm
+        if to:
+            query["date"]["$lte"] = to
+    return sers(await db.advances.find(query).sort("created_at", -1).to_list(limit))
+
+
+@api.post("/advances/{aid}/cancel")
+async def cancel_advance(aid: str, u=Depends(current_user)):
+    await L.reverse("advance", aid)
+    await db.advances.update_one({"_id": aid}, {"$set": {"cancelled": True}})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ 3PL trips
+@api.post("/tpl")
+async def create_tpl(payload: dict, u=Depends(current_user)):
+    cust_amt = float(payload.get("customer_amount") or 0)
+    partner_amt = float(payload.get("partner_amount") or 0)
+    dt = payload.get("date") or today()
+    party_id = payload.get("party_id")
+    if not party_id and payload.get("party_name"):
+        party_id, _ = await find_or_create_party(payload["party_name"], payload.get("party_mobile"))
+    partner = await db.partners.find_one({"_id": payload.get("partner_id")}) if payload.get("partner_id") else None
+    party = await db.parties.find_one({"_id": party_id}) if party_id else None
+    doc = {"_id": new_id(), "date": dt, "party_id": party_id,
+           "party_name": party["name"] if party else payload.get("party_name", ""),
+           "partner_id": payload.get("partner_id"),
+           "partner_name": partner["name"] if partner else "",
+           "vehicle_no": payload.get("vehicle_no", ""), "driver_name": payload.get("driver_name", ""),
+           "from_name": payload.get("from_name", ""), "to_name": payload.get("to_name", ""),
+           "customer_amount": cust_amt, "partner_amount": partner_amt,
+           "expenses": float(payload.get("expenses") or 0),
+           "remarks": payload.get("remarks", ""), "status": payload.get("status", "Active"),
+           "cancelled": False, "created_at": now_iso()}
+    doc["margin"] = round(cust_amt - partner_amt - doc["expenses"], 2)
+    await db.tpl.insert_one(doc)
+    if party_id and cust_amt:
+        await L.post("party", party_id, dt,
+                     f"3PL trip {doc['from_name']} > {doc['to_name']} ({doc['partner_name']})",
+                     debit=cust_amt, ref_type="tpl", ref_id=doc["_id"])
+    if doc["partner_id"] and partner_amt:
+        await L.post("partner", doc["partner_id"], dt,
+                     f"3PL trip {doc['from_name']} > {doc['to_name']} for {doc['party_name']}",
+                     credit=partner_amt, ref_type="tpl", ref_id=doc["_id"])
+    return ser(doc)
+
+
+@api.get("/tpl")
+async def list_tpl(frm: Optional[str] = None, to: Optional[str] = None,
+                   partner_id: Optional[str] = None, q: Optional[str] = None,
+                   u=Depends(current_user)):
+    query = {}
+    if partner_id:
+        query["partner_id"] = partner_id
+    if frm or to:
+        query["date"] = {}
+        if frm:
+            query["date"]["$gte"] = frm
+        if to:
+            query["date"]["$lte"] = to
+    if q:
+        query["$or"] = [{f: {"$regex": q, "$options": "i"}} for f in
+                        ("party_name", "partner_name", "vehicle_no", "from_name", "to_name")]
+    return sers(await db.tpl.find(query).sort("created_at", -1).to_list(500))
+
+
+@api.post("/tpl/{tid}/cancel")
+async def cancel_tpl(tid: str, u=Depends(current_user)):
+    await L.reverse("tpl", tid)
+    await db.tpl.update_one({"_id": tid}, {"$set": {"cancelled": True, "status": "Cancelled"}})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ ledger
+@api.get("/ledger/{etype}/{eid}")
+async def read_ledger(etype: str, eid: str, frm: Optional[str] = None,
+                      to: Optional[str] = None, u=Depends(current_user)):
+    rows, bal = await L.statement(etype, eid, frm, to)
+    return {"rows": rows, "balance": bal}
+
+
+# ------------------------------------------------------------------ profiles
+@api.get("/profile/vehicle/{vid}")
+async def vehicle_profile(vid: str, u=Depends(current_user)):
+    v = await db.vehicles.find_one({"_id": vid})
+    if not v:
+        raise HTTPException(404, "Vehicle not found")
+    trips = sers(await db.trips.find({"vehicle_id": vid}).sort("created_at", -1).to_list(200))
+    exp = sers(await db.expenses.find({"vehicle_id": vid, "cancelled": False}).sort("date", -1).to_list(300))
+    fuel = sers(await db.fuel.find({"vehicle_id": vid, "cancelled": False}).sort("date", -1).to_list(300))
+    return {
+        "vehicle": ser(v),
+        "trips": trips,
+        "expenses": exp, "fuel": fuel,
+        "totals": {"trips": len(trips), "expense": round(sum(e["amount"] for e in exp), 2),
+                   "fuel": round(sum(f["amount"] for f in fuel), 2),
+                   "litres": round(sum(f["quantity"] for f in fuel), 2)},
+        "current_trip": next((t for t in trips if t["status"] in ACTIVE_TRIP), None),
+    }
+
+
+@api.get("/profile/driver/{did}")
+async def driver_profile(did: str, u=Depends(current_user)):
+    d = await db.drivers.find_one({"_id": did})
+    if not d:
+        raise HTTPException(404, "Driver not found")
+    trips = sers(await db.trips.find({"driver_id": did}).sort("created_at", -1).to_list(200))
+    adv = sers(await db.advances.find({"entity_type": "driver", "entity_id": did,
+                                       "cancelled": False}).sort("date", -1).to_list(200))
+    rows, bal = await L.statement("driver", did)
+    return {"driver": ser(d), "trips": trips, "advances": adv, "ledger": rows,
+            "outstanding": bal, "current_trip": next((t for t in trips if t["status"] in ACTIVE_TRIP), None)}
+
+
+@api.get("/profile/party/{pid}")
+async def party_profile(pid: str, u=Depends(current_user)):
+    p = await db.parties.find_one({"_id": pid})
+    if not p:
+        raise HTTPException(404, "Party not found")
+    lrs = await list_lrs(party_id=pid, u=u)
+    rec = sers(await db.receipts.find({"party_id": pid, "cancelled": False}).sort("date", -1).to_list(300))
+    rows, bal = await L.statement("party", pid)
+    return {"party": ser(p), "lrs": lrs, "receipts": rec, "ledger": rows, "outstanding": bal}
+
+
+@api.get("/profile/employee/{eid}")
+async def employee_profile(eid: str, u=Depends(current_user)):
+    p = await db.team.find_one({"_id": eid})
+    if not p:
+        raise HTTPException(404, "Team member not found")
+    adv = sers(await db.advances.find({"entity_type": "employee", "entity_id": eid,
+                                       "cancelled": False}).sort("date", -1).to_list(300))
+    rows, bal = await L.statement("employee", eid)
+    held = (await L.deewanji_cash()).get(eid, 0)
+    paid = round(sum(a["amount"] for a in adv if a["kind"] == "Salary Paid"), 2)
+    return {"employee": ser(p), "advances": adv, "ledger": rows, "outstanding": bal,
+            "salary_paid": paid, "cash_with": round(held, 2)}
+
+
+@api.get("/profile/fuel_pump/{pid}")
+async def pump_profile(pid: str, u=Depends(current_user)):
+    p = await db.fuel_pumps.find_one({"_id": pid})
+    if not p:
+        raise HTTPException(404, "Fuel pump not found")
+    fuel = sers(await db.fuel.find({"pump_id": pid, "cancelled": False}).sort("date", -1).to_list(500))
+    rows, bal = await L.statement("fuel_pump", pid)
+    pays = sers(await db.payments.find({"entity_id": pid, "cancelled": False}).to_list(300))
+    return {"pump": ser(p), "fuel": fuel, "ledger": rows,
+            "purchased": round(sum(f["amount"] for f in fuel), 2),
+            "paid": round(sum(p2["amount"] for p2 in pays), 2),
+            "outstanding": round(-bal, 2), "payments": pays}
+
+
+@api.get("/profile/partner/{pid}")
+async def partner_profile(pid: str, u=Depends(current_user)):
+    p = await db.partners.find_one({"_id": pid})
+    if not p:
+        raise HTTPException(404, "Partner not found")
+    trips = sers(await db.tpl.find({"partner_id": pid, "cancelled": False}).sort("date", -1).to_list(300))
+    rows, bal = await L.statement("partner", pid)
+    return {"partner": ser(p), "trips": trips, "ledger": rows, "outstanding": round(-bal, 2),
+            "customer_amount": round(sum(t["customer_amount"] for t in trips), 2),
+            "partner_amount": round(sum(t["partner_amount"] for t in trips), 2)}
+
+
+# ------------------------------------------------------------------ finance helpers
+async def sum_coll(coll, match):
+    m = {"cancelled": False, **match}
+    agg = [{"$match": m}, {"$group": {"_id": None, "t": {"$sum": "$amount"}}}]
+    async for r in db[coll].aggregate(agg):
+        return round(r["t"], 2)
+    return 0.0
+
+
+async def receivables_rows():
+    bal = await L.balances("party")
+    parties = {p["_id"]: p for p in await db.parties.find().to_list(3000)}
+    s = await get_settings()
+    due_days = int(s.get("receivable_due_days", 30))
+    from datetime import date, timedelta
+    t = date.today()
+    rows = []
+    for pid, b in bal.items():
+        if b["balance"] <= 0.5:
+            continue
+        p = parties.get(pid, {})
+        lastdt = b.get("last_date") or t.isoformat()
+        try:
+            y, m, d = [int(x) for x in lastdt.split("-")]
+            age = (t - date(y, m, d)).days
+            due = (date(y, m, d) + timedelta(days=due_days)).isoformat()
+        except Exception:
+            age, due = 0, t.isoformat()
+        bucket = ("Current" if age <= due_days else "1-30" if age <= due_days + 30
+                  else "31-60" if age <= due_days + 60 else "61-90" if age <= due_days + 90 else "90+")
+        rows.append({"party_id": pid, "party": p.get("name", "-"), "mobile": p.get("mobile", ""),
+                     "city": p.get("city", ""), "total": b["debit"], "received": b["credit"],
+                     "outstanding": b["balance"], "last_date": b.get("last_date"),
+                     "due_date": due, "age": max(age - due_days, 0), "bucket": bucket,
+                     "status": "Overdue" if age > due_days else "Pending"})
+    return sorted(rows, key=lambda r: -r["outstanding"])
+
+
+async def payables_rows():
+    rows = []
+    for etype, coll, label in [("fuel_pump", "fuel_pumps", "Fuel Pump"),
+                               ("partner", "partners", "3PL Partner")]:
+        bal = await L.balances(etype)
+        docs = {d["_id"]: d for d in await db[coll].find().to_list(2000)}
+        for eid, b in bal.items():
+            out = round(-b["balance"], 2)
+            if out <= 0.5:
+                continue
+            rows.append({"entity_type": etype, "entity_id": eid, "type": label,
+                         "name": docs.get(eid, {}).get("name", "-"), "total": b["credit"],
+                         "paid": b["debit"], "outstanding": out,
+                         "last_date": b.get("last_date"), "status": "Pending"})
+    return sorted(rows, key=lambda r: -r["outstanding"])
+
+
+async def advances_outstanding(etype):
+    bal = await L.balances(etype)
+    return round(sum(b["balance"] for b in bal.values() if b["balance"] > 0), 2)
+
+
+@api.get("/finance/summary")
+async def finance_summary(u=Depends(current_user)):
+    t = today()
+    cashpos = await L.cash_position()
+    rec = await receivables_rows()
+    pay = await payables_rows()
+    return {
+        "to_receive": round(sum(r["outstanding"] for r in rec), 2),
+        "overdue": round(sum(r["outstanding"] for r in rec if r["status"] == "Overdue"), 2),
+        "to_pay": round(sum(r["outstanding"] for r in pay), 2),
+        "received_today": await sum_coll("receipts", {"date": t}),
+        "paid_today": round(await sum_coll("payments", {"date": t}) +
+                            await sum_coll("advances", {"date": t, "kind": {"$in": ["Advance", "Loan", "Pre-salary", "Salary Paid"]}}), 2),
+        "expenses_today": await sum_coll("expenses", {"date": t}),
+        "fuel_today": await sum_coll("fuel", {"date": t}),
+        "cash": cashpos.get("cash", 0), "bank": cashpos.get("bank", 0),
+        "deewanji_cash": cashpos.get("deewanji", 0),
+        "driver_advances": await advances_outstanding("driver"),
+        "employee_advances": await advances_outstanding("employee"),
+        "received_month": await sum_coll("receipts", {"date": {"$gte": t[:8] + "01"}}),
+        "expense_month": await sum_coll("expenses", {"date": {"$gte": t[:8] + "01"}}),
+    }
+
+
+@api.get("/finance/receivables")
+async def finance_receivables(u=Depends(current_user)):
+    rows = await receivables_rows()
+    buckets = {}
+    for r in rows:
+        buckets[r["bucket"]] = round(buckets.get(r["bucket"], 0) + r["outstanding"], 2)
+    return {"rows": rows, "buckets": buckets,
+            "total": round(sum(r["outstanding"] for r in rows), 2)}
+
+
+@api.get("/finance/payables")
+async def finance_payables(u=Depends(current_user)):
+    rows = await payables_rows()
+    return {"rows": rows, "total": round(sum(r["outstanding"] for r in rows), 2)}
+
+
+@api.get("/finance/cashbook")
+async def finance_cashbook(frm: Optional[str] = None, to: Optional[str] = None,
+                           account: Optional[str] = None, u=Depends(current_user)):
+    query = {"cancelled": False}
+    if account:
+        query["account"] = account
+    if frm or to:
+        query["date"] = {}
+        if frm:
+            query["date"]["$gte"] = frm
+        if to:
+            query["date"]["$lte"] = to
+    rows = sers(await db.cashbook.find(query).sort("date", -1).to_list(1000))
+    for r in rows:
+        r.pop("meta", None)
+    return {"rows": rows, "position": await L.cash_position()}
+
+
+@api.get("/finance/charts")
+async def finance_charts(days: int = 14, u=Depends(current_user)):
+    from datetime import date, timedelta
+    t = date.today()
+    start = (t - timedelta(days=days - 1)).isoformat()
+    inout = {}
+    async for r in db.cashbook.aggregate([
+        {"$match": {"cancelled": False, "date": {"$gte": start}}},
+        {"$group": {"_id": {"d": "$date", "dir": "$direction"}, "t": {"$sum": "$amount"}}}]):
+        d = inout.setdefault(r["_id"]["d"], {"date": r["_id"]["d"], "in": 0, "out": 0})
+        d[r["_id"]["dir"]] = round(r["t"], 2)
+    series = []
+    for i in range(days):
+        dd = (t - timedelta(days=days - 1 - i)).isoformat()
+        row = inout.get(dd, {"date": dd, "in": 0, "out": 0})
+        series.append({"date": dd[5:], "money_in": row.get("in", 0), "money_out": row.get("out", 0)})
+    exp = []
+    async for r in db.expenses.aggregate([
+        {"$match": {"cancelled": False, "date": {"$gte": start}}},
+        {"$group": {"_id": "$category", "t": {"$sum": "$amount"}}}, {"$sort": {"t": -1}}]):
+        exp.append({"name": r["_id"], "value": round(r["t"], 2)})
+    fuel_total = await sum_coll("fuel", {"date": {"$gte": start}})
+    if fuel_total:
+        exp.append({"name": "Diesel (fuel entries)", "value": fuel_total})
+    recv = await finance_receivables(u)
+    pay = await finance_payables(u)
+    coll = []
+    async for r in db.receipts.aggregate([
+        {"$match": {"cancelled": False, "date": {"$gte": start}}},
+        {"$group": {"_id": "$date", "t": {"$sum": "$amount"}}}, {"$sort": {"_id": 1}}]):
+        coll.append({"date": r["_id"][5:], "amount": round(r["t"], 2)})
+    return {"money_flow": series, "expense_breakdown": exp,
+            "receivable_aging": [{"name": k, "value": v} for k, v in recv["buckets"].items()],
+            "payable_aging": [{"name": r["name"], "value": r["outstanding"]} for r in pay["rows"][:8]],
+            "collection_trend": coll}
+
+
+# ------------------------------------------------------------------ alerts
+def days_to(d):
+    from datetime import date
+    try:
+        y, m, dd = [int(x) for x in d.split("-")]
+        return (date(y, m, dd) - date.today()).days
+    except Exception:
+        return None
+
+
+DOC_TYPES = ["rc", "insurance", "permit", "fitness", "puc"]
+
+
+@api.get("/alerts")
+async def alerts(u=Depends(current_user)):
+    out = {"vehicle_docs": [], "driver_licence": [], "overdue": [], "pending_expenses": [],
+           "driver_advances": [], "employee_advances": []}
+    for v in await db.vehicles.find({"archived": {"$ne": True}}).to_list(500):
+        docs = v.get("documents") or {}
+        for dt_ in DOC_TYPES:
+            exp = (docs.get(dt_) or {}).get("expiry")
+            if not exp:
+                continue
+            n = days_to(exp)
+            if n is not None and n <= 45:
+                out["vehicle_docs"].append({"id": v["_id"], "vehicle_no": v["vehicle_no"],
+                                            "doc": dt_.upper(), "expiry": exp, "days": n,
+                                            "state": "Expired" if n < 0 else "Expiring Soon"})
+    for d in await db.drivers.find({"archived": {"$ne": True}}).to_list(500):
+        exp = d.get("licence_expiry")
+        if exp:
+            n = days_to(exp)
+            if n is not None and n <= 45:
+                out["driver_licence"].append({"id": d["_id"], "name": d["name"], "expiry": exp,
+                                              "days": n, "state": "Expired" if n < 0 else "Expiring Soon"})
+    rec = await receivables_rows()
+    out["overdue"] = [r for r in rec if r["status"] == "Overdue"][:20]
+    out["pending_receivables"] = rec[:20]
+    dbal = await L.balances("driver")
+    drivers = {d["_id"]: d for d in await db.drivers.find().to_list(500)}
+    out["driver_advances"] = sorted([
+        {"id": k, "name": drivers.get(k, {}).get("name", "-"), "amount": b["balance"]}
+        for k, b in dbal.items() if b["balance"] > 0.5], key=lambda r: -r["amount"])
+    ebal = await L.balances("employee")
+    team = {d["_id"]: d for d in await db.team.find().to_list(500)}
+    out["employee_advances"] = sorted([
+        {"id": k, "name": team.get(k, {}).get("name", "-"), "amount": b["balance"]}
+        for k, b in ebal.items() if b["balance"] > 0.5], key=lambda r: -r["amount"])
+    return out
+
+
+# ------------------------------------------------------------------ dashboard
+@api.get("/dashboard")
+async def dashboard(u=Depends(current_user)):
+    t = today()
+    trips_today = sers(await db.trips.find({"start_date": t}).sort("created_at", -1).to_list(100))
+    active = await db.trips.count_documents({"status": {"$in": ACTIVE_TRIP}})
+    completed_today = await db.trips.count_documents({"status": "Completed", "start_date": t})
+    veh_total = await db.vehicles.count_documents({"archived": {"$ne": True}})
+    veh_on_trip = await db.vehicles.count_documents({"archived": {"$ne": True}, "status": "On Trip"})
+    veh_avail = await db.vehicles.count_documents({"archived": {"$ne": True}, "status": "Available"})
+    fin = await finance_summary(u)
+    al = await alerts(u)
+    dw = await L.deewanji_cash()
+    team_rows = {x["_id"]: x for x in await db.team.find({"archived": {"$ne": True}}).to_list(200)}
+    coll_today = await db.receipts.find({"cancelled": False, "date": t}).to_list(500)
+    dw_today = round(sum(r["amount"] for r in coll_today if r.get("collected_by_type") == "deewanji"), 2)
+    return {
+        "trips": {"today": len(trips_today), "active": active, "completed_today": completed_today,
+                  "total": await db.trips.count_documents({})},
+        "vehicles": {"total": veh_total, "available": veh_avail, "on_trip": veh_on_trip,
+                     "maintenance": await db.vehicles.count_documents({"status": "Maintenance", "archived": {"$ne": True}})},
+        "people": {"drivers": await db.drivers.count_documents({"archived": {"$ne": True}}),
+                   "team": await db.team.count_documents({"archived": {"$ne": True}})},
+        "money": fin,
+        "collections": {"today": round(sum(r["amount"] for r in coll_today), 2),
+                        "deewanji_today": dw_today,
+                        "cash_with_deewanji": round(sum(dw.values()), 2),
+                        "by_deewanji": [{"id": k, "name": team_rows.get(k, {}).get("name", "-"),
+                                         "amount": round(v, 2)} for k, v in dw.items() if v]},
+        "alerts": {"vehicle_docs": len(al["vehicle_docs"]), "driver_licence": len(al["driver_licence"]),
+                   "overdue": len(al["overdue"]), "pending_payments": len(al["pending_receivables"]),
+                   "driver_advances": round(sum(x["amount"] for x in al["driver_advances"]), 2),
+                   "employee_advances": round(sum(x["amount"] for x in al["employee_advances"]), 2)},
+        "lists": {
+            "trips_today": trips_today[:8],
+            "recent_collections": sers(await db.receipts.find({"cancelled": False}).sort("created_at", -1).to_list(6)),
+            "recent_payments": sers(await db.payments.find({"cancelled": False}).sort("created_at", -1).to_list(6)),
+            "recent_expenses": sers(await db.expenses.find({"cancelled": False}).sort("created_at", -1).to_list(6)),
+            "pending_receivables": al["pending_receivables"][:8],
+        },
+        "pending_lrs": await db.lrs.count_documents({"cancelled": False, "payment_status": {"$in": ["Pending", "Partial"]}}),
+        "total_lrs": await db.lrs.count_documents({"cancelled": False}),
+    }
+
+
+# ------------------------------------------------------------------ global search
+@api.get("/search")
+async def search(q: str, u=Depends(current_user)):
+    if not q or len(q) < 2:
+        return []
+    rx = {"$regex": q, "$options": "i"}
+    out = []
+    for v in await db.vehicles.find({"vehicle_no": rx, "archived": {"$ne": True}}).limit(5).to_list(5):
+        out.append({"type": "Vehicle", "title": v["vehicle_no"],
+                    "subtitle": f"{v.get('vehicle_type','')} {v.get('status','')}",
+                    "link": f"/vehicles/{v['_id']}"})
+    for d in await db.drivers.find({"$or": [{"name": rx}, {"mobile": rx}], "archived": {"$ne": True}}).limit(5).to_list(5):
+        out.append({"type": "Driver", "title": d["name"], "subtitle": d.get("mobile", ""),
+                    "link": f"/drivers/{d['_id']}"})
+    for p in await db.parties.find({"$or": [{"name": rx}, {"mobile": rx}], "archived": {"$ne": True}}).limit(5).to_list(5):
+        out.append({"type": "Party", "title": p["name"], "subtitle": p.get("mobile", ""),
+                    "link": f"/parties/{p['_id']}"})
+    for t in await db.trips.find({"$or": [{"trip_no": rx}, {"vehicle_no": rx}]}).limit(5).to_list(5):
+        out.append({"type": "Trip", "title": t["trip_no"],
+                    "subtitle": f"{t['from_name']} > {t['to_name']} · {t['status']}",
+                    "link": f"/trips/{t['_id']}"})
+    for l in await db.lrs.find({"$or": [{"lr_no": rx}, {"sender.name": rx}, {"vehicle_no": rx}]}).limit(5).to_list(5):
+        out.append({"type": "LR", "title": l["lr_no"],
+                    "subtitle": f"{(l.get('sender') or {}).get('name','')} · Rs {l.get('freight',0):,.0f}",
+                    "link": f"/lrs/{l['_id']}"})
+    return out
+
+
+# ------------------------------------------------------------------ reports
+@api.get("/reports/{name}")
+async def report(name: str, frm: Optional[str] = None, to: Optional[str] = None,
+                 q: Optional[str] = None, entity_id: Optional[str] = None,
+                 u=Depends(current_user)):
+    frm = frm or "2000-01-01"
+    to = to or "2999-12-31"
+    rng = {"$gte": frm, "$lte": to}
+
+    def cols(*c):
+        return [{"key": k, "label": lbl, "type": ty} for k, lbl, ty in c]
+
+    if name == "trips":
+        rows = await list_trips(q=q, frm=frm, to=to, limit=2000, u=u)
+        return {"columns": cols(("start_date", "Date", "date"), ("trip_no", "Trip No", "t"),
+                                ("mode", "Type", "t"), ("from_name", "From", "t"), ("to_name", "To", "t"),
+                                ("vehicle_no", "Vehicle", "t"), ("driver_name", "Driver", "t"),
+                                ("party_name", "Party", "t"), ("trip_amount", "Amount", "money"),
+                                ("status", "Status", "badge")), "rows": rows,
+                "totals": {"trip_amount": round(sum(r["trip_amount"] for r in rows), 2)}}
+    if name == "lrs":
+        rows = await list_lrs(q=q, frm=frm, to=to, limit=2000, u=u)
+        for r in rows:
+            r["sender_name"] = (r.get("sender") or {}).get("name", "")
+            r["receiver_name"] = (r.get("receiver") or {}).get("name", "")
+        return {"columns": cols(("date", "Date", "date"), ("lr_no", "LR No", "t"),
+                                ("sender_name", "Sender", "t"), ("receiver_name", "Receiver", "t"),
+                                ("from_name", "From", "t"), ("to_name", "To", "t"),
+                                ("vehicle_no", "Vehicle", "t"), ("freight", "Freight", "money"),
+                                ("received", "Received", "money"), ("outstanding", "Outstanding", "money"),
+                                ("payment_status", "Status", "badge")), "rows": rows,
+                "totals": {"freight": round(sum(r["freight"] for r in rows), 2),
+                           "received": round(sum(r["received"] for r in rows), 2),
+                           "outstanding": round(sum(r["outstanding"] for r in rows), 2)}}
+    if name == "vehicles":
+        vehicles = sers(await db.vehicles.find({"archived": {"$ne": True}}).to_list(500))
+        rows = []
+        for v in vehicles:
+            trips = await db.trips.count_documents({"vehicle_id": v["id"], "start_date": rng})
+            fu = await sum_coll("fuel", {"vehicle_id": v["id"], "date": rng})
+            ex = await sum_coll("expenses", {"vehicle_id": v["id"], "date": rng})
+            rows.append({**v, "trips": trips, "fuel": fu, "expense": ex, "total_cost": round(fu + ex, 2)})
+        return {"columns": cols(("vehicle_no", "Vehicle", "t"), ("vehicle_type", "Type", "t"),
+                                ("status", "Status", "badge"), ("trips", "Trips", "t"),
+                                ("fuel", "Fuel", "money"), ("expense", "Expenses", "money"),
+                                ("total_cost", "Total Cost", "money")), "rows": rows,
+                "totals": {"fuel": round(sum(r["fuel"] for r in rows), 2),
+                           "expense": round(sum(r["expense"] for r in rows), 2)}}
+    if name == "drivers":
+        drivers = sers(await db.drivers.find({"archived": {"$ne": True}}).to_list(500))
+        bal = await L.balances("driver")
+        rows = []
+        for d in drivers:
+            rows.append({**d, "trips": await db.trips.count_documents({"driver_id": d["id"], "start_date": rng}),
+                         "advance": bal.get(d["id"], {}).get("balance", 0)})
+        return {"columns": cols(("name", "Driver", "t"), ("mobile", "Mobile", "t"),
+                                ("licence_no", "Licence", "t"), ("licence_expiry", "Licence Expiry", "date"),
+                                ("status", "Status", "badge"), ("trips", "Trips", "t"),
+                                ("advance", "Outstanding Advance", "money")), "rows": rows,
+                "totals": {"advance": round(sum(r["advance"] for r in rows), 2)}}
+    if name == "receivables":
+        d = await finance_receivables(u)
+        return {"columns": cols(("party", "Party", "t"), ("mobile", "Mobile", "t"),
+                                ("total", "Total Billed", "money"), ("received", "Received", "money"),
+                                ("outstanding", "Outstanding", "money"), ("due_date", "Due Date", "date"),
+                                ("age", "Days Overdue", "t"), ("bucket", "Aging", "t"),
+                                ("status", "Status", "badge")), "rows": d["rows"],
+                "totals": {"outstanding": d["total"]}}
+    if name == "payables":
+        d = await finance_payables(u)
+        return {"columns": cols(("name", "Name", "t"), ("type", "Type", "t"),
+                                ("total", "Total", "money"), ("paid", "Paid", "money"),
+                                ("outstanding", "Outstanding", "money"), ("status", "Status", "badge")),
+                "rows": d["rows"], "totals": {"outstanding": d["total"]}}
+    if name in ("collections", "deewanji"):
+        rows = await list_receipts(frm=frm, to=to, q=q, limit=3000, u=u)
+        if name == "deewanji":
+            rows = [r for r in rows if r.get("collected_by_type") == "deewanji"]
+        return {"columns": cols(("date", "Date", "date"), ("party_name", "Party", "t"),
+                                ("lr_no", "LR", "t"), ("amount", "Amount", "money"),
+                                ("mode", "Mode", "t"), ("deewanji_name", "Collected By", "t"),
+                                ("reference", "Reference", "t")), "rows": rows,
+                "totals": {"amount": round(sum(r["amount"] for r in rows), 2)}}
+    if name == "expenses":
+        rows = await list_expenses(frm=frm, to=to, q=q, limit=3000, u=u)
+        return {"columns": cols(("date", "Date", "date"), ("category", "Category", "t"),
+                                ("vehicle_no", "Vehicle", "t"), ("trip_no", "Trip", "t"),
+                                ("vendor", "Vendor", "t"), ("mode", "Mode", "t"),
+                                ("amount", "Amount", "money"), ("remarks", "Remarks", "t")),
+                "rows": rows, "totals": {"amount": round(sum(r["amount"] for r in rows), 2)}}
+    if name == "fuel":
+        rows = await list_fuel(frm=frm, to=to, q=q, limit=3000, u=u)
+        return {"columns": cols(("date", "Date", "date"), ("vehicle_no", "Vehicle", "t"),
+                                ("pump_name", "Fuel Pump", "t"), ("quantity", "Litres", "t"),
+                                ("rate", "Rate", "money"), ("amount", "Amount", "money"),
+                                ("odometer", "Odometer", "t"), ("mode", "Mode", "t")),
+                "rows": rows, "totals": {"amount": round(sum(r["amount"] for r in rows), 2),
+                                         "quantity": round(sum(r["quantity"] for r in rows), 2)}}
+    if name == "driver_advances":
+        rows = await list_advances(entity_type="driver", frm=frm, to=to, limit=3000, u=u)
+        return {"columns": cols(("date", "Date", "date"), ("entity_name", "Driver", "t"),
+                                ("kind", "Type", "t"), ("amount", "Amount", "money"),
+                                ("mode", "Mode", "t"), ("remarks", "Remarks", "t")),
+                "rows": rows, "totals": {"amount": round(sum(r["amount"] for r in rows), 2)}}
+    if name == "employee_ledger":
+        rows = await list_advances(entity_type="employee", frm=frm, to=to, limit=3000, u=u)
+        return {"columns": cols(("date", "Date", "date"), ("entity_name", "Team Member", "t"),
+                                ("kind", "Type", "t"), ("amount", "Amount", "money"),
+                                ("mode", "Mode", "t"), ("remarks", "Remarks", "t")),
+                "rows": rows, "totals": {"amount": round(sum(r["amount"] for r in rows), 2)}}
+    if name == "tpl":
+        rows = await list_tpl(frm=frm, to=to, q=q, u=u)
+        return {"columns": cols(("date", "Date", "date"), ("party_name", "Customer", "t"),
+                                ("partner_name", "Partner", "t"), ("from_name", "From", "t"),
+                                ("to_name", "To", "t"), ("customer_amount", "Customer Amt", "money"),
+                                ("partner_amount", "Partner Amt", "money"),
+                                ("expenses", "Expenses", "money"), ("margin", "Margin", "money")),
+                "rows": rows, "totals": {"customer_amount": round(sum(r["customer_amount"] for r in rows), 2),
+                                         "partner_amount": round(sum(r["partner_amount"] for r in rows), 2),
+                                         "margin": round(sum(r["margin"] for r in rows), 2)}}
+    if name == "cashflow":
+        d = await finance_cashbook(frm=frm, to=to, u=u)
+        rows = [{**r, "money_in": r["amount"] if r["direction"] == "in" else 0,
+                 "money_out": r["amount"] if r["direction"] == "out" else 0} for r in d["rows"]]
+        return {"columns": cols(("date", "Date", "date"), ("description", "Description", "t"),
+                                ("account", "Account", "t"), ("mode", "Mode", "t"),
+                                ("money_in", "Money In", "money"), ("money_out", "Money Out", "money")),
+                "rows": rows, "totals": {"money_in": round(sum(r["money_in"] for r in rows), 2),
+                                         "money_out": round(sum(r["money_out"] for r in rows), 2)}}
+    if name == "party_ledger":
+        if not entity_id:
+            bal = await L.balances("party")
+            parties = sers(await db.parties.find({"archived": {"$ne": True}}).to_list(3000))
+            rows = [{**p, "billed": bal.get(p["id"], {}).get("debit", 0),
+                     "received": bal.get(p["id"], {}).get("credit", 0),
+                     "outstanding": bal.get(p["id"], {}).get("balance", 0)} for p in parties]
+            return {"columns": cols(("name", "Party", "t"), ("mobile", "Mobile", "t"),
+                                    ("city", "City", "t"), ("billed", "Total Billed", "money"),
+                                    ("received", "Received", "money"), ("outstanding", "Outstanding", "money")),
+                    "rows": rows, "totals": {"outstanding": round(sum(r["outstanding"] for r in rows), 2)}}
+        rows, bal = await L.statement("party", entity_id, frm, to)
+        return {"columns": cols(("date", "Date", "date"), ("description", "Description", "t"),
+                                ("debit", "Debit", "money"), ("credit", "Credit", "money"),
+                                ("balance", "Balance", "money")), "rows": rows,
+                "totals": {"balance": bal}}
+    raise HTTPException(404, "Unknown report")
+
+
+app.include_router(api)
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
