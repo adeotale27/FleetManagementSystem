@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   BarChart3, Banknote, Fuel, Gauge, LayoutDashboard, LogOut, Menu, Plus, Receipt,
-  Search, Settings as Cog, Truck, Users, UsersRound, Wallet, X, FileText, ArrowRight,
+  Search, Settings as Cog, ShieldCheck, Truck, Users, UsersRound, Wallet, X, FileText, ArrowRight,
 } from "lucide-react";
 import { api } from "../lib/api";
 import EntryModal from "./QuickForms";
@@ -63,12 +63,18 @@ export default function Layout({ user, children }) {
       <div className="flex items-center gap-2.5 px-5 py-5">
         <div className="grid h-9 w-9 place-items-center rounded-lg bg-brand-500 text-white"><Truck size={19} /></div>
         <div>
-          <p className="font-head text-[15.5px] font-bold leading-none text-white">Fleet Manager</p>
-          <p className="mt-1 text-[11.5px] text-white/40">Transport Office</p>
+          <p className="font-head text-[15.5px] font-bold leading-none text-white">
+            {user?.role === "superadmin" ? "Platform Owner" : user?.tenant_name || "New Naidu Transport"}
+          </p>
+          <p className="mt-1 text-[11.5px] text-white/40">
+            {user?.role === "superadmin" ? "Licence control" : "Transport Office"}
+          </p>
         </div>
       </div>
       <nav className="flex-1 space-y-0.5 px-3 py-2">
-        {NAV.map((n) => (
+        {(user?.role === "superadmin"
+          ? [...NAV, { to: "/platform", label: "Platform", icon: ShieldCheck }]
+          : NAV).map((n) => (
           <NavLink key={n.to} to={n.to} end={n.to === "/"} data-testid={`nav-${n.label.toLowerCase().replace(/[^a-z]/g, "-")}`}
             className={({ isActive }) =>
               `flex items-center gap-3 rounded-lg px-3 py-2.5 text-[14.5px] font-medium transition-colors ${

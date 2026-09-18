@@ -102,6 +102,13 @@ export default function Settings() {
           </Card>
 
           <Card className="p-4">
+            <h3 className="mb-4 font-head text-[16px] font-bold">GPS Tracking (WheelsEye)</h3>
+            <Input label="WheelsEye API Access Token" value={s.wheelseye_token || ""} data-testid="set-wheelseye-token"
+              onChange={(e) => setS({ ...s, wheelseye_token: e.target.value })}
+              hint="Ask WheelsEye support for your API access token — live truck locations then show under Vehicles → Live Tracking" />
+          </Card>
+
+          <Card className="mt-4 p-4">
             <h3 className="mb-4 font-head text-[16px] font-bold">Numbering & Due Days</h3>
             <div className="grid gap-3.5 md:grid-cols-4">
               <Input label="LR Prefix" value={s.lr.prefix} onChange={(e) => setS({ ...s, lr: { ...s.lr, prefix: e.target.value.toUpperCase() } })} data-testid="set-lr-prefix" />

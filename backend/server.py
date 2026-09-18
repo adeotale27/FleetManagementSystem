@@ -6,8 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import ledger as L
-from auth import current_user, make_token, seed_owner, verify_pw
-from db import db, new_id, now_iso, ser, sers, today
+from auth import current_user, hash_pw, make_token, require_super, seed_owner, verify_pw
+from db import PRIMARY_TENANT, db, new_id, now_iso, platform_db, ser, sers, tenant_db, today
 
 app = FastAPI(title="Fleet Management System")
 api = APIRouter(prefix="/api")
@@ -20,7 +20,7 @@ app.add_middleware(
 DEFAULT_SETTINGS = {
     "_id": "settings",
     "company": {
-        "name": "Shri Transport Company", "logo": "", "address": "",
+        "name": "New Naidu Transport", "logo": "", "address": "",
         "city": "Hinganghat", "state": "Maharashtra", "mobile": "",
         "alt_mobile": "", "email": "", "gstin": "", "pan": "",
         "footer": "Thank you for your business.",
@@ -92,10 +92,16 @@ class LoginIn(BaseModel):
 
 @api.post("/auth/login")
 async def login(body: LoginIn):
-    user = await db.users.find_one({"_id": body.username.strip().lower()})
+    user = await platform_db.users.find_one({"_id": body.username.strip().lower()})
     if not user or not verify_pw(body.password, user["password"]):
         raise HTTPException(status_code=401, detail="Wrong username or password")
-    return {"token": make_token(user["_id"]), "user": {"username": user["_id"], "name": user.get("name")}}
+    tenant = await platform_db.tenants.find_one({"_id": user.get("tenant_id")}) if user.get("tenant_id") else None
+    if tenant and tenant.get("license_status") != "Active":
+        raise HTTPException(status_code=403, detail="Licence is not active. Please contact the platform owner.")
+    return {"token": make_token(user["_id"]),
+            "user": {"username": user["_id"], "name": user.get("name"),
+                     "role": user.get("role", "owner"), "tenant_id": user.get("tenant_id"),
+                     "tenant_name": (tenant or {}).get("name", "")}}
 
 
 @api.get("/auth/me")
@@ -403,10 +409,19 @@ async def list_trips(q: Optional[str] = None, status: Optional[str] = None,
     rows = sers(await db.trips.find(query).sort("created_at", -1).to_list(limit))
     lr_counts = {}
     async for r in db.lrs.aggregate([{"$match": {"cancelled": False}},
-                                     {"$group": {"_id": "$trip_id", "n": {"$sum": 1}}}]):
-        lr_counts[r["_id"]] = r["n"]
+                                     {"$group": {"_id": "$trip_id", "n": {"$sum": 1}, "f": {"$sum": "$freight"}}}]):
+        lr_counts[r["_id"]] = (r["n"], round(r["f"], 2))
+    cost = {}
+    for coll in ("expenses", "fuel"):
+        async for r in db[coll].aggregate([{"$match": {"cancelled": False, "trip_id": {"$nin": [None, ""]}}},
+                                           {"$group": {"_id": "$trip_id", "t": {"$sum": "$amount"}}}]):
+            cost[r["_id"]] = round(cost.get(r["_id"], 0) + r["t"], 2)
     for r in rows:
-        r["lr_count"] = lr_counts.get(r["id"], 0)
+        n, freight = lr_counts.get(r["id"], (0, 0))
+        r["lr_count"] = n
+        r["earning"] = round(max(r.get("trip_amount") or 0, freight), 2)
+        r["trip_cost"] = cost.get(r["id"], 0)
+        r["profit"] = round(r["earning"] - r["trip_cost"], 2)
     return rows
 
 
@@ -419,6 +434,13 @@ async def get_trip(trip_id: str, u=Depends(current_user)):
     out["lrs"] = sers(await db.lrs.find({"trip_id": trip_id}).to_list(100))
     out["expenses"] = sers(await db.expenses.find({"trip_id": trip_id, "cancelled": False}).to_list(100))
     out["fuel"] = sers(await db.fuel.find({"trip_id": trip_id, "cancelled": False}).to_list(100))
+    lr_freight = round(sum(l["freight"] for l in out["lrs"] if not l.get("cancelled")), 2)
+    expense_total = round(sum(e["amount"] for e in out["expenses"]), 2)
+    fuel_total = round(sum(f["amount"] for f in out["fuel"]), 2)
+    earning = round(max(t.get("trip_amount") or 0, lr_freight), 2)
+    out["profit"] = {"earning": earning, "lr_freight": lr_freight, "expenses": expense_total,
+                     "diesel": fuel_total, "total_cost": round(expense_total + fuel_total, 2),
+                     "profit": round(earning - expense_total - fuel_total, 2)}
     return out
 
 
@@ -1388,6 +1410,178 @@ async def dashboard_monthly(months: int = 6, u=Depends(current_user)):
                 "expenses": round(sum(s["expenses"] for s in series), 2),
                 "collections": round(sum(s["collections"] for s in series), 2),
                 "profit": round(sum(s["profit"] for s in series), 2)}}
+
+
+@api.get("/lr-stats")
+async def lr_stats(days: int = 30, u=Depends(current_user)):
+    from datetime import date, timedelta
+    t = date.today()
+    start = (t - timedelta(days=days - 1)).isoformat()
+    rows = await db.lrs.find({"date": {"$gte": start}}).to_list(2000)
+    status = {"Pending": 0, "Partial": 0, "Paid": 0, "Cancelled": 0}
+    per_day = {}
+    freight = received = outstanding = 0.0
+    senders = {}
+    routes = {}
+    for r in rows:
+        key = "Cancelled" if r.get("cancelled") else r.get("payment_status", "Pending")
+        status[key] = status.get(key, 0) + 1
+        per_day[r["date"]] = per_day.get(r["date"], 0) + 1
+        if r.get("cancelled"):
+            continue
+        freight += r.get("freight") or 0
+        received += r.get("received") or 0
+        name = (r.get("sender") or {}).get("name") or "—"
+        senders[name] = round(senders.get(name, 0) + (r.get("freight") or 0), 2)
+        rt = f"{r.get('from_name', '')} → {r.get('to_name', '')}"
+        routes[rt] = routes.get(rt, 0) + 1
+    outstanding = round(freight - received, 2)
+    trend = [{"date": (t - timedelta(days=days - 1 - i)).isoformat()[5:],
+              "lrs": per_day.get((t - timedelta(days=days - 1 - i)).isoformat(), 0)} for i in range(days)]
+    return {
+        "total": len(rows), "status": [{"name": k, "value": v} for k, v in status.items() if v],
+        "freight": round(freight, 2), "received": round(received, 2), "outstanding": outstanding,
+        "trend": trend,
+        "top_senders": [{"name": k, "freight": v} for k, v in sorted(senders.items(), key=lambda x: -x[1])[:5]],
+        "top_routes": [{"name": k, "lrs": v} for k, v in sorted(routes.items(), key=lambda x: -x[1])[:5]],
+    }
+
+
+@api.get("/tracking/live")
+async def tracking_live(u=Depends(current_user)):
+    """Live truck location from a WheelsEye GPS device (token is set in Settings)."""
+    import httpx
+    s = await get_settings()
+    token = (s.get("wheelseye_token") or "").strip()
+    if not token:
+        return {"configured": False, "vehicles": [],
+                "help": "Add your WheelsEye API access token in Settings to see live truck locations."}
+    try:
+        async with httpx.AsyncClient(timeout=20) as cx:
+            r = await cx.get("https://api.wheelseye.com/currentLoc",
+                             params={"accessToken": token, "isLocationReq": "true"})
+            data = r.json()
+    except Exception as e:
+        return {"configured": True, "error": f"Could not reach WheelsEye: {e}", "vehicles": []}
+    raw = data.get("data")
+    rows = raw.get("list") if isinstance(raw, dict) else raw
+    if not isinstance(rows, list):
+        return {"configured": True, "error": data.get("message") or "Unexpected response from WheelsEye", "vehicles": []}
+    out = []
+    for v in rows:
+        out.append({
+            "vehicle_no": v.get("vehicleNumber") or v.get("vehicle_no") or "—",
+            "location": v.get("location") or v.get("address") or "—",
+            "lat": v.get("latitude") or v.get("lat"), "lng": v.get("longitude") or v.get("lng"),
+            "speed": v.get("speed"), "ignition": v.get("ignition"),
+            "updated_at": v.get("lastUpdated") or v.get("time") or "",
+        })
+    return {"configured": True, "vehicles": out}
+
+
+# ------------------------------------------------------------------ platform (super admin)
+class TenantIn(BaseModel):
+    name: str
+    owner_name: str
+    owner_username: str
+    owner_password: str
+    mobile: Optional[str] = ""
+    city: Optional[str] = ""
+    state: Optional[str] = ""
+    plan: Optional[str] = "Business"
+    license_days: Optional[int] = 365
+
+
+async def tenant_stats(tid):
+    tdb = tenant_db(tid)
+    out = {}
+    for coll in ("trips", "lrs", "vehicles", "parties", "drivers"):
+        out[coll] = await tdb[coll].count_documents({})
+    rev = 0.0
+    async for r in tdb.lrs.aggregate([{"$match": {"cancelled": {"$ne": True}}},
+                                      {"$group": {"_id": None, "t": {"$sum": "$freight"}}}]):
+        rev = round(r["t"], 2)
+    last = await tdb.trips.find_one(sort=[("created_at", -1)])
+    return {**out, "revenue": rev, "last_activity": (last or {}).get("created_at", "")}
+
+
+@api.get("/platform/tenants")
+async def platform_tenants(u=Depends(require_super)):
+    rows = []
+    for t in await platform_db.tenants.find().sort("created_at", -1).to_list(500):
+        rows.append({**ser(t), "stats": await tenant_stats(t["_id"])})
+    return rows
+
+
+@api.get("/platform/summary")
+async def platform_summary(u=Depends(require_super)):
+    rows = await platform_tenants(u)
+    from datetime import date
+    t = date.today().isoformat()
+    active = [r for r in rows if r.get("license_status") == "Active"]
+    return {
+        "tenants": rows,
+        "totals": {
+            "licenses": len(rows),
+            "active": len(active),
+            "suspended": len([r for r in rows if r.get("license_status") != "Active"]),
+            "expiring": len([r for r in active if (r.get("license_expiry") or "9999") <= t]),
+            "trips": sum(r["stats"]["trips"] for r in rows),
+            "lrs": sum(r["stats"]["lrs"] for r in rows),
+            "vehicles": sum(r["stats"]["vehicles"] for r in rows),
+            "revenue": round(sum(r["stats"]["revenue"] for r in rows), 2),
+        },
+    }
+
+
+@api.post("/platform/tenants")
+async def create_tenant(body: TenantIn, u=Depends(require_super)):
+    from datetime import date, timedelta
+    username = body.owner_username.strip().lower()
+    if await platform_db.users.find_one({"_id": username}):
+        raise HTTPException(400, "This login username is already taken")
+    tid = new_id()[:12]
+    await platform_db.tenants.insert_one({
+        "_id": tid, "name": body.name.strip(), "owner_name": body.owner_name.strip(),
+        "owner_username": username, "mobile": body.mobile, "city": body.city, "state": body.state,
+        "plan": body.plan, "license_status": "Active",
+        "license_start": date.today().isoformat(),
+        "license_expiry": (date.today() + timedelta(days=int(body.license_days or 365))).isoformat(),
+        "created_at": now_iso(),
+    })
+    await platform_db.users.insert_one({
+        "_id": username, "name": body.owner_name.strip(), "password": hash_pw(body.owner_password),
+        "role": "owner", "tenant_id": tid, "active": True,
+    })
+    tdb = tenant_db(tid)
+    company = dict(DEFAULT_SETTINGS["company"])
+    company["name"] = body.name.strip()
+    company["city"] = body.city or ""
+    company["state"] = body.state or ""
+    await tdb.settings.insert_one({**DEFAULT_SETTINGS, "company": company})
+    return {"id": tid, "ok": True}
+
+
+@api.put("/platform/tenants/{tid}")
+async def update_tenant(tid: str, payload: dict, u=Depends(require_super)):
+    allowed = {k: v for k, v in payload.items()
+               if k in ("name", "owner_name", "mobile", "city", "state", "plan",
+                        "license_status", "license_expiry", "notes")}
+    await platform_db.tenants.update_one({"_id": tid}, {"$set": allowed})
+    t = await platform_db.tenants.find_one({"_id": tid})
+    return ser(t)
+
+
+@api.post("/platform/tenants/{tid}/reset-password")
+async def reset_tenant_password(tid: str, payload: dict, u=Depends(require_super)):
+    t = await platform_db.tenants.find_one({"_id": tid})
+    if not t:
+        raise HTTPException(404, "Business not found")
+    pw = (payload.get("password") or "").strip()
+    if len(pw) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    await platform_db.users.update_one({"_id": t["owner_username"]}, {"$set": {"password": hash_pw(pw)}})
+    return {"ok": True}
 
 
 # ------------------------------------------------------------------ alerts

@@ -1,12 +1,12 @@
 import React, { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Ban, FileText, Fuel, Plus, Receipt } from "lucide-react";
+import { Ban, FileText, Fuel, Pencil, Plus, Receipt } from "lucide-react";
 import { api, errMsg } from "../lib/api";
-import { useFetch } from "../lib/hooks";
+import { useFetch, useMaster, opts } from "../lib/hooks";
 import { money, dmy } from "../lib/format";
 import EntryModal from "../components/QuickForms";
 import {
-  Badge, Btn, Card, DataTable, EmptyState, ErrorState, Loader, PageHead, Select, toast,
+  Badge, Btn, Card, DataTable, EmptyState, ErrorState, Input, Loader, Modal, Money, PageHead, Select, toast,
 } from "../components/ui";
 
 const FLOW = ["New", "Assigned", "Started", "In Transit", "Delivered", "Completed"];
@@ -17,9 +17,33 @@ export default function TripDetail() {
   const { data: t, loading, error, reload } = useFetch(`/trips/${id}`);
   const [entry, setEntry] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [edit, setEdit] = useState(null);
+  const vehicles = useMaster("vehicles");
+  const drivers = useMaster("drivers");
 
   if (loading && !t) return <Loader />;
   if (error) return <ErrorState text={error} onRetry={reload} />;
+
+  const openEdit = () => setEdit({
+    vehicle_id: t.vehicle_id || "", vehicle_no: t.vehicle_no || "", driver_id: t.driver_id || "",
+    from_name: t.from_name || "", to_name: t.to_name || "", from_address: t.from_address || "",
+    to_address: t.to_address || "", trip_amount: t.trip_amount || 0,
+    expected_collection: t.expected_collection || 0, start_date: t.start_date || "",
+    start_time: t.start_time || "", remarks: t.remarks || "",
+  });
+
+  const saveEdit = async () => {
+    setBusy(true);
+    try {
+      const payload = { ...edit, trip_amount: Number(edit.trip_amount) || 0, expected_collection: Number(edit.expected_collection) || 0 };
+      if (payload.vehicle_id) {
+        const v = (vehicles.data || []).find((x) => x.id === payload.vehicle_id);
+        if (v) payload.vehicle_no = v.vehicle_no;
+      }
+      await api.put(`/trips/${id}`, payload);
+      toast("Trip updated"); setEdit(null); reload();
+    } catch (e) { toast(errMsg(e), "err"); } finally { setBusy(false); }
+  };
 
   const setStatus = async (status) => {
     setBusy(true);
@@ -45,6 +69,7 @@ export default function TripDetail() {
               <Btn data-testid="advance-status" disabled={busy} onClick={() => setStatus(next)}>Mark {next}</Btn>
             )}
             <Btn variant="s" icon={FileText} data-testid="create-lr-from-trip" onClick={() => nav(`/lrs/new?trip=${id}`)}>Create LR</Btn>
+            {t.status !== "Cancelled" && <Btn variant="s" icon={Pencil} data-testid="edit-trip" onClick={openEdit}>Edit Trip</Btn>}
             {t.status !== "Cancelled" && <Btn variant="d" icon={Ban} onClick={cancel} data-testid="cancel-trip">Cancel Trip</Btn>}
           </>
         } />
@@ -82,11 +107,16 @@ export default function TripDetail() {
             <Btn variant="s" icon={Receipt} className="w-full" data-testid="add-trip-expense" onClick={() => setEntry("expense")}>Add Expense</Btn>
             <Btn variant="s" icon={Fuel} className="w-full" onClick={() => setEntry("fuel")}>Add Diesel</Btn>
           </div>
-          <div className="mt-4 rounded-lg bg-canvas p-3 text-[13px]">
-            <p className="flex justify-between"><span className="text-muted">Trip Expenses</span>
-              <b className="num">{money((t.expenses || []).reduce((s, e) => s + e.amount, 0))}</b></p>
+          <div className="mt-4 rounded-lg bg-canvas p-3 text-[13px]" data-testid="trip-profit">
+            <p className="flex justify-between"><span className="text-muted">Trip Earning</span>
+              <b className="num">{money(t.profit?.earning)}</b></p>
+            <p className="mt-1 flex justify-between"><span className="text-muted">Trip Expenses</span>
+              <b className="num">− {money(t.profit?.expenses)}</b></p>
             <p className="mt-1 flex justify-between"><span className="text-muted">Diesel</span>
-              <b className="num">{money((t.fuel || []).reduce((s, e) => s + e.amount, 0))}</b></p>
+              <b className="num">− {money(t.profit?.diesel)}</b></p>
+            <p className="mt-2 flex justify-between border-t border-line pt-2 text-[14px]">
+              <span className="font-semibold">Profit</span>
+              <b className={`num ${t.profit?.profit < 0 ? "text-red-600" : "text-brand-600"}`}>{money(t.profit?.profit)}</b></p>
           </div>
         </Card>
       </div>
@@ -126,6 +156,29 @@ export default function TripDetail() {
 
       <EntryModal kind={entry || "expense"} open={!!entry} onClose={() => setEntry(null)} onDone={reload}
         preset={{ trip_id: id, trip_no: t.trip_no, vehicle_id: t.vehicle_id, vehicle_no: t.vehicle_no, driver_id: t.driver_id }} />
+
+      <Modal open={!!edit} onClose={() => setEdit(null)} title={`Edit Trip ${t.trip_no}`}
+        subtitle="Correct vehicle, driver, route or amount — nothing is deleted"
+        footer={<><Btn variant="s" onClick={() => setEdit(null)}>Cancel</Btn>
+          <Btn disabled={busy} data-testid="save-trip-edit" onClick={saveEdit}>Save Changes</Btn></>}>
+        {edit && (
+          <div className="grid gap-3 md:grid-cols-2">
+            <Select label="Vehicle" value={edit.vehicle_id} data-testid="edit-vehicle"
+              onChange={(e) => setEdit({ ...edit, vehicle_id: e.target.value })}
+              options={opts(vehicles.data, "vehicle_no")} placeholder={t.vehicle_no || "Select vehicle"} />
+            <Select label="Driver" value={edit.driver_id} data-testid="edit-driver"
+              onChange={(e) => setEdit({ ...edit, driver_id: e.target.value })}
+              options={opts(drivers.data)} placeholder="Select driver" />
+            <Input label="From" value={edit.from_name} data-testid="edit-from" onChange={(e) => setEdit({ ...edit, from_name: e.target.value })} />
+            <Input label="To" value={edit.to_name} data-testid="edit-to" onChange={(e) => setEdit({ ...edit, to_name: e.target.value })} />
+            <Money label="Trip Amount" value={edit.trip_amount} data-testid="edit-amount" onChange={(e) => setEdit({ ...edit, trip_amount: e.target.value })} />
+            <Money label="Expected Collection" value={edit.expected_collection} onChange={(e) => setEdit({ ...edit, expected_collection: e.target.value })} />
+            <label className="block"><span className="lbl">Start Date</span>
+              <input type="date" className="fld" value={edit.start_date} onChange={(e) => setEdit({ ...edit, start_date: e.target.value })} /></label>
+            <Input label="Remarks" value={edit.remarks} onChange={(e) => setEdit({ ...edit, remarks: e.target.value })} />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

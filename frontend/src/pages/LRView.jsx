@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Ban, Download, Printer, Truck } from "lucide-react";
+import { Ban, Download, MessageCircle, Printer, Truck } from "lucide-react";
 import { api, errMsg } from "../lib/api";
 import { useFetch } from "../lib/hooks";
 import { money, dmy } from "../lib/format";
@@ -32,6 +32,25 @@ export default function LRView() {
     a.click();
   };
 
+  const share = () => {
+    const mob = String(lr.sender?.mobile || lr.receiver?.mobile || "").replace(/\D/g, "");
+    const text = [
+      `*${c.name || "Transport"}* — Lorry Receipt`,
+      `LR No: ${lr.lr_no}`,
+      `Date: ${dmy(lr.date)}`,
+      `Route: ${lr.from_name} → ${lr.to_name}`,
+      `Vehicle: ${lr.vehicle_no}${lr.driver_name ? ` · Driver: ${lr.driver_name}` : ""}`,
+      `Sender: ${lr.sender?.name || "—"}`,
+      `Receiver: ${lr.receiver?.name || "—"}`,
+      `Goods: ${(lr.items?.length ? lr.items.map((i) => i.description).filter(Boolean).join(", ") : lr.goods_description) || "—"}`,
+      `Freight: ${money(lr.freight)} (${lr.payment_status})`,
+      lr.outstanding > 0 ? `Pending: ${money(lr.outstanding)}` : "",
+      c.mobile ? `Contact: ${c.mobile}` : "",
+    ].filter(Boolean).join("\n");
+    const url = `https://wa.me/${mob ? (mob.length === 10 ? `91${mob}` : mob) : ""}?text=${encodeURIComponent(text)}`;
+    window.open(url, "_blank");
+  };
+
   const rows = lr.items?.length ? lr.items : [{
     description: lr.goods_description, quantity: lr.quantity, weight: lr.weight,
     rate: "", amount: lr.freight,
@@ -45,6 +64,7 @@ export default function LRView() {
           actions={
             <>
               <Btn variant="s" icon={Printer} data-testid="print-lr" onClick={() => window.print()}>Print</Btn>
+              <Btn variant="s" icon={MessageCircle} data-testid="share-lr-whatsapp" onClick={share}>WhatsApp</Btn>
               <Btn variant="s" icon={Download} data-testid="download-lr" onClick={download}>Download</Btn>
               {lr.trip_id && <Btn variant="s" icon={Truck} onClick={() => nav(`/trips/${lr.trip_id}`)}>Open Trip</Btn>}
               {!lr.cancelled && <Btn variant="d" icon={Ban} onClick={cancel}>Cancel LR</Btn>}

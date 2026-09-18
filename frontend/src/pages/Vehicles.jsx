@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Download, Fuel, Plus } from "lucide-react";
-import { useMaster } from "../lib/hooks";
+import { useMaster, useFetch } from "../lib/hooks";
 import { money, dmy } from "../lib/format";
 import { exportCSV } from "../lib/export";
 import MasterForm from "../components/MasterForm";
@@ -26,6 +26,7 @@ export default function Vehicles() {
 
   const vehicles = useMaster("vehicles", { q });
   const pumps = useMaster("fuel_pumps", { q: tab === "pumps" ? q : "" });
+  const track = useFetch(tab === "tracking" ? "/tracking/live" : null);
 
   const docRows = (vehicles.data || []).flatMap((v) =>
     DOCS.map(([k, l]) => ({
@@ -52,6 +53,7 @@ export default function Vehicles() {
       <Tabs value={tab} onChange={(v) => setSp({ tab: v })}
         tabs={[{ value: "vehicles", label: "Fleet", count: (vehicles.data || []).length },
                { value: "documents", label: "Documents" },
+               { value: "tracking", label: "Live Tracking" },
                { value: "pumps", label: "Fuel Pumps", count: (pumps.data || []).length }]} />
 
       <Card className="mb-4 p-3.5"><SearchBox value={q} onChange={setQ} placeholder="Vehicle number, make, pump name…" /></Card>
@@ -106,6 +108,34 @@ export default function Vehicles() {
               </div>
             )} />
         )}
+
+        {tab === "tracking" && (
+          track.loading && !track.data ? <Loader label="Fetching live locations…" /> : (
+            <div data-testid="tracking-panel">
+              {!track.data?.configured ? (
+                <EmptyState title="WheelsEye GPS not connected"
+                  text="Your trucks already have WheelsEye devices. Paste your WheelsEye API access token in Settings → Company and live locations will appear here automatically." />
+              ) : track.data.error ? (
+                <ErrorState text={track.data.error} onRetry={track.reload} />
+              ) : (
+                <DataTable testid="tracking-table"
+                  columns={[
+                    { key: "vehicle_no", label: "Vehicle", strong: true },
+                    { key: "location", label: "Current Location" },
+                    { key: "speed", label: "Speed (km/h)", right: true },
+                    { key: "ignition", label: "Ignition", render: (r) => (r.ignition ? "ON" : "OFF") },
+                    { key: "updated_at", label: "Last Update" },
+                  ]}
+                  rows={track.data.vehicles}
+                  empty={<EmptyState title="No live data" text="WheelsEye returned no vehicles for this token." />}
+                  mobile={(r) => (
+                    <div><p className="font-semibold">{r.vehicle_no}</p>
+                      <p className="text-[13px] text-muted">{r.location}</p>
+                      <p className="text-[12.5px] text-muted">{r.speed || 0} km/h · {r.ignition ? "ON" : "OFF"}</p></div>
+                  )} />
+              )}
+            </div>
+          ))}
 
         {tab === "pumps" && (
           pumps.loading && !pumps.data ? <Loader /> : (

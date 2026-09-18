@@ -19,6 +19,7 @@ import PersonDetail from "./pages/PersonDetail";
 import Finance from "./pages/Finance";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
+import Platform from "./pages/Platform";
 
 export default function App() {
   const [state, setState] = useState("checking");
@@ -62,6 +63,7 @@ export default function App() {
             <Route path="/finance" element={<Finance />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
+            {user?.role === "superadmin" && <Route path="/platform" element={<Platform />} />}
             <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

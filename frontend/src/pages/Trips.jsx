@@ -1,11 +1,14 @@
 import React, { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import {
+  Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from "recharts";
 import { Download, FileText, Filter, Plus, Truck } from "lucide-react";
 import { useFetch, useMaster, opts } from "../lib/hooks";
-import { money, dmy } from "../lib/format";
+import { money, money0, dmy } from "../lib/format";
 import { exportCSV, exportExcel, exportPDF } from "../lib/export";
 import {
-  Badge, Btn, Card, DataTable, EmptyState, ErrorState, Loader, PageHead, SearchBox, Select, Tabs,
+  Badge, Btn, Card, DataTable, EmptyState, ErrorState, Loader, PageHead, SearchBox, Select, Stat, Tabs,
 } from "../components/ui";
 
 const STATUS = ["New", "Assigned", "Started", "In Transit", "Delivered", "Completed", "Cancelled"];
@@ -23,6 +26,7 @@ export default function Trips() {
   const settings = useFetch("/settings");
   const trips = useFetch(tab === "trips" ? "/trips" : null, f);
   const lrs = useFetch(tab === "lrs" ? "/lrs" : null, lf);
+  const lrStats = useFetch(tab === "lrs" ? "/lr-stats" : null, { days: 30 });
 
   const setTab = (v) => setSp({ tab: v });
 
@@ -35,6 +39,9 @@ export default function Trips() {
     { key: "vehicle_no", label: "Vehicle" },
     { key: "driver_name", label: "Driver" },
     { key: "trip_amount", label: "Amount", type: "money", right: true },
+    { key: "trip_cost", label: "Cost", type: "money", right: true },
+    { key: "profit", label: "Profit", right: true,
+      render: (r) => <span className={`num font-semibold ${r.profit < 0 ? "text-red-600" : "text-brand-600"}`}>{money(r.profit)}</span> },
     { key: "lr_count", label: "LR", right: true },
     { key: "status", label: "Status", type: "badge" },
   ];
@@ -78,6 +85,8 @@ export default function Trips() {
 
       <Tabs value={tab} onChange={setTab}
         tabs={[{ value: "trips", label: "Trips" }, { value: "lrs", label: "Lorry Receipts" }]} />
+
+      {tab === "lrs" && lrStats.data && <LRInsights s={lrStats.data} />}
 
       <Card className="mb-4 p-3.5">
         <div className="flex flex-wrap items-center gap-2">
@@ -166,3 +175,58 @@ export default function Trips() {
     </div>
   );
 }
+
+const PIE = ["#E0A33E", "#2C8474", "#0B5C4E", "#C1424E"];
+
+const LRInsights = ({ s }) => (
+  <div className="mb-4" data-testid="lr-insights">
+    <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+      <Stat testid="lr-stat-total" label="LRs (30 days)" value={s.total} icon={FileText} />
+      <Stat testid="lr-stat-freight" label="Freight Billed" value={money0(s.freight)} icon={FileText} tone="text-brand-600" />
+      <Stat testid="lr-stat-received" label="Received" value={money0(s.received)} icon={FileText} />
+      <Stat testid="lr-stat-pending" label="Pending" value={money0(s.outstanding)} icon={FileText} tone="text-amber-600" />
+    </div>
+    <div className="grid gap-4 lg:grid-cols-3">
+      <Card className="p-4 lg:col-span-2">
+        <h3 className="mb-3 font-head text-[15.5px] font-bold">LRs Created — last 30 days</h3>
+        <ResponsiveContainer width="100%" height={210}>
+          <BarChart data={s.trend}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#E3E7EB" vertical={false} />
+            <XAxis dataKey="date" fontSize={10} stroke="#69747F" interval={4} />
+            <YAxis fontSize={11} stroke="#69747F" allowDecimals={false} />
+            <Tooltip />
+            <Bar dataKey="lrs" name="LRs" fill="#0B5C4E" radius={[3, 3, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </Card>
+      <Card className="p-4">
+        <h3 className="mb-3 font-head text-[15.5px] font-bold">Payment Status</h3>
+        {s.status.length ? (
+          <ResponsiveContainer width="100%" height={210}>
+            <PieChart>
+              <Pie data={s.status} dataKey="value" nameKey="name" innerRadius={48} outerRadius={78} paddingAngle={2}>
+                {s.status.map((_, i) => <Cell key={i} fill={PIE[i % PIE.length]} />)}
+              </Pie>
+              <Tooltip />
+              <Legend iconSize={9} />
+            </PieChart>
+          </ResponsiveContainer>
+        ) : <p className="text-[13px] text-muted">No LRs in this period.</p>}
+      </Card>
+      <Card className="p-4 lg:col-span-3">
+        <h3 className="mb-3 font-head text-[15.5px] font-bold">Top Senders by Freight</h3>
+        {s.top_senders.length ? (
+          <ResponsiveContainer width="100%" height={190}>
+            <BarChart data={s.top_senders} layout="vertical" margin={{ left: 10, right: 16 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E3E7EB" horizontal={false} />
+              <XAxis type="number" fontSize={11} stroke="#69747F" />
+              <YAxis type="category" dataKey="name" width={130} fontSize={11} stroke="#69747F" />
+              <Tooltip formatter={(v) => money(v)} />
+              <Bar dataKey="freight" name="Freight" fill="#2C8474" radius={[0, 3, 3, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        ) : <p className="text-[13px] text-muted">No sender data yet.</p>}
+      </Card>
+    </div>
+  </div>
+);
