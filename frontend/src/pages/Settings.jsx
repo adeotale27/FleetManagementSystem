@@ -141,7 +141,7 @@ export default function Settings() {
             </div>
           </Card>
 
-          <Card className="p-4">
+          
 
           <Card className="mt-4 p-4">
             <h3 className="mb-4 font-head text-[16px] font-bold">Numbering & Due Days</h3>

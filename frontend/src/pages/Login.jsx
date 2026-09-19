@@ -27,9 +27,9 @@ export default function Login({ onLogin }) {
           style={{ backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 40px, rgba(255,255,255,.08) 40px, rgba(255,255,255,.08) 44px, transparent 44px, transparent 80px)" }} />
         <div className="relative flex w-full max-w-xl flex-col items-center text-center">
           <div className="rounded-[28px] bg-white p-6 shadow-[0_0_60px_rgba(29,111,234,.35)]">
-            <img src="/app-icon.png" alt="ProFleet" className="h-28 w-28 object-contain" />
+            <img src="/app-icon.png" alt="ProFleet" className="h-32 w-32 object-contain" />
           </div>
-          <img src="/profleet-logo.png" alt="" className="mt-6 h-16 w-auto max-w-[280px] object-contain drop-shadow-lg" />
+          {/* <img src="/profleet-logo.png" alt="" className="mt-6 h-16 w-auto max-w-[280px] object-contain drop-shadow-lg" /> */}
           <p className="mt-6 text-[13px] font-semibold uppercase tracking-[0.22em] text-white/50">ProFleet Management</p>
           <h1 className="mt-4 font-head text-[44px] font-extrabold leading-[1.08] text-white">
             Track. Manage.<br />Move. Grow.
@@ -41,7 +41,7 @@ export default function Login({ onLogin }) {
             LIVE FLEET · TRIPS &amp; LR · FINANCE · COLLECTIONS
           </p>
         </div>
-        <p className="absolute bottom-8 left-0 right-0 text-center text-[12px] text-white/25">ProFleet Management</p>
+        <p className="absolute bottom-8 left-0 right-0 text-center text-[12px] text-white/25">ProFleet Management By ADeotale</p>
       </div>
 
       <div className="flex items-center justify-center bg-[#F4F6F8] px-5 py-10 md:px-10">
