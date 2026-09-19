@@ -30,7 +30,8 @@ export default function Login({ onLogin }) {
             <img src="/app-icon.png" alt="ProFleet" className="h-32 w-32 object-contain" />
           </div>
           {/* <img src="/profleet-logo.png" alt="" className="mt-6 h-16 w-auto max-w-[280px] object-contain drop-shadow-lg" /> */}
-          <p className="mt-6 text-[13px] font-semibold uppercase tracking-[0.22em] text-white/50">ProFleet Management</p>
+          <p className="mt-6 text-[13px] font-semibold uppercase tracking-[0.22em] text-white/50">ProFleet Management</p> 
+          
           <h1 className="mt-4 font-head text-[44px] font-extrabold leading-[1.08] text-white">
             Track. Manage.<br />Move. Grow.
           </h1>
@@ -50,16 +51,16 @@ export default function Login({ onLogin }) {
             <div className="rounded-2xl bg-white px-4 py-3 shadow-card">
               <img src="/profleet-logo.png" alt="ProFleet" className="h-16 w-auto object-contain" />
             </div>
-            <p className="mt-3 text-[12px] font-semibold uppercase tracking-[0.16em] text-muted">ProFleet Management</p>
+            <p className="mt-3 text-[12px] font-semibold uppercase tracking-[0.16em] text-muted">Pro Fleet Management</p>
           </div>
           <div className="mb-8 hidden items-center gap-3.5 md:flex">
             <img src="/app-icon.png" alt="" className="h-14 w-14 rounded-2xl object-cover shadow-md" />
             <div>
               <p className="font-head text-[20px] font-bold leading-none">ProFleet</p>
-              <p className="mt-1.5 text-[12px] font-semibold uppercase tracking-[0.16em] text-muted">Management</p>
+              <p className="mt-1.5 text-[12px] font-semibold uppercase tracking-[0.16em] text-muted">Management </p>
             </div>
           </div>
-          <h2 className="font-head text-[32px] font-bold leading-tight text-ink">Welcome back</h2>
+          <h2 className="font-head text-[32px] font-bold leading-tight text-ink">Welcome </h2>
           <p className="mt-2 text-[15px] text-muted">Sign in to your ProFleet Management workspace.</p>
           <label className="mt-8 block">
             <span className="lbl">Username</span>
