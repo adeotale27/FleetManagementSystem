@@ -243,7 +243,7 @@ export default function EntryModal({ kind, open, onClose, onDone, preset = {} })
                       toast("Proof attached");
                     } catch (er) { toast(errMsg(er), "err"); } finally { setUp(false); }
                   }}
-                  className="text-[12.5px] file:mr-2 file:rounded-lg file:border-0 file:bg-ink file:px-3 file:py-1.5 file:text-white" />
+                  className="text-[12.5px] file:mr-2 file:rounded-2xl file:border-0 file:bg-brand-500 file:px-3 file:py-1.5 file:font-semibold file:text-white" />
                 <p className="mt-1 text-[11.5px] text-muted">
                   {up ? "Uploading…" : "Take a photo of the slip / UPI screenshot"}</p>
               </div>

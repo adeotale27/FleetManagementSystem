@@ -21,13 +21,16 @@ export default function Login({ onLogin }) {
   return (
     <div className="grid min-h-screen md:grid-cols-2">
       <div className="relative hidden flex-col items-center justify-center overflow-hidden bg-[#071018] px-16 py-12 md:flex">
-        <div className="pointer-events-none absolute inset-0 opacity-[0.07]"
-          style={{ backgroundImage: "radial-gradient(ellipse at 20% 30%, #1D6FEA 0%, transparent 50%), radial-gradient(ellipse at 80% 80%, #0B5C4E 0%, transparent 45%)" }} />
-        <div className="relative flex w-full max-w-lg flex-col items-center text-center">
-          <div className="rounded-2xl bg-white px-5 py-4 shadow-lg">
-            <img src="/profleet-logo.png" alt="ProFleet" className="h-[72px] w-auto max-w-[220px] object-contain" />
+        <div className="pointer-events-none absolute inset-0"
+          style={{ background: "radial-gradient(ellipse at 50% 20%, rgba(29,111,234,.18), transparent 42%), radial-gradient(ellipse at 70% 90%, rgba(11,92,78,.22), transparent 40%)" }} />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40 opacity-20"
+          style={{ backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 40px, rgba(255,255,255,.08) 40px, rgba(255,255,255,.08) 44px, transparent 44px, transparent 80px)" }} />
+        <div className="relative flex w-full max-w-xl flex-col items-center text-center">
+          <div className="rounded-[28px] bg-white p-6 shadow-[0_0_60px_rgba(29,111,234,.35)]">
+            <img src="/app-icon.png" alt="ProFleet" className="h-28 w-28 object-contain" />
           </div>
-          <p className="mt-8 text-[13px] font-semibold uppercase tracking-[0.22em] text-white/50">ProFleet Management</p>
+          <img src="/profleet-logo.png" alt="" className="mt-6 h-16 w-auto max-w-[280px] object-contain drop-shadow-lg" />
+          <p className="mt-6 text-[13px] font-semibold uppercase tracking-[0.22em] text-white/50">ProFleet Management</p>
           <h1 className="mt-4 font-head text-[44px] font-extrabold leading-[1.08] text-white">
             Track. Manage.<br />Move. Grow.
           </h1>

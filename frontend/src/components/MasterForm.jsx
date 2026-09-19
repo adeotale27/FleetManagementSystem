@@ -18,6 +18,7 @@ export const SCHEMA = {
       { k: "capacity", l: "Capacity", ph: "9 Ton" },
       { k: "fuel_type", l: "Fuel Type", type: "select", opts: ["Diesel", "CNG", "Petrol", "Electric"] },
       { k: "base_location", l: "Base Location", type: "baseloc" },
+      { k: "wheelseye_token", l: "WheelsEye token (this vehicle)", hint: "Each truck has its own GPS device token" },
       { k: "status", l: "Status", type: "select", opts: ["Available", "On Trip", "Maintenance", "Inactive"] },
     ],
   },
