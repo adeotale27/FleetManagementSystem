@@ -1,5 +1,13 @@
 # Version history
 
+## v1.1.1 — 19 September 2026
+
+- LR uses the **business** logo (saved on upload). No ProFleet mark on the receipt if a logo exists; initials if none.
+- `/api/masters/null` stopped (hooks skip empty master names).
+- Platform owner: Licences + Console only (error log of 500s). No office settings/trips.
+- Login: white card around logo, solid Sign in button, light favicon.
+- Advance / Repayment is a primary button; export/PDF styling updated.
+
 ## v1.1.0 — 19 September 2026
 
 ### Added / fixed

@@ -1,7 +1,7 @@
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -18,6 +18,30 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_failures(request: Request, call_next):
+    try:
+        response = await call_next(request)
+    except Exception as e:
+        try:
+            await platform_db.error_logs.insert_one({
+                "_id": new_id(), "status": 500, "path": request.url.path,
+                "method": request.method, "detail": str(e)[:400], "created_at": now_iso(),
+            })
+        except Exception:
+            pass
+        raise
+    if response.status_code >= 500:
+        try:
+            await platform_db.error_logs.insert_one({
+                "_id": new_id(), "status": response.status_code, "path": request.url.path,
+                "method": request.method, "detail": "", "created_at": now_iso(),
+            })
+        except Exception:
+            pass
+    return response
 
 DEFAULT_SETTINGS = {
     "_id": "settings",
@@ -1619,6 +1643,11 @@ async def platform_tenants(u=Depends(require_super)):
         rows.append({**ser(t), "stats": await tenant_stats(t["_id"]),
                      "db_name": t.get("db_name") or tenant_db_name(t["_id"])})
     return rows
+
+
+@api.get("/platform/errors")
+async def platform_errors(u=Depends(require_super)):
+    return sers(await platform_db.error_logs.find().sort("created_at", -1).to_list(200))
 
 
 @api.get("/platform/summary")

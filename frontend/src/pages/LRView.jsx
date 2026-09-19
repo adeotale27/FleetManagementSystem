@@ -86,8 +86,12 @@ export default function LRView() {
         style={{ width: "100%", maxWidth: "210mm" }} data-testid="lr-document">
         <div className="flex items-start justify-between gap-4 border-b-2 border-brand-500 px-6 py-5">
           <div className="flex items-start gap-3">
-            {c.logo ? <img src={c.logo} alt="logo" className="h-14 w-14 rounded-lg object-contain" />
-              : <img src="/app-icon.png" alt="ProFleet" className="h-14 w-14 rounded-lg object-contain" />}
+            {c.logo
+              ? <img src={c.logo} alt="" className="h-14 w-14 rounded-lg bg-white object-contain"
+                  onError={(e) => { e.currentTarget.style.display = "none"; }} />
+              : <div className="grid h-14 w-14 place-items-center rounded-lg bg-ink text-[16px] font-bold text-white">
+                  {(c.name || "LR").slice(0, 2).toUpperCase()}
+                </div>}
             <div>
               <h2 className="font-head text-[22px] font-extrabold uppercase leading-tight text-ink">{c.name}</h2>
               <p className="text-[12.5px] text-muted">{c.address}{c.city ? `, ${c.city}` : ""}{c.state ? `, ${c.state}` : ""}</p>

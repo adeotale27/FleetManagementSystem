@@ -276,7 +276,7 @@ const Panel = ({ title, action, children }) => (
   <Card className="overflow-hidden">
     <div className="flex items-center justify-between border-b border-line px-4 py-3">
       <h3 className="font-head text-[15.5px] font-bold text-ink">{title}</h3>
-      {action && <button onClick={action} className="text-[13px] font-semibold text-brand-600 hover:underline">View all</button>}
+      {action && <Btn variant="s" className="py-1.5 text-[13px]" onClick={action}>View all</Btn>}
     </div>
     {children}
   </Card>

@@ -16,7 +16,12 @@ const NAV = [
   { to: "/team", label: "Team", icon: UsersRound, key: "team" },
   { to: "/finance", label: "Finance", icon: Wallet, key: "finance" },
   { to: "/reports", label: "Reports", icon: BarChart3, key: "reports" },
-  { to: "/settings", label: "Settings", icon: Cog, key: "settings" },
+  { to: "/settings", label: "Office Settings", icon: Cog, key: "settings" },
+];
+
+const PLATFORM_NAV = [
+  { to: "/platform", label: "Licences", icon: ShieldCheck },
+  { to: "/settings", label: "Console", icon: Cog },
 ];
 
 const MOBILE_NAV = [NAV[0], NAV[1], NAV[5], NAV[6]];
@@ -61,9 +66,8 @@ export default function Layout({ user, children }) {
   const bizLogo = user?.role === "superadmin" ? "/app-icon.png" : (user?.branding?.logo || "/app-icon.png");
   const bizName = user?.role === "superadmin" ? "ProFleet" : (user?.tenant_name || user?.branding?.name || "ProFleet");
   const photo = user?.photo;
-  const mobileNav = user?.role === "superadmin"
-    ? [{ to: "/platform", label: "Platform", icon: ShieldCheck }, NAV[0], NAV[5], NAV[7]]
-    : MOBILE_NAV;
+  const navItems = user?.role === "superadmin" ? PLATFORM_NAV : NAV.filter((n) => !n.key || user?.features?.[n.key] !== false);
+  const mobileNav = user?.role === "superadmin" ? PLATFORM_NAV : MOBILE_NAV;
 
   const Side = (
     <>
@@ -77,9 +81,7 @@ export default function Layout({ user, children }) {
         </div>
       </div>
       <nav className="flex-1 space-y-0.5 px-3 py-2">
-        {(user?.role === "superadmin"
-          ? [{ to: "/platform", label: "Platform", icon: ShieldCheck }, ...NAV]
-          : NAV.filter((n) => !n.key || user?.features?.[n.key] !== false)).map((n) => (
+        {navItems.map((n) => (
           <NavLink key={n.to} to={n.to} end={n.to === "/"} data-testid={`nav-${n.label.toLowerCase().replace(/[^a-z]/g, "-")}`}
             className={({ isActive }) =>
               `flex items-center gap-3 rounded-lg px-3 py-2.5 text-[14.5px] font-medium transition-colors ${
@@ -127,6 +129,7 @@ export default function Layout({ user, children }) {
               <Menu size={21} />
             </button>
             <img src={bizLogo} alt="" className="h-8 w-8 rounded-lg object-contain md:hidden" />
+            {user?.role !== "superadmin" && (
             <div className="relative flex-1 md:max-w-md">
               <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
               <input data-testid="global-search" value={q} onChange={(e) => setQ(e.target.value)}
@@ -149,8 +152,12 @@ export default function Layout({ user, children }) {
                 </div>
               )}
             </div>
-            <button onClick={() => setSheet(true)} data-testid="quick-action-btn"
-              className="btn-p hidden py-2 md:inline-flex"><Plus size={17} /> New Entry</button>
+            )}
+            {user?.role === "superadmin" && <div className="flex-1" />}
+            {user?.role !== "superadmin" && (
+              <button onClick={() => setSheet(true)} data-testid="quick-action-btn"
+                className="btn-p hidden py-2 md:inline-flex"><Plus size={17} /> New Entry</button>
+            )}
           </div>
         </header>
 
@@ -159,13 +166,17 @@ export default function Layout({ user, children }) {
 
       {/* mobile bottom bar */}
       <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-line bg-white/97 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
-        <div className="grid grid-cols-5">
-          {mobileNav.slice(0, 2).map((n) => <BottomLink key={n.to} n={n} />)}
-          <button onClick={() => setSheet(true)} data-testid="mobile-quick-btn" className="flex flex-col items-center py-2">
-            <span className="grid h-11 w-11 -mt-4 place-items-center rounded-full bg-gradient-to-br from-[#0B5C4E] to-[#1D8A4A] text-white shadow-lg"><Plus size={22} /></span>
-            <span className="mt-0.5 text-[10.5px] font-semibold text-brand-600">New</span>
-          </button>
-          {mobileNav.slice(2).map((n) => <BottomLink key={n.to} n={n} />)}
+        <div className={`grid ${user?.role === "superadmin" ? "grid-cols-2" : "grid-cols-5"}`}>
+          {user?.role === "superadmin" ? mobileNav.map((n) => <BottomLink key={n.to} n={n} />) : (
+            <>
+              {mobileNav.slice(0, 2).map((n) => <BottomLink key={n.to} n={n} />)}
+              <button onClick={() => setSheet(true)} data-testid="mobile-quick-btn" className="flex flex-col items-center py-2">
+                <span className="grid h-11 w-11 -mt-4 place-items-center rounded-full bg-[#0B5C4E] text-white shadow-lg"><Plus size={22} /></span>
+                <span className="mt-0.5 text-[10.5px] font-semibold text-brand-600">New</span>
+              </button>
+              {mobileNav.slice(2).map((n) => <BottomLink key={n.to} n={n} />)}
+            </>
+          )}
         </div>
       </div>
 
