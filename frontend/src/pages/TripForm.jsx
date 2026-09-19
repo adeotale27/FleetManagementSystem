@@ -194,7 +194,11 @@ export default function TripForm() {
               <div className="flex flex-wrap items-center gap-2 text-[13px]">
                 <Badge>{driver.current_trip ? "On Trip" : "Available"}</Badge>
                 <span className="text-muted">{driver.mobile}</span>
-                {driver.balance > 0 && <span className="text-amber-600">Advance {money(driver.balance)}</span>}
+                {driver.balance > 0 && (
+                  <Btn variant="s" className="py-1.5 text-[13px]" onClick={() => nav(`/drivers/${driver.id}`)}>
+                    Advance {money(driver.balance)}
+                  </Btn>
+                )}
               </div>
             )}
             <button onClick={() => setTempDrv({ name: "", mobile: "", licence_no: "", save: false, hire_amount: "", payment_date: f.start_date, pay_mode: "Cash", paid: false, payment_cycle: "this_trip" })}

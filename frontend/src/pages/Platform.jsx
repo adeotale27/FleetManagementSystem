@@ -7,7 +7,7 @@ import { api, errMsg } from "../lib/api";
 import { useFetch } from "../lib/hooks";
 import { money, money0, dmy } from "../lib/format";
 import {
-  Badge, Btn, Card, DataTable, ErrorState, Input, Loader, Modal, PageHead, Select, Stat, TextArea, toast,
+  Badge, Btn, Card, DataTable, EmptyState, ErrorState, Input, Loader, Modal, PageHead, Select, Stat, TextArea, toast,
 } from "../components/ui";
 
 const DEFAULT_FEATURES = {
@@ -212,6 +212,43 @@ export default function Platform() {
           </div>
         )}
       </Modal>
+    </div>
+  );
+}
+
+export function PlatformSettings() {
+  const { data, loading, error, reload } = useFetch("/platform/summary");
+  const logs = useFetch("/platform/errors");
+  if (loading && !data) return <Loader label="Loading console…" />;
+  if (error) return <ErrorState text={error} onRetry={reload} />;
+  const t = data.totals;
+  return (
+    <div>
+      <PageHead title="Platform console" subtitle="SaaS view — licences, health and requests. Not a transport office." />
+      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat label="Businesses" value={t.licenses} />
+        <Stat label="Active" value={t.active} tone="text-brand-600" />
+        <Stat label="Suspended" value={t.suspended} />
+        <Stat label="Expiring" value={t.expiring} tone={t.expiring ? "text-amber-600" : ""} />
+      </div>
+      <Card className="mb-4 overflow-hidden">
+        <div className="border-b border-line px-4 py-3"><h3 className="font-head text-[15.5px] font-bold">Error log</h3>
+          <p className="text-[12.5px] text-muted">Server failures only — for you as product owner, not tenants.</p></div>
+        <DataTable testid="error-log"
+          columns={[
+            { key: "created_at", label: "When" },
+            { key: "method", label: "Method" },
+            { key: "path", label: "Path", strong: true },
+            { key: "status", label: "Status" },
+            { key: "detail", label: "Detail" },
+          ]}
+          rows={logs.data || []}
+          empty={<EmptyState title="No server errors" text="When an API returns 500, it lands here." />} />
+      </Card>
+      <Card className="p-4">
+        <h3 className="font-head text-[15.5px] font-bold">How licences work</h3>
+        <p className="mt-2 text-[14px] text-muted">Open Licences to issue a business, suspend it, reset the owner password, or turn modules on/off. Extra asks go in Customise notes on that licence only.</p>
+      </Card>
     </div>
   );
 }

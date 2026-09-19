@@ -45,12 +45,12 @@ export default function Reports() {
     <div>
       <PageHead title="Reports" subtitle="Filter, view and export any part of your business"
         actions={
-          <>
+          <div className="flex flex-wrap gap-2">
             <Btn variant="s" icon={Download} data-testid="rep-csv" onClick={() => exportCSV(name, cols, flat)}>CSV</Btn>
-            <Btn variant="s" onClick={() => exportExcel(name, cols, flat)}>Excel</Btn>
+            <Btn variant="s" icon={Download} onClick={() => exportExcel(name, cols, flat)}>Excel</Btn>
             <Btn variant="s" icon={FileText} data-testid="rep-pdf" onClick={() => exportPDF(label, cols, flat, meta)}>PDF</Btn>
             <Btn variant="s" icon={Printer} onClick={() => exportPDF(label, cols, flat, meta)}>Print</Btn>
-          </>
+          </div>
         } />
 
       <div className="mb-4 -mx-4 flex gap-2 overflow-x-auto px-4 pb-2 md:mx-0 md:flex-wrap md:px-0">

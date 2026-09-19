@@ -46,8 +46,11 @@ export default function Settings() {
     toast("Uploading logo…");
     try {
       const url = await uploadFile(file, "logo");
-      setS((prev) => ({ ...prev, company: { ...prev.company, logo: url } }));
-      toast("Logo uploaded — press Save Settings");
+      const company = { ...s.company, logo: url };
+      setS((prev) => ({ ...prev, company }));
+      await api.put("/settings", { company });
+      window.dispatchEvent(new Event("fms:branding"));
+      toast("Business logo saved — it will print on LRs");
     } catch (er) { toast(errMsg(er), "err"); }
   };
 
@@ -57,8 +60,11 @@ export default function Settings() {
     toast("Uploading photo…");
     try {
       const url = await uploadFile(file, "owner-photo");
-      setS((prev) => ({ ...prev, company: { ...prev.company, owner_photo: url } }));
-      toast("Photo uploaded — press Save Settings");
+      const company = { ...s.company, owner_photo: url };
+      setS((prev) => ({ ...prev, company }));
+      await api.put("/settings", { company });
+      window.dispatchEvent(new Event("fms:branding"));
+      toast("Owner photo saved");
     } catch (er) { toast(errMsg(er), "err"); }
   };
 

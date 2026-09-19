@@ -34,7 +34,7 @@ body {
     @apply inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-[14.5px]
       font-semibold transition-all duration-150 active:scale-[.97] disabled:opacity-50;
   }
-  .btn-p { @apply btn bg-gradient-to-r from-[#0B5C4E] via-[#1478C8] to-[#1D8A4A] text-white shadow-md hover:brightness-110; }
+  .btn-p { @apply btn bg-[#0B5C4E] text-white shadow-md hover:bg-[#094A3F]; }
   .btn-s { @apply btn border border-line bg-white text-ink hover:border-brand-400 hover:text-brand-600 hover:shadow-sm; }
   .btn-g { @apply btn bg-ink-soft text-white hover:bg-ink; }
   .btn-d { @apply btn border border-red-200 bg-white text-red-600 hover:bg-red-50; }

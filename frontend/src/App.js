@@ -19,7 +19,7 @@ import PersonDetail from "./pages/PersonDetail";
 import Finance from "./pages/Finance";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
-import Platform from "./pages/Platform";
+import Platform, { PlatformSettings } from "./pages/Platform";
 
 export default function App() {
   const [state, setState] = useState("checking");
@@ -53,7 +53,15 @@ export default function App() {
       ) : (
         <Layout user={user}>
           <Routes>
-            <Route path="/" element={user?.role === "superadmin" ? <Navigate to="/platform" replace /> : <Dashboard />} />
+            {user?.role === "superadmin" ? (
+              <>
+                <Route path="/platform" element={<Platform />} />
+                <Route path="/settings" element={<PlatformSettings />} />
+                <Route path="*" element={<Navigate to="/platform" replace />} />
+              </>
+            ) : (
+              <>
+            <Route path="/" element={<Dashboard />} />
             <Route path="/trips" element={<Trips />} />
             <Route path="/trips/new" element={<TripForm />} />
             <Route path="/trips/:id" element={<TripDetail />} />
@@ -69,9 +77,10 @@ export default function App() {
             <Route path="/finance" element={<Finance />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
-            {user?.role === "superadmin" && <Route path="/platform" element={<Platform />} />}
             <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
+              </>
+            )}
           </Routes>
         </Layout>
       )}

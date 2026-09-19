@@ -27,7 +27,7 @@ export default function Team() {
       <PageHead title="Team" subtitle="Drivers, office staff and their advances"
         actions={
           <>
-            <Btn variant="s" icon={HandCoins} data-testid="add-advance" onClick={() => setEntry(true)}>Advance / Repayment</Btn>
+            <Btn icon={HandCoins} data-testid="add-advance" onClick={() => setEntry(true)}>Advance / Repayment</Btn>
             <Btn icon={Plus} data-testid="add-person" onClick={() => setForm({ res: tab === "drivers" ? "drivers" : "team" })}>
               Add {tab === "drivers" ? "Driver" : "Team Member"}
             </Btn>
