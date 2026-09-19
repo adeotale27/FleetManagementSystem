@@ -178,7 +178,7 @@ Money is derived from `ledger` + `cashbook`. Cancel reverses entries; rows are n
 |----------|----------|
 | `fleet_db_platform` | `users`, `tenants` (licences) |
 | `fleet_db` | Primary tenant `naidu` (New Naidu Transport) collections |
-| `fleet_db_(BusinessName_OwnerName)` | Every additional licensed business (readable name, not a random id) |
+| `fleet_db_BusinessName_OwnerName` | Every additional licensed business |
 
 Users collection id = username. Roles: `superadmin` (no tenant) or `owner` (has `tenant_id`).
 

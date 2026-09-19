@@ -210,7 +210,7 @@ export const Tabs = ({ tabs, value, onChange }) => (
       return (
         <button key={v} data-testid={`tab-${v}`} onClick={() => onChange(v)}
           className={`whitespace-nowrap rounded-lg px-3.5 py-2 text-[14px] font-semibold transition-colors ${
-            on ? "bg-ink text-white" : "text-muted hover:bg-white hover:text-ink"}`}>
+            on ? "bg-brand-500 text-white" : "text-muted hover:bg-white hover:text-ink"}`}>
           {label}{t.count !== undefined && <span className="ml-1.5 opacity-70">{t.count}</span>}
         </button>
       );

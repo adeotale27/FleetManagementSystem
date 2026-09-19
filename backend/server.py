@@ -1580,34 +1580,41 @@ async def serve_file(path: str):
 
 @api.get("/tracking/live")
 async def tracking_live(u=Depends(current_user)):
-    """Live truck location from a WheelsEye GPS device (token is set in Settings)."""
+    """Live location per vehicle that has its own WheelsEye token."""
     import httpx
-    s = await get_settings()
-    token = (s.get("wheelseye_token") or "").strip()
-    if not token:
+    out, errors = [], []
+    veh = await db.vehicles.find({"archived": {"$ne": True}}).to_list(500)
+    tokens = [(v, (v.get("wheelseye_token") or "").strip()) for v in veh]
+    tokens = [(v, t) for v, t in tokens if t]
+    if not tokens:
         return {"configured": False, "vehicles": [],
-                "help": "Add your WheelsEye API access token in Settings to see live truck locations."}
-    try:
-        async with httpx.AsyncClient(timeout=20) as cx:
-            r = await cx.get("https://api.wheelseye.com/currentLoc",
-                             params={"accessToken": token, "isLocationReq": "true"})
-            data = r.json()
-    except Exception as e:
-        return {"configured": True, "error": f"Could not reach WheelsEye: {e}", "vehicles": []}
-    raw = data.get("data")
-    rows = raw.get("list") if isinstance(raw, dict) else raw
-    if not isinstance(rows, list):
-        return {"configured": True, "error": data.get("message") or "Unexpected response from WheelsEye", "vehicles": []}
-    out = []
-    for v in rows:
-        out.append({
-            "vehicle_no": v.get("vehicleNumber") or v.get("vehicle_no") or "—",
-            "location": v.get("location") or v.get("address") or "—",
-            "lat": v.get("latitude") or v.get("lat"), "lng": v.get("longitude") or v.get("lng"),
-            "speed": v.get("speed"), "ignition": v.get("ignition"),
-            "updated_at": v.get("lastUpdated") or v.get("time") or "",
-        })
-    return {"configured": True, "vehicles": out}
+                "help": "Add a WheelsEye token on each vehicle to see live location."}
+    async with httpx.AsyncClient(timeout=20) as cx:
+        for v, token in tokens:
+            try:
+                r = await cx.get("https://api.wheelseye.com/currentLoc",
+                                 params={"accessToken": token, "isLocationReq": "true"})
+                data = r.json()
+                raw = data.get("data")
+                rows = raw.get("list") if isinstance(raw, dict) else raw
+                if not isinstance(rows, list):
+                    errors.append(v.get("vehicle_no", ""))
+                    continue
+                pick = rows[0] if rows else {}
+                for row in rows:
+                    if (row.get("vehicleNumber") or row.get("vehicle_no") or "").replace(" ", "").upper() == (v.get("vehicle_no") or "").replace(" ", "").upper():
+                        pick = row
+                        break
+                out.append({
+                    "vehicle_no": v.get("vehicle_no") or pick.get("vehicleNumber") or "—",
+                    "location": pick.get("location") or pick.get("address") or "—",
+                    "lat": pick.get("latitude") or pick.get("lat"), "lng": pick.get("longitude") or pick.get("lng"),
+                    "speed": pick.get("speed"), "ignition": pick.get("ignition"),
+                    "updated_at": pick.get("lastUpdated") or pick.get("time") or "",
+                })
+            except Exception as e:
+                errors.append(f"{v.get('vehicle_no')}: {e}")
+    return {"configured": True, "vehicles": out, "error": "; ".join(errors) if errors else None}
 
 
 # ------------------------------------------------------------------ platform (super admin)
@@ -1699,7 +1706,9 @@ async def create_tenant(body: TenantIn, u=Depends(require_super)):
     company["name"] = body.name.strip()
     company["city"] = body.city or ""
     company["state"] = body.state or ""
-    await tdb.settings.insert_one({**DEFAULT_SETTINGS, "company": company})
+    await tdb.settings.insert_one({
+        **DEFAULT_SETTINGS, "company": company, "base_locations": [], "routes": [],
+    })
     return {"id": tid, "db_name": dbn, "ok": True}
 
 

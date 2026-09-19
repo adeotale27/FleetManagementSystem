@@ -35,7 +35,7 @@ def tenant_db_name(tenant_id):
     # Old licences used a 12-char hex id as the database suffix.
     if re.fullmatch(r"[a-f0-9]{12}", str(tenant_id)):
         return f"{BASE_DB}_{tenant_id}"
-    return f"{BASE_DB}_({tenant_id})"
+    return f"{BASE_DB}_{tenant_id}"
 
 
 def set_tenant(tenant_id):

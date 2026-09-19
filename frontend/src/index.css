@@ -36,7 +36,7 @@ body {
   }
   .btn-p { @apply btn bg-[#0B5C4E] text-white shadow-md hover:bg-[#094A3F]; }
   .btn-s { @apply btn border border-line bg-white text-ink hover:border-brand-400 hover:text-brand-600 hover:shadow-sm; }
-  .btn-g { @apply btn bg-ink-soft text-white hover:bg-ink; }
+  .btn-g { @apply btn bg-brand-600 text-white hover:bg-brand-700; }
   .btn-d { @apply btn border border-red-200 bg-white text-red-600 hover:bg-red-50; }
   .th { @apply whitespace-nowrap px-3 py-2.5 text-left text-[11.5px] font-bold uppercase tracking-wider text-muted; }
   .td { @apply whitespace-nowrap px-3 py-3 text-[14px] text-ink; }

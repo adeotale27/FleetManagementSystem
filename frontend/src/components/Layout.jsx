@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   BarChart3, Banknote, Fuel, Gauge, LayoutDashboard, LogOut, Menu, Plus, Receipt,
-  Search, Settings as Cog, ShieldCheck, Truck, Users, UsersRound, Wallet, X, FileText, ArrowRight,
+  Search, Settings as Cog, ShieldCheck, Truck, User, Users, UsersRound, Wallet, X, FileText, ArrowRight,
 } from "lucide-react";
 import { api } from "../lib/api";
 import EntryModal from "./QuickForms";
@@ -95,8 +95,8 @@ export default function Layout({ user, children }) {
           <div className="flex min-w-0 items-center gap-2">
             {photo
               ? <img src={photo} alt="" className="h-9 w-9 shrink-0 rounded-full object-cover ring-2 ring-white/20" />
-              : <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 text-[12px] font-bold text-white">
-                  {(user?.name || "U").slice(0, 1).toUpperCase()}
+              : <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 text-white">
+                  <User size={16} />
                 </div>}
             <div className="min-w-0">
               <p className="truncate text-[13.5px] font-semibold text-white">{user?.name || "Owner"}</p>

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Building2, MapPin, Plus, Route, Save, Trash2, Truck, X } from "lucide-react";
+import { Building2, MapPin, Plus, Route, Save, Trash2, Truck, User, X } from "lucide-react";
 import { api, errMsg, uploadFile } from "../lib/api";
 import { useFetch, useMaster } from "../lib/hooks";
 import MasterForm from "../components/MasterForm";
@@ -113,7 +113,7 @@ export default function Settings() {
                     : <div className="grid h-16 w-16 place-items-center rounded-lg bg-brand-500 text-white"><Truck size={26} /></div>}
                   <div>
                     <input type="file" accept="image/*" onChange={logoUpload} data-testid="set-logo"
-                      className="text-[13px] file:mr-3 file:rounded-lg file:border-0 file:bg-ink file:px-3 file:py-2 file:text-white" />
+                      className="text-[13px] file:mr-3 file:rounded-2xl file:border-0 file:bg-brand-500 file:px-3 file:py-2 file:font-semibold file:text-white" />
                     {s.company.logo && (
                       <button onClick={() => setS({ ...s, company: { ...s.company, logo: "" } })}
                         className="mt-2 block text-[12.5px] font-semibold text-red-600">Remove logo</button>
@@ -126,11 +126,11 @@ export default function Settings() {
                 <div className="flex items-center gap-4">
                   {s.company.owner_photo
                     ? <img src={s.company.owner_photo} alt="owner" className="h-16 w-16 rounded-full border border-line object-cover" />
-                    : <div className="grid h-16 w-16 place-items-center rounded-full bg-ink text-white text-[20px] font-bold">
-                        {(s.company.owner_name || "O")[0]}</div>}
+                    : <div className="grid h-16 w-16 place-items-center rounded-full bg-brand-50 text-brand-600">
+                        <User size={26} /></div>}
                   <div>
                     <input type="file" accept="image/*" capture="environment" onChange={photoUpload} data-testid="set-owner-photo"
-                      className="text-[13px] file:mr-3 file:rounded-lg file:border-0 file:bg-ink file:px-3 file:py-2 file:text-white" />
+                      className="text-[13px] file:mr-3 file:rounded-2xl file:border-0 file:bg-brand-500 file:px-3 file:py-2 file:font-semibold file:text-white" />
                     {s.company.owner_photo && (
                       <button onClick={() => setS({ ...s, company: { ...s.company, owner_photo: "" } })}
                         className="mt-2 block text-[12.5px] font-semibold text-red-600">Remove photo</button>
@@ -142,11 +142,6 @@ export default function Settings() {
           </Card>
 
           <Card className="p-4">
-            <h3 className="mb-4 font-head text-[16px] font-bold">GPS Tracking (WheelsEye)</h3>
-            <Input label="WheelsEye API Access Token" value={s.wheelseye_token || ""} data-testid="set-wheelseye-token"
-              onChange={(e) => setS({ ...s, wheelseye_token: e.target.value })}
-              hint="Ask WheelsEye support for your API access token — live truck locations then show under Vehicles → Live Tracking" />
-          </Card>
 
           <Card className="mt-4 p-4">
             <h3 className="mb-4 font-head text-[16px] font-bold">Numbering & Due Days</h3>
@@ -189,7 +184,7 @@ export default function Settings() {
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2 text-brand-600"><MapPin size={18} />
                 <h3 className="font-head text-[16px] font-bold text-ink">Base Locations</h3></div>
-              <Btn variant="s" icon={Plus} data-testid="add-location"
+              <Btn icon={Plus} data-testid="add-location"
                 onClick={() => setS({ ...s, base_locations: [...s.base_locations, { id: `loc_${rid()}`, name: "", address: "", city: "", state: "", active: true }] })}>
                 Add Location
               </Btn>
@@ -223,7 +218,7 @@ export default function Settings() {
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2 text-brand-600"><Route size={18} />
                 <h3 className="font-head text-[16px] font-bold text-ink">Indoor Routes</h3></div>
-              <Btn variant="s" icon={Plus} data-testid="add-route"
+              <Btn icon={Plus} data-testid="add-route"
                 onClick={() => setS({ ...s, routes: [...s.routes, { id: `rt_${rid()}`, from_id: "", to_id: "", name: "", default_amount: 0, active: true }] })}>
                 Add Route
               </Btn>
@@ -277,7 +272,7 @@ export default function Settings() {
         <Card className="overflow-hidden">
           <div className="flex items-center justify-between border-b border-line px-4 py-3">
             <h3 className="font-head text-[16px] font-bold">3PL Partners</h3>
-            <Btn variant="s" icon={Plus} data-testid="add-partner" onClick={() => setForm({ res: "partners" })}>Add Partner</Btn>
+            <Btn icon={Plus} data-testid="add-partner" onClick={() => setForm({ res: "partners" })}>Add Partner</Btn>
           </div>
           <DataTable testid="partners-table"
             columns={[
