@@ -141,8 +141,6 @@ export default function Settings() {
             </div>
           </Card>
 
-          <Card className="p-4">
-
           <Card className="mt-4 p-4">
             <h3 className="mb-4 font-head text-[16px] font-bold">Numbering & Due Days</h3>
             <div className="grid gap-3.5 md:grid-cols-4">
@@ -152,14 +150,6 @@ export default function Settings() {
               <Input label="Payment Due Days" type="number" value={s.receivable_due_days}
                 onChange={(e) => setS({ ...s, receivable_due_days: e.target.value })}
                 hint="Used for overdue and aging" />
-            </div>
-            <h3 className="mb-3 mt-6 font-head text-[16px] font-bold">Opening Balances</h3>
-            <div className="grid gap-3.5 md:grid-cols-2">
-              <Money label="Opening Cash in Hand" value={s.opening_cash ?? ""} data-testid="set-opening-cash"
-                onChange={(e) => setS({ ...s, opening_cash: e.target.value })}
-                hint="Cash you already had before using this app" />
-              <Money label="Opening Bank Balance" value={s.opening_bank ?? ""} data-testid="set-opening-bank"
-                onChange={(e) => setS({ ...s, opening_bank: e.target.value })} />
             </div>
             <h3 className="mb-3 mt-6 font-head text-[16px] font-bold">Opening Balances</h3>
             <div className="grid gap-3.5 md:grid-cols-2">
