@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { useFetch } from "../lib/hooks";
 import { money, money0, dmy } from "../lib/format";
-import { Badge, Card, DataTable, EmptyState, ErrorState, Loader, PageHead, Stat } from "../components/ui";
+import { Badge, Btn, Card, DataTable, EmptyState, ErrorState, Loader, PageHead, Stat } from "../components/ui";
 
 export default function Dashboard() {
   const { data: d, loading, error, reload } = useFetch("/dashboard");

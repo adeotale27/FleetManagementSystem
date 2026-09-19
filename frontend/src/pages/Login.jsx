@@ -1,9 +1,10 @@
 import React, { useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { api, errMsg } from "../lib/api";
 
 export default function Login({ onLogin }) {
   const [f, setF] = useState({ username: "", password: "" });
+  const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -19,58 +20,69 @@ export default function Login({ onLogin }) {
 
   return (
     <div className="grid min-h-screen md:grid-cols-2">
-      <div className="relative hidden flex-col justify-between overflow-hidden bg-[#071018] px-12 py-10 md:flex">
-        <div className="absolute -left-20 top-10 h-96 w-96 rounded-full bg-[#1D6FEA]/25 blur-3xl" />
-        <div className="absolute bottom-10 right-0 h-80 w-80 rounded-full bg-[#22C55E]/15 blur-3xl" />
-        <div className="relative inline-flex w-fit rounded-3xl bg-white p-5 shadow-xl">
-          <img src="/profleet-logo.png" alt="ProFleet" className="h-28 w-auto object-contain" />
-        </div>
-        <div className="relative max-w-md">
-          <h1 className="font-head text-[40px] font-extrabold leading-[1.08] text-white">
+      <div className="relative hidden flex-col items-center justify-center overflow-hidden bg-[#071018] px-16 py-12 md:flex">
+        <div className="pointer-events-none absolute inset-0 opacity-[0.07]"
+          style={{ backgroundImage: "radial-gradient(ellipse at 20% 30%, #1D6FEA 0%, transparent 50%), radial-gradient(ellipse at 80% 80%, #0B5C4E 0%, transparent 45%)" }} />
+        <div className="relative flex w-full max-w-lg flex-col items-center text-center">
+          <div className="rounded-2xl bg-white px-5 py-4 shadow-lg">
+            <img src="/profleet-logo.png" alt="ProFleet" className="h-[72px] w-auto max-w-[220px] object-contain" />
+          </div>
+          <p className="mt-8 text-[13px] font-semibold uppercase tracking-[0.22em] text-white/50">ProFleet Management</p>
+          <h1 className="mt-4 font-head text-[44px] font-extrabold leading-[1.08] text-white">
             Track. Manage.<br />Move. Grow.
           </h1>
-          <p className="mt-5 text-[15px] leading-relaxed text-white/60">
-            Office for trips, LR, diesel and collections — built for a transport desk.
+          <p className="mt-5 max-w-md text-[16px] leading-relaxed text-white/55">
+            Your complete transport operations workspace for trips, LR, vehicles, drivers and collections.
+          </p>
+          <p className="mt-10 text-[11px] font-semibold tracking-[0.18em] text-white/35">
+            LIVE FLEET · TRIPS &amp; LR · FINANCE · COLLECTIONS
           </p>
         </div>
-        <p className="relative text-[12.5px] tracking-[0.2em] text-white/35">TRACK · MANAGE · MOVE · GROW</p>
+        <p className="absolute bottom-8 left-0 right-0 text-center text-[12px] text-white/25">ProFleet Management</p>
       </div>
 
-      <div className="flex items-center justify-center bg-canvas px-5 py-12">
-        <form onSubmit={submit} className="w-full max-w-sm" data-testid="login-form">
-          <div className="mb-8 flex justify-center md:hidden">
-            <div className="rounded-3xl bg-white p-4 shadow-card">
-              <img src="/profleet-logo.png" alt="ProFleet" className="h-24 w-auto object-contain" />
+      <div className="flex items-center justify-center bg-[#F4F6F8] px-5 py-10 md:px-10">
+        <form onSubmit={submit} className="w-full max-w-[440px]" data-testid="login-form">
+          <div className="mb-8 flex flex-col items-center md:hidden">
+            <div className="rounded-2xl bg-white px-4 py-3 shadow-card">
+              <img src="/profleet-logo.png" alt="ProFleet" className="h-16 w-auto object-contain" />
             </div>
+            <p className="mt-3 text-[12px] font-semibold uppercase tracking-[0.16em] text-muted">ProFleet Management</p>
           </div>
-          <div className="hidden items-center gap-3 md:flex">
-            <img src="/app-icon.png" alt="" className="h-12 w-12 rounded-2xl object-cover shadow-md" />
+          <div className="mb-8 hidden items-center gap-3.5 md:flex">
+            <img src="/app-icon.png" alt="" className="h-14 w-14 rounded-2xl object-cover shadow-md" />
             <div>
-              <p className="font-head text-[18px] font-bold leading-none">ProFleet</p>
-              <p className="mt-1 text-[12px] font-semibold uppercase tracking-[0.16em] text-muted">Management</p>
+              <p className="font-head text-[20px] font-bold leading-none">ProFleet</p>
+              <p className="mt-1.5 text-[12px] font-semibold uppercase tracking-[0.16em] text-muted">Management</p>
             </div>
           </div>
-          <h2 className="mt-8 font-head text-[26px] font-bold text-ink">Welcome back</h2>
-          <p className="mt-1 text-[14px] text-muted">Sign in to your office or platform console.</p>
-          <div className="mt-7 space-y-4">
-            <label className="block">
-              <span className="lbl">User name</span>
-              <input data-testid="login-username" className="fld rounded-2xl" value={f.username} autoCapitalize="none"
-                autoComplete="username" placeholder="Your login"
-                onChange={(e) => setF({ ...f, username: e.target.value })} />
-            </label>
-            <label className="block">
-              <span className="lbl">Password</span>
-              <input data-testid="login-password" type="password" className="fld rounded-2xl" value={f.password}
+          <h2 className="font-head text-[32px] font-bold leading-tight text-ink">Welcome back</h2>
+          <p className="mt-2 text-[15px] text-muted">Sign in to your ProFleet Management workspace.</p>
+          <label className="mt-8 block">
+            <span className="lbl">Username</span>
+            <input data-testid="login-username" className="fld rounded-2xl py-[15px] text-[16px]" value={f.username}
+              autoCapitalize="none" autoComplete="username" placeholder="Enter your username"
+              onChange={(e) => setF({ ...f, username: e.target.value })} />
+          </label>
+          <label className="mt-5 block">
+            <span className="lbl">Password</span>
+            <div className="relative">
+              <input data-testid="login-password" type={show ? "text" : "password"}
+                className="fld rounded-2xl py-[15px] pr-12 text-[16px]" value={f.password}
                 autoComplete="current-password" placeholder="••••••••"
                 onChange={(e) => setF({ ...f, password: e.target.value })} />
-            </label>
-          </div>
-          {err && <p data-testid="login-error" className="mt-4 rounded-2xl bg-red-50 px-3 py-2.5 text-[13.5px] font-medium text-red-600">{err}</p>}
+              <button type="button" onClick={() => setShow((s) => !s)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-muted hover:text-ink" aria-label="Show password">
+                {show ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
+          </label>
+          {err && <p data-testid="login-error" className="mt-4 rounded-2xl bg-red-50 px-3 py-2.5 text-[14px] font-medium text-red-600">{err}</p>}
           <button data-testid="login-submit" disabled={busy}
-            className="btn-p mt-6 w-full rounded-2xl py-3.5 text-[15px] text-white">
-            {busy && <Loader2 size={17} className="animate-spin" />} {busy ? "Signing in…" : "Sign in"}
+            className="btn-p mt-8 w-full rounded-2xl py-[15px] text-[16px] font-semibold text-white">
+            {busy && <Loader2 size={18} className="animate-spin" />} {busy ? "Signing in…" : "Sign in"}
           </button>
+          <p className="mt-10 text-center text-[12.5px] text-muted">ProFleet Management · Secure business workspace</p>
         </form>
       </div>
     </div>
