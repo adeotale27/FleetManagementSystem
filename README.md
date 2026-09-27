@@ -1,11 +1,18 @@
-# Fleet Manager v1.0.0
+# Fleet Manager v1.1.2
 
 Transport office software for one or many logistics businesses.
 
 - **Business owner** runs the office: trips, LR, vehicles, parties, team, money, reports.
 - **Platform owner** issues licences, suspends businesses, resets owner passwords, and turns modules on/off per business.
 
-This is **v1**. See [VERSION.md](VERSION.md) for what this release includes.
+Current application version: **v1.1.2**. See [VERSION.md](VERSION.md) for the release policy and changelog.
+
+## Project guide
+
+- [APP_SUMMARY.md](APP_SUMMARY.md) — product purpose, roles, features, and current boundaries.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — application architecture, data flows, design map, and diagrams.
+- [AI_CHECKLIST.md](AI_CHECKLIST.md) — required steps for AI contributors and maintainers.
+- [VERSION.md](VERSION.md) — authoritative app version, release rules, and changelog.
 
 ---
 
@@ -84,7 +91,7 @@ sudo systemctl start mongod
 ```bash
 cd backend
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/Scripts/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn server:app --reload --host 0.0.0.0 --port 8000
 ```

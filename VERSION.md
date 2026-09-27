@@ -1,38 +1,53 @@
-# Version history
+# Fleet Manager release control
 
-## v1.1.1 — 19 September 2026
+## Source of truth
 
-- LR uses the **business** logo (saved on upload). No ProFleet mark on the receipt if a logo exists; initials if none.
-- `/api/masters/null` stopped (hooks skip empty master names).
-- Platform owner: Licences + Console only (error log of 500s). No office settings/trips.
-- Login: white card around logo, solid Sign in button, light favicon.
-- Advance / Repayment is a primary button; export/PDF styling updated.
+- The product release version is the `Current version` value below. Git commits and tags track source history; this file tracks the app's release history and policy.
+- Keep `frontend/package.json`'s `version` in sync with this file (without the leading `v`).
+- A release entry must be added here for every app change set. Do not merge or publish an app change with stale version metadata or no changelog entry.
+- Documentation changes that alter project guidance, architecture, product behavior, or contributor workflow are release changes too. Use a patch increment unless they introduce/describe an app feature.
 
-## v1.1.0 — 19 September 2026
+## Version policy (Semantic Versioning)
 
-### Added / fixed
-- Logo and owner photo upload now save on this computer (no Emergent cloud). 502 on `/api/upload` is gone.
-- Business logo shows before the company name in the sidebar (and on phones). Owner photo shows beside the signed-in name.
-- ProFleet brand on login, favicon, app icon, and LR print fallback.
-- Login no longer pre-fills or prints default passwords.
-- Create trip: add a vehicle **or** a driver that is not in the list — temporary (this trip) or permanent (saved to master from the trip date). This-trip hire can be paid now (expense + cash) or left due on the driver ledger. Permanent driver uses a monthly payment cycle.
-- New tenant MongoDB name: `fleet_db_(BusinessName_OwnerName)` instead of a random id.
-- Rounder gradient buttons; LR actions wrap on small screens.
+The version format is `MAJOR.MINOR.PATCH`:
 
-## v1.0.0 — 18 September 2026
+- **PATCH** (`1.1.1` → `1.1.2`): backwards-compatible bug fixes, maintenance, and documentation/governance changes that affect how the app is built or maintained.
+- **MINOR** (`1.1.2` → `1.2.0`): every new backwards-compatible user-facing feature or integration. A genuinely new feature must never be merged without a version increment and release notes.
+- **MAJOR** (`1.9.0` → `2.0.0`): incompatible API, data, security, workflow, or deployment changes that require consumers or operators to adapt.
 
-First documented local-run release of **Fleet Manager**.
+For every change set: select the increment before implementation; update this file and `frontend/package.json`; add a dated changelog entry describing user-visible changes and relevant migration/compatibility notes; validate the implementation; then commit the complete change together. Do not reuse a released version. If one change set spans categories, use the highest applicable increment. Purely local experiments that are not retained in the repository do not constitute a release.
 
-### Added
-- End-to-end README: what the app is, how to run it on a local machine, roles, env files, and how data is split per business.
-- `backend/.env.example` and `frontend/.env.example` (copy to `.env`).
-- Platform owner account is **seeded and kept in sync** with `PLATFORM_USERNAME` / `PLATFORM_PASSWORD` on every backend start (role `superadmin`).
-- After platform-owner login, the app opens **`/platform`** (licence control). Sidebar lists Platform first.
-- Login screen lists both accounts: business owner and platform owner.
-- Business owner account remains: `OWNER_USERNAME` / `OWNER_PASSWORD` (role `owner`) for New Naidu Transport.
+New features and architecture changes also require updates to [APP_SUMMARY.md](APP_SUMMARY.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [AI_CHECKLIST.md](AI_CHECKLIST.md) wherever their content is affected.
 
-### Already in this codebase (v1 scope)
-- FastAPI + MongoDB backend; React 18 frontend (Tailwind, Recharts).
-- Business office: Dashboard, Trips & LR, Vehicles, Parties, Team, Finance, Reports, Settings.
-- Platform console: issue licences, suspend/activate, reset owner password, per-business modules.
-- Each licensed business has its own MongoDB database; users/licences live in `fleet_db_platform`.
+## Current version
+
+**v1.1.2** — 27 September 2026
+
+## Changelog
+
+### v1.1.2 — 27 September 2026
+
+- **Documentation:** Added an end-to-end product summary, architecture and design diagrams, and a mandatory AI/maintainer change checklist.
+- **Release process:** Established SemVer rules, required version synchronization, and a changelog entry for every retained app change set.
+- **Metadata:** Aligned the frontend package version with the product release.
+
+### v1.1.1 — 19 September 2026
+
+- LR uses the business logo saved on upload, with initials when no logo exists.
+- Prevented empty master requests such as `/api/masters/null`.
+- Limited platform-owner navigation to Licences and Console; added the server error log view.
+- Updated login branding and button styling; improved advance/repayment and export/PDF presentation.
+
+### v1.1.0 — 19 September 2026
+
+- Logo and owner-photo uploads save locally without a cloud key; business branding appears in the UI and LR.
+- Added ProFleet branding and removed default-password prefill/display from login.
+- Added temporary or permanent trip vehicles/drivers and trip-hire payment/due handling.
+- Changed new tenant database names to readable business/owner-derived names.
+- Improved small-screen LR actions and button styling.
+
+### v1.0.0 — 18 September 2026
+
+- First documented local-run release, including environment setup, roles, and tenant data separation.
+- Added platform-owner seeding/configuration and platform licence-control navigation.
+- Documented the FastAPI + MongoDB backend, React 18 frontend, transport-office workflows, and multi-tenant platform.

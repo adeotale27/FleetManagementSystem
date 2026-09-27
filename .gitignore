@@ -15,3 +15,13 @@ credentials.json
 *.key
 .credentials
 backend/data/uploads/
+
+# Python virtual environment
+.venv/
+venv/
+env/
+backend/.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
