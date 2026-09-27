@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Activity, AlertTriangle, Banknote, Check, CheckCircle2, Clock3, Copy, FileText,
+  Activity, AlertTriangle, Banknote, Check, CheckCircle2, Clock3, Copy, Download, FileText,
   MapPin, Truck, X,
 } from "lucide-react";
 import {
@@ -9,6 +9,7 @@ import {
 } from "recharts";
 import { api, errMsg } from "../lib/api";
 import { Btn, Card, ErrorState, Loader, PageHead } from "../components/ui";
+import { DATA_CHANGE_EVENT } from "../lib/realtime";
 import { money0 } from "../lib/format";
 import { useMaster } from "../lib/hooks";
 
@@ -48,6 +49,11 @@ const permissionGroups = [
       ["lrs:create", "Create LRs"],
       ["lrs:update", "Edit LRs"],
     ],
+  },
+  {
+    title: "Reports and ledger",
+    description: "Download the complete booking ledger for one operating day at this site.",
+    permissions: [["ledger:export", "Download daily ledger"]],
   },
   {
     title: "Finance and payments",
@@ -255,6 +261,8 @@ export default function SiteConsole({ user, adminOnly = false }) {
   const [migration, setMigration] = useState(null);
   const [tripForm, setTripForm] = useState({ truck_no: "", driver_name: "", vehicle_id: "", driver_id: "" });
   const [tripResources, setTripResources] = useState({ vehicles: [], drivers: [] });
+  const [dailyLedgerDate, setDailyLedgerDate] = useState(isoDay());
+  const [downloadingDailyLedger, setDownloadingDailyLedger] = useState(false);
   const [managerForm, setManagerForm] = useState({ name: "", username: "", password: "" });
   const [siteManagerTeamId, setSiteManagerTeamId] = useState("");
   const [newSiteManager, setNewSiteManager] = useState(false);
@@ -262,6 +270,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
   const [temporaryCredential, setTemporaryCredential] = useState(null);
   const [credentialCopied, setCredentialCopied] = useState(false);
   const [grantForm, setGrantForm] = useState({ username: "", site_id: "", permissions: ["dashboard:read", "trips:read", "lrs:read"] });
+  const siteEditDirtyFields = useRef({});
   const teamDirectory = useMaster(owner ? "team" : null);
 
   const loadBoardLrs = useCallback(async (id, tripId) => {
@@ -280,7 +289,49 @@ export default function SiteConsole({ user, adminOnly = false }) {
     }
   }, [owner, user]);
 
-  const refresh = useCallback(async (preferredSite = siteIdRef.current) => {
+  const loadSiteWorkspace = useCallback(async (id) => {
+    const results = await Promise.allSettled([
+      api.get(`/sites/${id}/trips`, { params: { limit: 20, offset: 0 } }),
+      owner ? Promise.resolve(null) : api.get(`/sites/${id}/dashboard`),
+      api.get(`/sites/${id}/trip-resources`),
+    ]);
+    const failures = [];
+    const [tripsResult, dashboardResult, resourcesResult] = results;
+
+    if (tripsResult.status === "fulfilled") {
+      const rows = tripsResult.value.data.rows || [];
+      setTripRows(rows);
+      setTripTotal(tripsResult.value.data.total || 0);
+      setTripOffset(rows.length);
+      await loadBoardLrs(id, rows[0]?.id);
+    } else {
+      setTripRows([]);
+      setTripTotal(0);
+      setTripOffset(0);
+      setBoardTripId("");
+      setBoardLrs([]);
+      failures.push(`Booking records: ${errMsg(tripsResult.reason)}`);
+    }
+
+    if (!owner) {
+      if (dashboardResult.status === "fulfilled") {
+        setDashboard(dashboardResult.value.data);
+      } else {
+        failures.push(`Site dashboard: ${errMsg(dashboardResult.reason)}`);
+      }
+    }
+
+    if (resourcesResult.status === "fulfilled") {
+      setTripResources(resourcesResult.value.data);
+    } else {
+      setTripResources({ vehicles: [], drivers: [] });
+      failures.push(`Vehicle and driver options: ${errMsg(resourcesResult.reason)}`);
+    }
+
+    setError(failures.length ? `Some site information could not be loaded. ${failures.join(" · ")}` : "");
+  }, [loadBoardLrs, owner]);
+
+  const refresh = useCallback(async (preferredSite = siteIdRef.current, preserveDrafts = false) => {
     setLoading(true);
     setError("");
     try {
@@ -299,22 +350,23 @@ export default function SiteConsole({ user, adminOnly = false }) {
       setManagers(managerResponse?.data || []);
       const selected = availableSites.find((item) => item.id === preferredSite) || availableSites[0];
       setSiteId(selected?.id || "");
-      if (selected) setSiteEdit({
-        name: selected.name, location: selected.location || "",
-        city: selected.city || "", timezone: selected.timezone || "Asia/Kolkata",
-      });
+      if (selected) {
+        const nextSiteEdit = {
+          name: selected.name, location: selected.location || "",
+          city: selected.city || "", timezone: selected.timezone || "Asia/Kolkata",
+        };
+        setSiteEdit((current) => preserveDrafts
+          ? { ...nextSiteEdit, ...Object.fromEntries(
+            Object.keys(siteEditDirtyFields.current).map((key) => [key, current[key]]),
+          ) }
+          : nextSiteEdit);
+        if (!preserveDrafts) siteEditDirtyFields.current = {};
+        else if (Object.keys(siteEditDirtyFields.current).length) {
+          setMessage("Latest data loaded. Your unsaved site edits were kept; review before saving.");
+        }
+      }
       if (selected && !adminOnly) {
-        const [siteDash, trips, resources] = await Promise.all([
-          owner ? Promise.resolve(null) : api.get(`/sites/${selected.id}/dashboard`),
-          api.get(`/sites/${selected.id}/trips`, { params: { limit: 20, offset: 0 } }),
-          api.get(`/sites/${selected.id}/trip-resources`),
-        ]);
-        if (!owner) setDashboard(siteDash.data);
-        setTripRows(trips.data.rows);
-        setTripTotal(trips.data.total);
-        setTripOffset(trips.data.rows.length);
-        setTripResources(resources.data);
-        await loadBoardLrs(selected.id, trips.data.rows[0]?.id);
+        await loadSiteWorkspace(selected.id);
       } else if (selected) {
         setTripRows([]);
         setTripTotal(0);
@@ -335,11 +387,17 @@ export default function SiteConsole({ user, adminOnly = false }) {
     } finally {
       setLoading(false);
     }
-  }, [adminOnly, loadBoardLrs, owner]);
+  }, [adminOnly, loadSiteWorkspace, owner]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    refresh();
+    const reload = () => refresh(siteIdRef.current, true);
+    window.addEventListener(DATA_CHANGE_EVENT, reload);
+    return () => window.removeEventListener(DATA_CHANGE_EVENT, reload);
+  }, [refresh]);
 
   const selectSite = async (id) => {
+    siteEditDirtyFields.current = {};
     setSiteId(id);
     if (owner) setFilters((current) => ({ ...current, site_id: id }));
     if (!id) {
@@ -357,19 +415,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
       city: selected.city || "", timezone: selected.timezone || "Asia/Kolkata",
     });
     if (adminOnly) return;
-    try {
-      const [trips, dash, resources] = await Promise.all([
-        api.get(`/sites/${id}/trips`, { params: { limit: 20, offset: 0 } }),
-        owner ? Promise.resolve(null) : api.get(`/sites/${id}/dashboard`),
-        api.get(`/sites/${id}/trip-resources`),
-      ]);
-      setTripRows(trips.data.rows);
-      setTripTotal(trips.data.total);
-      setTripOffset(trips.data.rows.length);
-      setTripResources(resources.data);
-      await loadBoardLrs(id, trips.data.rows[0]?.id);
-      if (!owner) setDashboard(dash.data);
-    } catch (e) { setError(errMsg(e)); }
+    await loadSiteWorkspace(id);
   };
 
   const loadMoreTrips = async () => {
@@ -410,6 +456,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
     event.preventDefault();
     try {
       await api.put(`/sites/${siteId}`, siteEdit);
+      siteEditDirtyFields.current = {};
       setMessage("Site details updated.");
       await refresh(siteId);
     } catch (e) { setError(errMsg(e)); }
@@ -536,6 +583,30 @@ export default function SiteConsole({ user, adminOnly = false }) {
       setTripForm({ truck_no: "", driver_name: "", vehicle_id: "", driver_id: "" });
       await refresh(siteId);
     } catch (e) { setError(errMsg(e)); }
+  };
+
+  const downloadDailyLedger = async () => {
+    if (!siteId || !dailyLedgerDate) return;
+    setDownloadingDailyLedger(true);
+    setError("");
+    try {
+      const response = await api.get(`/sites/${siteId}/ledger/daily`, {
+        params: { operating_date: dailyLedgerDate },
+        responseType: "blob",
+      });
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${sites.find((site) => site.id === siteId)?.code || "site"}-daily-ledger-${dailyLedgerDate}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setDownloadingDailyLedger(false);
+    }
   };
 
   const setStatus = async (site) => {
@@ -665,19 +736,31 @@ export default function SiteConsole({ user, adminOnly = false }) {
             <form onSubmit={saveSite} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               <label className="text-xs font-medium text-muted">Site name
                 <input className={field} aria-label="Site name" required value={siteEdit.name}
-                  onChange={(e) => setSiteEdit({ ...siteEdit, name: e.target.value })} />
+                  onChange={(e) => {
+                    siteEditDirtyFields.current.name = true;
+                    setSiteEdit({ ...siteEdit, name: e.target.value });
+                  }} />
               </label>
               <label className="text-xs font-medium text-muted">Location (optional)
                 <input className={field} aria-label="Location" placeholder="Street, area, or landmark" value={siteEdit.location}
-                  onChange={(e) => setSiteEdit({ ...siteEdit, location: e.target.value })} />
+                  onChange={(e) => {
+                    siteEditDirtyFields.current.location = true;
+                    setSiteEdit({ ...siteEdit, location: e.target.value });
+                  }} />
               </label>
               <label className="text-xs font-medium text-muted">City (optional)
                 <input className={field} aria-label="City" placeholder="City" value={siteEdit.city}
-                  onChange={(e) => setSiteEdit({ ...siteEdit, city: e.target.value })} />
+                  onChange={(e) => {
+                    siteEditDirtyFields.current.city = true;
+                    setSiteEdit({ ...siteEdit, city: e.target.value });
+                  }} />
               </label>
               <label className="text-xs font-medium text-muted">Time zone
                 <input className={field} aria-label="Site time zone" placeholder="Asia/Kolkata" value={siteEdit.timezone}
-                  onChange={(e) => setSiteEdit({ ...siteEdit, timezone: e.target.value })} />
+                  onChange={(e) => {
+                    siteEditDirtyFields.current.timezone = true;
+                    setSiteEdit({ ...siteEdit, timezone: e.target.value });
+                  }} />
               </label>
               <Btn type="submit">Save site</Btn>
             </form>
@@ -1166,6 +1249,25 @@ export default function SiteConsole({ user, adminOnly = false }) {
           </label>
           <Btn type="submit">Create booking</Btn>
         </form>
+      </Card>}
+
+      {siteId && (owner || user?.site_permissions?.[siteId]?.includes("ledger:export")) && <Card className="p-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="font-semibold">Daily booking ledger</h2>
+            <p className="mt-1 text-sm text-muted">Download all bookings, LRs, charges, collections, and payment details for this site and operating date.</p>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="text-sm">Operating date
+              <input className={field} type="date" aria-label="Daily ledger operating date"
+                value={dailyLedgerDate} onChange={(event) => setDailyLedgerDate(event.target.value)} />
+            </label>
+            <Btn icon={Download} disabled={!dailyLedgerDate || downloadingDailyLedger}
+              onClick={downloadDailyLedger}>
+              {downloadingDailyLedger ? "Preparing ledger…" : "Download daily ledger"}
+            </Btn>
+          </div>
+        </div>
       </Card>}
 
       {siteId &&       <Card id="booking-records" className="p-4">

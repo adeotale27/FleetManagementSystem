@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import { Btn, Card, ErrorState, Loader, PageHead } from "../components/ui";
 import { money, todayISO } from "../lib/format";
+import { DATA_CHANGE_EVENT } from "../lib/realtime";
 
 const field = "fld w-full";
 const makeIdempotencyKey = () => window.crypto?.randomUUID?.()
@@ -11,6 +12,21 @@ const blankLR = () => ({
   sender_name: "", sender_phone: "", receiver_name: "", receiver_phone: "", receiver_identifier: "", goods_type: "",
   containers: [{ type: "", quantity: 1 }], rent: "", hamali: "",
 });
+const ledgerDraftFor = (lr) => ({
+  sender_name: lr.sender_name || "",
+  receiver_name: lr.receiver_name || "",
+  goods_type: lr.goods_type || "",
+  containers: (lr.containers || []).map((line) => ({ ...line })),
+});
+const mergeDirtyDrafts = (fresh, previous, dirtyFields) => Object.fromEntries(
+  Object.entries(fresh).map(([id, values]) => {
+    const merged = { ...values };
+    for (const key of Object.keys(dirtyFields[id] || {})) {
+      if (dirtyFields[id][key]) merged[key] = previous[id]?.[key] ?? merged[key];
+    }
+    return [id, merged];
+  }),
+);
 
 function saveBlob(response, fallback) {
   const url = URL.createObjectURL(response.data);
@@ -28,7 +44,10 @@ export default function SiteTrip({ user }) {
   const navigate = useNavigate();
   const owner = user?.role === "owner";
   const sitePermissions = user?.site_permissions?.[siteId] || [];
+  const canEditLRs = owner || sitePermissions.includes("lrs:update");
+  const canEditFinance = owner || sitePermissions.includes("finance:update");
   const canReadExpenses = owner || sitePermissions.includes("finance:read") || sitePermissions.includes("finance:update");
+  const ledgerColumnCount = canReadExpenses ? 8 : 6;
   const canAddExpenses = owner || sitePermissions.includes("finance:update");
   const [trip, setTrip] = useState(null);
   const [tripEdit, setTripEdit] = useState({ truck_no: "", driver_name: "", vehicle_id: "", driver_id: "" });
@@ -47,6 +66,10 @@ export default function SiteTrip({ user }) {
   const [expenseMessage, setExpenseMessage] = useState("");
   const [lrs, setLrs] = useState([]);
   const [chargeDrafts, setChargeDrafts] = useState({});
+  const [ledgerDrafts, setLedgerDrafts] = useState({});
+  const [editingLedgerIds, setEditingLedgerIds] = useState([]);
+  const [savingLedgerIds, setSavingLedgerIds] = useState([]);
+  const [ledgerErrors, setLedgerErrors] = useState({});
   const [savingChargeIds, setSavingChargeIds] = useState([]);
   const [chargeErrors, setChargeErrors] = useState({});
   const [chargeMessages, setChargeMessages] = useState({});
@@ -59,6 +82,10 @@ export default function SiteTrip({ user }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const chargeDirtyFields = useRef({});
+  const ledgerDirtyFields = useRef({});
+  const tripDirtyFields = useRef({});
+  const lrOffsetRef = useRef(0);
 
   const refreshExpenses = useCallback(async () => {
     if (!canReadExpenses) {
@@ -79,7 +106,7 @@ export default function SiteTrip({ user }) {
     finally { setExpenseLoading(false); }
   }, [canReadExpenses, siteId, tripId]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (preserveDrafts = false) => {
     setLoading(true);
     setError("");
     try {
@@ -89,26 +116,70 @@ export default function SiteTrip({ user }) {
         api.get(`/sites/${siteId}/categories`),
         api.get(`/sites/${siteId}/trip-resources`),
       ]);
+      const wantedCount = preserveDrafts ? lrOffsetRef.current : 0;
+      const pageOffsets = [];
+      for (let pageOffset = 100; pageOffset < Math.min(wantedCount, lrResponse.data.total); pageOffset += 100) {
+        pageOffsets.push(pageOffset);
+      }
+      const additionalPages = await Promise.all(pageOffsets.map((pageOffset) =>
+        api.get(`/sites/${siteId}/trips/${tripId}/lrs`, {
+          params: { limit: 100, offset: pageOffset },
+        })));
+      const nextLRs = [
+        ...(lrResponse.data.rows || []),
+        ...additionalPages.flatMap((response) => response.data.rows || []),
+      ];
       setTrip(tripResponse.data);
-      setTripEdit({
+      const nextTripEdit = {
         truck_no: tripResponse.data.truck_no, driver_name: tripResponse.data.driver_name,
         vehicle_id: tripResponse.data.vehicle_id || "", driver_id: tripResponse.data.driver_id || "",
-      });
-      setLrs(lrResponse.data.rows);
-      setChargeDrafts(Object.fromEntries(lrResponse.data.rows.map((lr) => [lr.id, {
+      };
+      setTripEdit((current) => preserveDrafts
+        ? { ...nextTripEdit, ...Object.fromEntries(Object.keys(tripDirtyFields.current).map((key) => [key, current[key]])) }
+        : nextTripEdit);
+      setLrs(nextLRs);
+      const nextChargeDrafts = Object.fromEntries(nextLRs.map((lr) => [lr.id, {
         rent: lr.rent ?? "",
         hamali: lr.hamali ?? "",
-      }])));
+      }]));
+      const nextLedgerDrafts = Object.fromEntries(nextLRs.map((lr) => [lr.id, ledgerDraftFor(lr)]));
+      setChargeDrafts((current) => preserveDrafts
+        ? mergeDirtyDrafts(nextChargeDrafts, current, chargeDirtyFields.current)
+        : nextChargeDrafts);
+      setLedgerDrafts((current) => preserveDrafts
+        ? mergeDirtyDrafts(nextLedgerDrafts, current, ledgerDirtyFields.current)
+        : nextLedgerDrafts);
+      if (!preserveDrafts) {
+        chargeDirtyFields.current = {};
+        ledgerDirtyFields.current = {};
+        tripDirtyFields.current = {};
+      } else if (
+        Object.keys(chargeDirtyFields.current).length
+        || Object.keys(ledgerDirtyFields.current).length
+        || Object.keys(tripDirtyFields.current).length
+      ) {
+        setMessage("Latest data loaded. Your unsaved edits were kept; review before saving.");
+      }
       setLrTotal(lrResponse.data.total);
-      setLrOffset(lrResponse.data.rows.length);
+      setLrOffset(nextLRs.length);
+      lrOffsetRef.current = nextLRs.length;
       setCategories(categoryResponse.data);
       setTripResources(resourcesResponse.data);
     } catch (e) { setError(errMsg(e)); }
     finally { setLoading(false); }
   }, [siteId, tripId]);
 
-  useEffect(() => { refresh(); }, [refresh]);
-  useEffect(() => { refreshExpenses(); }, [refreshExpenses]);
+  useEffect(() => {
+    refresh();
+    const refreshLatest = () => refresh(true);
+    window.addEventListener(DATA_CHANGE_EVENT, refreshLatest);
+    return () => window.removeEventListener(DATA_CHANGE_EVENT, refreshLatest);
+  }, [refresh]);
+  useEffect(() => {
+    refreshExpenses();
+    window.addEventListener(DATA_CHANGE_EVENT, refreshExpenses);
+    return () => window.removeEventListener(DATA_CHANGE_EVENT, refreshExpenses);
+  }, [refreshExpenses]);
   const addExpense = async (event) => {
     event.preventDefault();
     setExpenseSubmitting(true);
@@ -152,7 +223,13 @@ export default function SiteTrip({ user }) {
           hamali: lr.hamali ?? "",
         }])),
       }));
-      setLrOffset(lrOffset + response.data.rows.length);
+      setLedgerDrafts((current) => ({
+        ...current,
+        ...Object.fromEntries(response.data.rows.map((lr) => [lr.id, ledgerDraftFor(lr)])),
+      }));
+      const nextOffset = lrOffset + response.data.rows.length;
+      setLrOffset(nextOffset);
+      lrOffsetRef.current = nextOffset;
     } catch (e) { setError(errMsg(e)); }
   };
 
@@ -160,8 +237,9 @@ export default function SiteTrip({ user }) {
     const draft = chargeDrafts[lr.id] || { rent: lr.rent ?? "", hamali: lr.hamali ?? "" };
     const amountKey = (value) => value === "" || value == null ? "" : Number(value).toFixed(2);
     const body = {};
-    if (amountKey(draft.rent) !== amountKey(lr.rent)) body.rent = draft.rent === "" ? null : draft.rent;
-    if (amountKey(draft.hamali) !== amountKey(lr.hamali)) body.hamali = draft.hamali === "" ? null : draft.hamali;
+    const dirty = chargeDirtyFields.current[lr.id] || {};
+    if (dirty.rent && amountKey(draft.rent) !== amountKey(lr.rent)) body.rent = draft.rent === "" ? null : draft.rent;
+    if (dirty.hamali && amountKey(draft.hamali) !== amountKey(lr.hamali)) body.hamali = draft.hamali === "" ? null : draft.hamali;
     if (!Object.keys(body).length) return;
     if ("rent" in body) body.idempotency_key = draft.idempotency_key || makeIdempotencyKey();
     setSavingChargeIds((current) => [...current, lr.id]);
@@ -179,6 +257,7 @@ export default function SiteTrip({ user }) {
         ...current,
         [saved.id]: { rent: saved.rent ?? "", hamali: saved.hamali ?? "" },
       }));
+      delete chargeDirtyFields.current[lr.id];
       setChargeMessages((current) => ({ ...current, [saved.id]: "Saved" }));
       setMessage(`${lr.lr_ref} charges saved. Booking finance and reports use the updated LR.`);
     } catch (e) {
@@ -190,6 +269,7 @@ export default function SiteTrip({ user }) {
   };
 
   const updateChargeDraft = (lrId, key, value) => {
+    chargeDirtyFields.current[lrId] = { ...chargeDirtyFields.current[lrId], [key]: true };
     setChargeDrafts((current) => ({
       ...current,
       [lrId]: {
@@ -200,6 +280,105 @@ export default function SiteTrip({ user }) {
     }));
     setChargeErrors((current) => ({ ...current, [lrId]: "" }));
     setChargeMessages((current) => ({ ...current, [lrId]: "" }));
+  };
+
+  const updateLedgerDraft = (lr, key, value) => {
+    ledgerDirtyFields.current[lr.id] = { ...ledgerDirtyFields.current[lr.id], [key]: true };
+    setLedgerDrafts((current) => ({
+      ...current,
+      [lr.id]: { ...(current[lr.id] || ledgerDraftFor(lr)), [key]: value },
+    }));
+    setLedgerErrors((current) => ({ ...current, [lr.id]: "" }));
+  };
+
+  const updateLedgerContainer = (lr, index, key, value) => {
+    const draft = ledgerDrafts[lr.id] || ledgerDraftFor(lr);
+    updateLedgerDraft(lr, "containers", draft.containers.map((line, row) =>
+      row === index ? { ...line, [key]: key === "quantity" && value !== "" ? Number(value) : value } : line));
+  };
+
+  const updateTripDraft = (fields) => {
+    for (const key of Object.keys(fields)) tripDirtyFields.current[key] = true;
+    setTripEdit((current) => ({ ...current, ...fields }));
+  };
+
+  const saveLedgerDetails = async (lr, receiverAction, receiverIdentityId) => {
+    const draft = ledgerDrafts[lr.id] || ledgerDraftFor(lr);
+    const body = {};
+    const dirty = ledgerDirtyFields.current[lr.id] || {};
+    for (const key of ["sender_name", "receiver_name", "goods_type"]) {
+      const value = draft[key].trim();
+      if (dirty[key] && value !== (lr[key] || "")) body[key] = value;
+    }
+    const containers = draft.containers.map((line) => ({
+      type: line.type.trim(),
+      quantity: Number(line.quantity),
+    }));
+    if (dirty.containers && JSON.stringify(containers) !== JSON.stringify(lr.containers || [])) body.containers = containers;
+    if (!Object.keys(body).length) {
+      delete ledgerDirtyFields.current[lr.id];
+      setEditingLedgerIds((current) => current.filter((id) => id !== lr.id));
+      return;
+    }
+    if ("receiver_name" in body) {
+      body.receiver_match_action = receiverAction;
+      body.receiver_identity_id = receiverIdentityId;
+    }
+
+    setSavingLedgerIds((current) => [...current, lr.id]);
+    setLedgerErrors((current) => ({ ...current, [lr.id]: "" }));
+    try {
+      const response = await api.patch(`/sites/${siteId}/trips/${tripId}/lrs/${lr.id}`, body);
+      const saved = response.data;
+      setLrs((current) => current.map((item) => item.id === saved.id ? saved : item));
+      setLedgerDrafts((current) => ({ ...current, [saved.id]: ledgerDraftFor(saved) }));
+      delete ledgerDirtyFields.current[lr.id];
+      setEditingLedgerIds((current) => current.filter((id) => id !== lr.id));
+      setMessage(`${lr.lr_ref} ledger row saved. Booking finance and reports use the updated LR.`);
+    } catch (e) {
+      const detail = e?.response?.data?.detail;
+      if (detail?.code === "receiver_match_confirmation_required") {
+        const choices = detail.matches || [];
+        const answer = window.prompt(
+          `A similar receiver was found:\n${choices.map((match, index) => `${index + 1}. ${match.label}`).join("\n")}\nEnter a number for the same person, or D for a different person.`,
+        );
+        if (answer?.toUpperCase() === "D") {
+          const identifier = window.prompt("Optional additional receiver identifier:") || "";
+          await api.patch(`/sites/${siteId}/trips/${tripId}/lrs/${lr.id}`, {
+            ...body, receiver_match_action: "different", receiver_identifier: identifier,
+          }).then((response) => {
+            const saved = response.data;
+            setLrs((current) => current.map((item) => item.id === saved.id ? saved : item));
+            setLedgerDrafts((current) => ({ ...current, [saved.id]: ledgerDraftFor(saved) }));
+            delete ledgerDirtyFields.current[lr.id];
+            setEditingLedgerIds((current) => current.filter((id) => id !== lr.id));
+            setMessage(`${lr.lr_ref} ledger row saved. Booking finance and reports use the updated LR.`);
+          }).catch((saveError) => {
+            setLedgerErrors((current) => ({ ...current, [lr.id]: errMsg(saveError) }));
+          });
+        } else {
+          const index = Number(answer) - 1;
+          if (Number.isInteger(index) && choices[index]) {
+            await saveLedgerDetails(lr, "same", choices[index].id);
+          }
+        }
+      } else {
+        setLedgerErrors((current) => ({ ...current, [lr.id]: errMsg(e) }));
+      }
+    } finally {
+      setSavingLedgerIds((current) => current.filter((id) => id !== lr.id));
+    }
+  };
+
+  const toggleLedgerEdit = (lr) => {
+    if (editingLedgerIds.includes(lr.id)) {
+      delete ledgerDirtyFields.current[lr.id];
+      setEditingLedgerIds((current) => current.filter((id) => id !== lr.id));
+      return;
+    }
+    setLedgerDrafts((current) => ({ ...current, [lr.id]: ledgerDraftFor(lr) }));
+    setLedgerErrors((current) => ({ ...current, [lr.id]: "" }));
+    setEditingLedgerIds((current) => [...current, lr.id]);
   };
 
   const createLR = async (event, matchAction, identityId) => {
@@ -240,10 +419,14 @@ export default function SiteTrip({ user }) {
 
   const updateTrip = async (event) => {
     event.preventDefault();
+    const body = Object.fromEntries(Object.keys(tripDirtyFields.current)
+      .map((key) => [key, tripEdit[key]]));
+    if (!Object.keys(body).length) return;
     try {
-      await api.patch(`/sites/${siteId}/trips/${tripId}`, {
-        ...tripEdit, vehicle_id: tripEdit.vehicle_id || null, driver_id: tripEdit.driver_id || null,
-      });
+      if ("vehicle_id" in body) body.vehicle_id = body.vehicle_id || null;
+      if ("driver_id" in body) body.driver_id = body.driver_id || null;
+      await api.patch(`/sites/${siteId}/trips/${tripId}`, body);
+      tripDirtyFields.current = {};
       setMessage("Trip details updated and recorded in the audit history.");
       await refresh();
     } catch (e) { setError(errMsg(e)); }
@@ -345,7 +528,7 @@ export default function SiteTrip({ user }) {
             <select className={field} aria-label="Select a vehicle or enter manually" value={tripEdit.vehicle_id}
               onChange={(e) => {
                 const vehicle = tripResources.vehicles.find((row) => row.id === e.target.value);
-                setTripEdit({ ...tripEdit, vehicle_id: e.target.value, truck_no: vehicle?.vehicle_no || tripEdit.truck_no });
+                updateTripDraft({ vehicle_id: e.target.value, truck_no: vehicle?.vehicle_no || tripEdit.truck_no });
               }}>
               <option value="">Enter a truck number manually</option>
               {tripEdit.vehicle_id && !tripResources.vehicles.some((row) => row.id === tripEdit.vehicle_id) &&
@@ -355,14 +538,14 @@ export default function SiteTrip({ user }) {
               </option>)}
             </select>
             {!tripEdit.vehicle_id && <input className={field} aria-label="Truck number" required value={tripEdit.truck_no}
-              onChange={(e) => setTripEdit({ ...tripEdit, truck_no: e.target.value })} />}
+              onChange={(e) => updateTripDraft({ truck_no: e.target.value })} />}
             {tripEdit.vehicle_id && <p className="mt-1 text-xs text-muted">Selected: {tripEdit.truck_no}</p>}
           </label>
           <label className="text-sm">Driver
             <select className={field} aria-label="Select a driver or enter manually" value={tripEdit.driver_id}
               onChange={(e) => {
                 const driver = tripResources.drivers.find((row) => row.id === e.target.value);
-                setTripEdit({ ...tripEdit, driver_id: e.target.value, driver_name: driver?.name || tripEdit.driver_name });
+                updateTripDraft({ driver_id: e.target.value, driver_name: driver?.name || tripEdit.driver_name });
               }}>
               <option value="">Enter a driver name manually</option>
               {tripEdit.driver_id && !tripResources.drivers.some((row) => row.id === tripEdit.driver_id) &&
@@ -370,7 +553,7 @@ export default function SiteTrip({ user }) {
               {tripResources.drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.name}</option>)}
             </select>
             {!tripEdit.driver_id && <input className={field} aria-label="Driver name" required value={tripEdit.driver_name}
-              onChange={(e) => setTripEdit({ ...tripEdit, driver_name: e.target.value })} />}
+              onChange={(e) => updateTripDraft({ driver_name: e.target.value })} />}
             {tripEdit.driver_id && <p className="mt-1 text-xs text-muted">Selected: {tripEdit.driver_name}</p>}
           </label>
           <Btn type="submit">Save booking details</Btn>
@@ -498,7 +681,7 @@ export default function SiteTrip({ user }) {
           </div>}
       </Card>}
 
-      {!owner && <Card className="p-4">
+      {!owner && !canEditLRs && <Card className="p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-semibold">Lorry receipts ({lrs.length} of {lrTotal})</h2>
         </div>
@@ -521,66 +704,130 @@ export default function SiteTrip({ user }) {
         {lrs.length < lrTotal && <Btn variant="s" className="mt-3" onClick={loadMoreLRs}>Load more LRs</Btn>}
       </Card>}
 
-      {owner && <Card className="p-4">
+      {canEditLRs && <Card className="p-4">
         <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
           <div>
-            <h2 className="font-semibold">LR charge sheet</h2>
+            <h2 className="font-semibold">Trip ledger</h2>
             <p className="mt-1 text-sm text-muted">
-              Edit bhada and hamali by LR. Each row saves to the booking record and is audited.
+              Edit LR details directly in this trip. Saved changes update the booking record, finance, and reports.
             </p>
           </div>
           <span className="text-xs text-muted">{lrs.length} of {lrTotal} LRs loaded</span>
         </div>
         {trip.status !== "open" && <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          Reopen this booking before correcting LR charges.
+          Reopen this booking before editing its ledger.
         </p>}
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[850px] text-left text-sm">
+          <table className="w-full min-w-[1050px] text-left text-sm">
             <thead className="border-b border-line bg-canvas text-xs text-muted">
               <tr>
-                {["LR", "Receiver", "Goods", "Qty", "Bhada (₹)", "Hamali (₹)", "Action"].map((label) =>
+                {["LR", "Sender", "Receiver", "Goods", "Qty",
+                  ...(canReadExpenses ? ["Bhada (₹)", "Hamali (₹)"] : []), "Action"].map((label) =>
                   <th key={label} className="px-3 py-2 font-medium">{label}</th>)}
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
               {lrs.map((lr) => {
                 const draft = chargeDrafts[lr.id] || { rent: lr.rent ?? "", hamali: lr.hamali ?? "" };
-                const editable = trip.status === "open" && !lr.reconciled;
-                const saving = savingChargeIds.includes(lr.id);
-                return <tr key={lr.id}>
-                  <th scope="row" className="px-3 py-2 font-medium">
-                    <Link className="text-brand-700 underline" to={`/sites/${siteId}/trips/${tripId}/lrs/${lr.id}`}>{lr.lr_ref}</Link>
-                  </th>
-                  <td className="max-w-48 truncate px-3 py-2" title={lr.receiver_label || lr.receiver_name}>
-                    {lr.receiver_label || lr.receiver_name}
-                  </td>
-                  <td className="max-w-40 truncate px-3 py-2" title={lr.goods_type}>{lr.goods_type}</td>
-                  <td className="num px-3 py-2">{lr.total_quantity}</td>
-                  {["rent", "hamali"].map((key) => <td key={key} className="px-3 py-2">
-                    <input aria-label={`${lr.lr_ref} ${key === "rent" ? "bhada" : "hamali"}`}
-                      className="fld w-32" type="number" min="0" step="0.01"
-                      value={draft[key]} disabled={!editable || saving}
-                      onChange={(event) => updateChargeDraft(lr.id, key, event.target.value)} />
-                  </td>)}
-                  <td className="px-3 py-2">
-                    {editable ? <Btn variant="s" disabled={saving} onClick={() => saveLRCharges(lr)}>
-                      {saving ? "Saving…" : "Save row"}
-                    </Btn> : <span className="text-xs text-muted">{lr.reconciled ? "Reconciled" : "Closed"}</span>}
-                    {chargeErrors[lr.id] && <p role="alert" className="mt-1 max-w-48 text-xs text-red-700">{chargeErrors[lr.id]}</p>}
-                    {chargeMessages[lr.id] && <p role="status" className="mt-1 text-xs text-brand-700">{chargeMessages[lr.id]}</p>}
-                  </td>
-                </tr>;
+                const canEditCharges = trip.status === "open" && !lr.reconciled && canEditFinance;
+                const savingCharges = savingChargeIds.includes(lr.id);
+                const editingDetails = editingLedgerIds.includes(lr.id);
+                const savingDetails = savingLedgerIds.includes(lr.id);
+                const ledgerDraft = ledgerDrafts[lr.id] || ledgerDraftFor(lr);
+                const receiverLocked = lr.reconciled || Number(lr.paid_total || 0) > 0 || Number(lr.rent || 0) > 0;
+                return <React.Fragment key={lr.id}>
+                  <tr>
+                    <th scope="row" className="px-3 py-2 font-medium">
+                      <Link className="text-brand-700 underline" to={`/sites/${siteId}/trips/${tripId}/lrs/${lr.id}`}>{lr.lr_ref}</Link>
+                    </th>
+                    <td className="max-w-40 truncate px-3 py-2" title={lr.sender_name}>{lr.sender_name}</td>
+                    <td className="max-w-40 truncate px-3 py-2" title={lr.receiver_label || lr.receiver_name}>
+                      {lr.receiver_label || lr.receiver_name}
+                    </td>
+                    <td className="max-w-40 truncate px-3 py-2" title={lr.goods_type}>{lr.goods_type}</td>
+                    <td className="num px-3 py-2">{lr.total_quantity}</td>
+                    {canReadExpenses && ["rent", "hamali"].map((key) => <td key={key} className="px-3 py-2">
+                      {canEditFinance ? <input aria-label={`${lr.lr_ref} ${key === "rent" ? "bhada" : "hamali"}`}
+                        className="fld w-32" type="number" min="0" step="0.01"
+                        value={draft[key]} disabled={!canEditCharges || savingCharges}
+                        onChange={(event) => updateChargeDraft(lr.id, key, event.target.value)} />
+                        : <span>{lr[key] ?? "Not entered"}</span>}
+                    </td>)}
+                    <td className="space-y-1 px-3 py-2">
+                      {canEditCharges && <Btn variant="s" disabled={savingCharges} onClick={() => saveLRCharges(lr)}>
+                        {savingCharges ? "Saving…" : "Save charges"}
+                      </Btn>}
+                      {trip.status === "open" && <Btn variant="s" disabled={savingDetails} onClick={() => toggleLedgerEdit(lr)}>
+                        {editingDetails ? "Cancel edit" : "Edit details"}
+                      </Btn>}
+                      {trip.status !== "open" && <span className="text-xs text-muted">Closed</span>}
+                      {canEditFinance && chargeErrors[lr.id] && <p role="alert" className="mt-1 max-w-48 text-xs text-red-700">{chargeErrors[lr.id]}</p>}
+                      {chargeMessages[lr.id] && <p role="status" className="mt-1 text-xs text-brand-700">{chargeMessages[lr.id]}</p>}
+                    </td>
+                  </tr>
+                  {editingDetails && <tr>
+                    <td colSpan={ledgerColumnCount} className="bg-canvas px-3 py-4">
+                      <form className="space-y-3" onSubmit={(event) => {
+                        event.preventDefault();
+                        saveLedgerDetails(lr);
+                      }}>
+                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                          <label className="text-xs">Sender
+                            <input className={field} required maxLength={160} value={ledgerDraft.sender_name} disabled={savingDetails}
+                              onChange={(event) => updateLedgerDraft(lr, "sender_name", event.target.value)} />
+                          </label>
+                          <label className="text-xs">Receiver
+                            <input className={field} required maxLength={160} value={ledgerDraft.receiver_name}
+                              disabled={receiverLocked || savingDetails}
+                              onChange={(event) => updateLedgerDraft(lr, "receiver_name", event.target.value)} />
+                            {receiverLocked && <span className="text-muted">Locked after bhada, payments, or reconciliation.</span>}
+                          </label>
+                          <label className="text-xs">Goods type
+                            <input className={field} required maxLength={80} value={ledgerDraft.goods_type} disabled={savingDetails}
+                              onChange={(event) => updateLedgerDraft(lr, "goods_type", event.target.value)} />
+                          </label>
+                        </div>
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <h3 className="text-xs font-semibold">Containers and quantities</h3>
+                            <button type="button" className="text-xs text-brand-700 underline"
+                              disabled={savingDetails || ledgerDraft.containers.length >= 30}
+                              onClick={() => updateLedgerDraft(lr, "containers", [
+                                ...ledgerDraft.containers, { type: "", quantity: 1 },
+                              ])}>Add container</button>
+                          </div>
+                          {ledgerDraft.containers.map((line, index) => <div key={index}
+                            className="grid grid-cols-[minmax(0,1fr)_6rem_auto] gap-2">
+                            <input className={field} required maxLength={80} aria-label={`${lr.lr_ref} container type ${index + 1}`}
+                              value={line.type} disabled={savingDetails}
+                              onChange={(event) => updateLedgerContainer(lr, index, "type", event.target.value)} />
+                            <input className={field} required type="number" min="1" max="1000000" step="1"
+                              aria-label={`${lr.lr_ref} container quantity ${index + 1}`} value={line.quantity} disabled={savingDetails}
+                              onChange={(event) => updateLedgerContainer(lr, index, "quantity", event.target.value)} />
+                            {ledgerDraft.containers.length > 1 && <button type="button" className="px-2 text-red-700" disabled={savingDetails}
+                              onClick={() => updateLedgerDraft(lr, "containers",
+                                ledgerDraft.containers.filter((_, row) => row !== index))}>Remove</button>}
+                          </div>)}
+                        </div>
+                        {ledgerErrors[lr.id] && <p role="alert" className="text-sm text-red-700">{ledgerErrors[lr.id]}</p>}
+                        <Btn type="submit" disabled={savingDetails}>
+                          {savingDetails ? "Saving ledger row…" : "Save ledger row"}
+                        </Btn>
+                      </form>
+                    </td>
+                  </tr>}
+                </React.Fragment>;
               })}
-              {lrs.length === 0 && <tr><td colSpan={7} className="px-3 py-8 text-center text-muted">
-                Create an LR to start the charge sheet.
+              {lrs.length === 0 && <tr><td colSpan={ledgerColumnCount} className="px-3 py-8 text-center text-muted">
+                Create an LR to start the trip ledger.
               </td></tr>}
             </tbody>
           </table>
         </div>
         {lrs.length < lrTotal && <Btn variant="s" className="mt-3" onClick={loadMoreLRs}>Load more rows</Btn>}
         <p className="mt-2 text-xs text-muted">
-          Amounts must be non-negative and valid to two decimal places. Bhada cannot be reduced below posted payments.
-          Reconciled LRs stay locked; closed bookings must be reopened first.
+          Edits are audited and saved to the canonical booking LR. Finance fields require finance-update access;
+          bhada cannot be reduced below posted payments. Reconciled charges stay locked, and closed bookings must be reopened first.
         </p>
       </Card>}
 

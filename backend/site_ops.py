@@ -33,11 +33,11 @@ MANAGER_PERMISSIONS = {
     "dashboard:read", "trips:read", "trips:create", "trips:update", "trips:close",
     "lrs:read", "lrs:create", "lrs:update", "finance:read",
     "finance:update",
-    "payments:read", "payments:create",
+    "payments:read", "payments:create", "ledger:export",
 }
 DEFAULT_MANAGER_PERMISSIONS = [
     "dashboard:read", "trips:read", "trips:create", "trips:update", "trips:close",
-    "lrs:read", "lrs:create", "lrs:update",
+    "lrs:read", "lrs:create", "lrs:update", "ledger:export",
 ]
 LEDGER_TEMPLATE_VERSION = "1"
 MAX_LEDGER_BYTES = 2 * 1024 * 1024
@@ -1804,7 +1804,11 @@ async def create_site_trip(site_id: str, body: TripCreate, u=Depends(site_user))
 
 @router.get("/sites/{site_id}/trip-resources")
 async def list_site_trip_resources(site_id: str, u=Depends(site_user)):
-    await _site_for_user(site_id, u, "trips:read")
+    site = await _site_for_user(site_id, u)
+    if u.get("role") == "site_manager":
+        permissions = set((u.get("site_permissions") or {}).get(site_id) or [])
+        if not permissions.intersection({"trips:read", "trips:create"}):
+            raise HTTPException(403, "You do not have permission to view vehicle and driver options for this site")
     vehicles = await db.vehicles.find(
         {"archived": {"$ne": True}},
         {"_id": 1, "vehicle_no": 1, "vehicle_type": 1, "status": 1},
@@ -2268,8 +2272,10 @@ async def update_site_lr(
         delta = (new_rent or Decimal("0.00")) - old_rent
         if delta:
             event_id = f"lr-rent-edit:{lr_id}:{idempotency_key}"
-            await _financial_event(event_id, site, lr["party_id"], lr["operating_date"],
-                                   f"Rent correction for site LR {lr['lr_ref']}", delta)
+            await _financial_event(
+                event_id, site, changes.get("party_id", lr["party_id"]), lr["operating_date"],
+                f"Rent correction for site LR {lr['lr_ref']}", delta,
+            )
     if "hamali" in changes:
         old_hamali = _decimal_value(lr.get("hamali"))
         new_hamali = _decimal(changes["hamali"], "Hamali", allow_none=True)
@@ -2837,6 +2843,97 @@ async def export_site_ledger(site_id: str, trip_id: str, section: str, u=Depends
         )
     return _csv_response(
         f"{trip['trip_ref']}-{suffix}.csv", business_id, site_id, trip_id, columns, rows,
+    )
+
+
+@router.get("/sites/{site_id}/ledger/daily")
+async def export_site_daily_ledger(
+    site_id: str, operating_date: str = Query(...), u=Depends(site_user),
+):
+    site = await _site_for_user(site_id, u)
+    if u.get("role") == "site_manager" and "ledger:export" not in (
+        (u.get("site_permissions") or {}).get(site_id, [])
+    ):
+        raise HTTPException(403, "Daily ledger export permission is required for this site")
+
+    day = _validate_iso_date(operating_date).isoformat()
+    business_id = str(site["business_id"])
+    trip_query = _scoped(business_id, site_id, operating_date=day)
+    trips = await db.site_trips.find(trip_query).sort("sequence", 1).limit(2001).to_list(2001)
+    if len(trips) > 2000:
+        raise HTTPException(413, "This site has more than 2,000 bookings for the selected day")
+
+    trip_by_id = {trip["_id"]: trip for trip in trips}
+    trip_ids = list(trip_by_id)
+    lrs = []
+    payments = []
+    if trip_ids:
+        lrs = await db.site_lrs.find(_scoped(
+            business_id, site_id, trip_id={"$in": trip_ids},
+        )).sort([("trip_id", 1), ("sequence", 1)]).limit(10001).to_list(10001)
+        if len(lrs) > 10000:
+            raise HTTPException(413, "This daily ledger has more than 10,000 LRs; export a smaller day")
+        lrs.sort(key=lambda lr: (
+            trip_by_id.get(lr.get("trip_id"), {}).get("sequence", 0),
+            lr.get("sequence", 0),
+        ))
+        lr_ids = [lr["_id"] for lr in lrs]
+        if lr_ids:
+            payments = await db.site_payments.find(_scoped(
+                business_id, site_id, trip_id={"$in": trip_ids}, lr_id={"$in": lr_ids},
+                posting_status={"$ne": "rejected"},
+            )).sort("created_at", 1).limit(50001).to_list(50001)
+            if len(payments) > 50000:
+                raise HTTPException(413, "This daily ledger has more than 50,000 payment events")
+
+    payments_by_lr = {}
+    totals_by_lr = {}
+    for payment in payments:
+        lr_id = payment["lr_id"]
+        amount = _decimal_value(payment.get("amount"))
+        if payment.get("kind") == "reversal":
+            amount = -amount
+        totals_by_lr[lr_id] = totals_by_lr.get(lr_id, Decimal("0.00")) + amount
+        payments_by_lr.setdefault(lr_id, []).append(
+            f"{payment.get('date', '')} {payment.get('method', '')} "
+            f"{payment.get('kind', 'payment')} {format(amount, '.2f')} "
+            f"{payment.get('reference', '')}".strip()
+        )
+
+    columns = (
+        "operating_date", "site_name", "site_code", "trip_ref", "truck_no", "driver_name",
+        "lr_ref", "sender_name", "receiver_name", "receiver_identifier", "goods_type",
+        "container_quantities", "parcel_quantity_units", "bhada_recorded_inr",
+        "hamali_recorded_inr", "bhada_collected_inr", "bhada_outstanding_inr",
+        "payment_status", "payment_details",
+    )
+    rows = []
+    for lr in lrs:
+        trip = trip_by_id.get(lr.get("trip_id"))
+        if not trip:
+            continue
+        paid = totals_by_lr.get(lr["_id"], Decimal("0.00"))
+        rent = _decimal_value(lr.get("rent"))
+        rows.append((
+            day, site.get("name", ""), site.get("code", ""),
+            trip.get("trip_ref", ""), trip.get("truck_no", ""), trip.get("driver_name", ""),
+            lr.get("lr_ref", ""), lr.get("sender_name", ""),
+            lr.get("receiver_name", ""), lr.get("receiver_identifier", ""),
+            lr.get("goods_type", ""),
+            "; ".join(f"{line.get('type', '')} x {line.get('quantity', 0)}"
+                      for line in lr.get("containers", [])),
+            lr.get("total_quantity", 0),
+            format(rent, ".2f") if lr.get("rent") is not None else "",
+            format(_decimal_value(lr.get("hamali")), ".2f")
+            if lr.get("hamali") is not None else "",
+            format(paid, ".2f"),
+            format(max(rent - paid, Decimal("0.00")), ".2f")
+            if lr.get("rent") is not None else "",
+            _payment_status(lr.get("rent"), paid),
+            "; ".join(payments_by_lr.get(lr["_id"], [])),
+        ))
+    return _report_csv_response(
+        f"{site.get('code', site_id)}-daily-ledger-{day}.csv", columns, rows,
     )
 
 

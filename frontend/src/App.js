@@ -1,7 +1,8 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { api } from "./lib/api";
-import { ToastHost, Loader } from "./components/ui";
+import { ToastHost, Loader, toast } from "./components/ui";
+import { startDataSync } from "./lib/realtime";
 import Layout from "./components/Layout";
 
 const Login = lazy(() => import("./pages/Login"));
@@ -47,6 +48,18 @@ export default function App() {
   }, []);
 
   const onLogin = () => { api.get("/me").then(applyMe).catch(() => setState("out")); };
+
+  useEffect(() => {
+    if (state !== "in" || !user) return undefined;
+    return startDataSync(
+      user.tenant_id,
+      async () => (await api.get("/sync/revision")).data.revision,
+      (error) => toast(
+        error ? "Live updates are temporarily unavailable; retrying automatically." : "Live updates restored.",
+        error ? "err" : "ok",
+      ),
+    );
+  }, [state, user]);
 
   if (state === "checking") return <div className="grid h-screen place-items-center"><Loader label="Starting…" /></div>;
 

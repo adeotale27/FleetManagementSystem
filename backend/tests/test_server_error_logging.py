@@ -178,5 +178,66 @@ def test_middleware_does_not_log_auth_login_401(monkeypatch):
     assert records == []
 
 
+def test_successful_business_write_increments_tenant_revision(monkeypatch):
+    updates = []
+
+    class Users:
+        async def find_one(self, query, projection):
+            assert query == {"_id": "manager-1"}
+            return {"tenant_id": "business-1"}
+
+    class Revisions:
+        async def find_one_and_update(self, query, update, **kwargs):
+            updates.append((query, update, kwargs))
+            return {"revision": 9}
+
+    monkeypatch.setattr(server, "platform_db", SimpleNamespace(
+        users=Users(), data_revisions=Revisions(),
+    ))
+    monkeypatch.setattr(server.jwt, "decode", lambda *args, **kwargs: {"sub": "manager-1"})
+    request = _request("/api/sites/site-1/trips/trip-1/lrs/lr-1", "PATCH")
+    request.scope["headers"] = [(b"authorization", b"Bearer signed-token")]
+
+    revision = asyncio.run(server._record_data_revision(request))
+
+    assert revision == 9
+    assert updates[0][0] == {"_id": "business-1"}
+    assert updates[0][1]["$inc"] == {"revision": 1}
+    assert updates[0][2]["upsert"] is True
+    assert updates[0][2]["return_document"] == server.ReturnDocument.AFTER
+
+
+def test_successful_write_middleware_returns_revision_header(monkeypatch):
+    async def record_revision(_request):
+        return 12
+
+    monkeypatch.setattr(server, "_record_data_revision", record_revision)
+    request = _request("/api/trips/trip-1", "PATCH")
+    request.scope["headers"] = [(b"authorization", b"Bearer signed-token")]
+    response = SimpleNamespace(status_code=200, headers={}, body=b"{}")
+
+    result = asyncio.run(server.log_failures(request, lambda _: _return(response)))
+
+    assert result.headers["X-Data-Revision"] == "12"
+
+
+def test_sync_revision_reads_only_the_authenticated_business(monkeypatch):
+    queries = []
+
+    class Revisions:
+        async def find_one(self, query, projection):
+            queries.append((query, projection))
+            return {"revision": 21}
+
+    monkeypatch.setattr(server, "platform_db", SimpleNamespace(data_revisions=Revisions()))
+    response = SimpleNamespace(headers={})
+
+    result = asyncio.run(server.data_revision(response, {"tenant_id": "business-2"}))
+
+    assert result == {"revision": 21}
+    assert response.headers["Cache-Control"] == "no-store"
+    assert queries == [({"_id": "business-2"}, {"revision": 1})]
+
+
 async def _return(value):
     return value

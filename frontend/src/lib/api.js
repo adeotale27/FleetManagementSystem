@@ -1,5 +1,6 @@
 import axios from "axios";
 import { scheduleMutationSuccess, toast } from "../components/ui";
+import { publishDataChange } from "./realtime";
 
 const BASE = process.env.REACT_APP_BACKEND_URL;
 export const api = axios.create({ baseURL: `${BASE}/api` });
@@ -51,7 +52,13 @@ api.interceptors.request.use((cfg) => {
 
 api.interceptors.response.use(
   (r) => {
-    if (isWriteRequest(r.config)) scheduleMutationSuccess(mutationSuccessLabel(r.config));
+    if (isWriteRequest(r.config)) {
+      scheduleMutationSuccess(mutationSuccessLabel(r.config));
+      publishDataChange(r.headers?.["x-data-revision"], { notifySelf: false });
+      if (r.headers?.["x-data-sync-status"] === "unavailable") {
+        toast("Saved, but live updates are temporarily unavailable; other devices may need to reload.", "err");
+      }
+    }
     return r;
   },
   (err) => {

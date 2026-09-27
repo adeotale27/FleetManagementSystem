@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import { Btn, Card, ErrorState, Loader, PageHead } from "../components/ui";
+import { DATA_CHANGE_EVENT } from "../lib/realtime";
 
 const field = "fld w-full";
 const newPaymentKey = () => `manual-${crypto.randomUUID()}`;
@@ -31,8 +32,9 @@ export default function SiteLRPage({ user }) {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const autoPrintStarted = useRef(false);
+  const dirtyFields = useRef({});
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (preserveDrafts = false) => {
     setLoading(true);
     setError("");
     try {
@@ -42,7 +44,7 @@ export default function SiteLRPage({ user }) {
         api.get("/sites"),
       ]);
       setLr(lrResponse.data);
-      setEditForm({
+      const nextEditForm = {
         sender_name: lrResponse.data.sender_name,
         sender_phone: lrResponse.data.sender_phone || "",
         receiver_name: lrResponse.data.receiver_name,
@@ -52,14 +54,26 @@ export default function SiteLRPage({ user }) {
         containers: lrResponse.data.containers,
         rent: lrResponse.data.rent ?? "",
         hamali: lrResponse.data.hamali ?? "",
-      });
+      };
+      setEditForm((current) => preserveDrafts
+        ? { ...nextEditForm, ...Object.fromEntries(Object.keys(dirtyFields.current).map((key) => [key, current?.[key]])) }
+        : nextEditForm);
+      if (!preserveDrafts) dirtyFields.current = {};
+      else if (Object.keys(dirtyFields.current).length) {
+        setMessage("Latest data loaded. Your unsaved LR edits were kept; review before saving.");
+      }
       setTrip(tripResponse.data);
       setSite(siteResponse.data.find((row) => row.id === siteId) || null);
     } catch (e) { setError(errMsg(e)); }
     finally { setLoading(false); }
   }, [siteId, tripId, lrId]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    refresh();
+    const refreshLatest = () => refresh(true);
+    window.addEventListener(DATA_CHANGE_EVENT, refreshLatest);
+    return () => window.removeEventListener(DATA_CHANGE_EVENT, refreshLatest);
+  }, [refresh]);
 
   useEffect(() => {
     if (!lr || loading || !location.search.includes("autoprint=1") || autoPrintStarted.current) return undefined;
@@ -77,30 +91,33 @@ export default function SiteLRPage({ user }) {
       setMessage("Payment recorded in the auditable payment history.");
       setPayment({ amount: "", date: localDate(), method: "Cash", reference: "" });
       setPaymentKey(newPaymentKey());
-      await refresh();
+      await refresh(true);
     } catch (e) { setError(errMsg(e)); }
   };
 
   const saveLR = async (event, receiverAction, receiverIdentityId) => {
     event?.preventDefault();
-    const body = {
-      sender_name: editForm.sender_name,
-      sender_phone: editForm.sender_phone || "",
-      receiver_name: editForm.receiver_name,
-      receiver_phone: editForm.receiver_phone || "",
-      receiver_identifier: editForm.receiver_identifier,
-      goods_type: editForm.goods_type,
-      containers: editForm.containers,
-      receiver_match_action: receiverAction,
-      receiver_identity_id: receiverIdentityId,
-    };
-    if (canEditFinance) {
-      body.rent = editForm.rent === "" ? null : editForm.rent;
-      body.hamali = editForm.hamali === "" ? null : editForm.hamali;
-      if (body.rent !== lr.rent) body.idempotency_key = editKey || `lr-edit-${crypto.randomUUID()}`;
+    const body = {};
+    for (const key of [
+      "sender_name", "sender_phone", "receiver_name", "receiver_phone",
+      "receiver_identifier", "goods_type",
+    ]) {
+      if (dirtyFields.current[key]) body[key] = editForm[key] || "";
     }
+    if (dirtyFields.current.containers) body.containers = editForm.containers;
+    if ("receiver_name" in body) {
+      body.receiver_match_action = receiverAction;
+      body.receiver_identity_id = receiverIdentityId;
+    }
+    if (canEditFinance) {
+      if (dirtyFields.current.rent) body.rent = editForm.rent === "" ? null : editForm.rent;
+      if (dirtyFields.current.hamali) body.hamali = editForm.hamali === "" ? null : editForm.hamali;
+      if ("rent" in body && body.rent !== lr.rent) body.idempotency_key = editKey || `lr-edit-${crypto.randomUUID()}`;
+    }
+    if (!Object.keys(body).length) return;
     try {
       await api.patch(`/sites/${siteId}/trips/${tripId}/lrs/${lrId}`, body);
+      dirtyFields.current = {};
       setEditKey("");
       setMessage("LR corrections saved and recorded in the audit history.");
       await refresh();
@@ -113,7 +130,7 @@ export default function SiteLRPage({ user }) {
         );
         if (answer?.toUpperCase() === "D") {
           const identifier = window.prompt("Optional additional receiver identifier:") || "";
-          setEditForm({ ...editForm, receiver_identifier: identifier });
+          updateEditField("receiver_identifier", identifier);
           return saveLR(null, "different");
         }
         const index = Number(answer) - 1;
@@ -124,10 +141,18 @@ export default function SiteLRPage({ user }) {
     }
   };
 
-  const setContainer = (index, key, value) => setEditForm((current) => ({
-    ...current, containers: current.containers.map((line, row) =>
+  const updateEditField = (key, value) => {
+    dirtyFields.current[key] = true;
+    setEditForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const setContainer = (index, key, value) => {
+    dirtyFields.current.containers = true;
+    setEditForm((current) => ({
+      ...current, containers: current.containers.map((line, row) =>
       row === index ? { ...line, [key]: key === "quantity" ? Number(value) : value } : line),
-  }));
+    }));
+  };
 
   const reversePayment = async (paymentId) => {
     const reason = window.prompt("Reason for reversing this payment (required):");
@@ -135,7 +160,7 @@ export default function SiteLRPage({ user }) {
     try {
       await api.post(`/sites/${siteId}/trips/${tripId}/lrs/${lrId}/payments/${paymentId}/reverse`, { reason });
       setMessage("Reversal recorded. The original payment was retained.");
-      await refresh();
+      await refresh(true);
     } catch (e) { setError(errMsg(e)); }
   };
 
@@ -143,7 +168,7 @@ export default function SiteLRPage({ user }) {
     try {
       await api.post(`/sites/${siteId}/trips/${tripId}/lrs/${lrId}/payments/${paymentId}/retry`);
       setMessage("Payment posting completed.");
-      await refresh();
+      await refresh(true);
     } catch (e) { setError(errMsg(e)); }
   };
 
@@ -246,24 +271,30 @@ export default function SiteLRPage({ user }) {
         <h2 className="mb-3 font-semibold">Correct this LR</h2>
         <form onSubmit={saveLR} className="space-y-3">
           <div className="grid gap-3 md:grid-cols-2">
-            <label className="text-sm">Sender<input className={field} required value={editForm?.sender_name || ""} onChange={(e) => setEditForm({ ...editForm, sender_name: e.target.value })} /></label>
-            <label className="text-sm">Sender phone (optional)<input className={field} type="tel" autoComplete="tel" inputMode="tel" value={editForm?.sender_phone || ""} onChange={(e) => setEditForm({ ...editForm, sender_phone: e.target.value })} /></label>
-            <label className="text-sm">Receiver<input className={field} required value={editForm?.receiver_name || ""} onChange={(e) => setEditForm({ ...editForm, receiver_name: e.target.value })} /></label>
-            <label className="text-sm">Receiver phone (optional)<input className={field} type="tel" autoComplete="tel" inputMode="tel" value={editForm?.receiver_phone || ""} onChange={(e) => setEditForm({ ...editForm, receiver_phone: e.target.value })} /></label>
-            <label className="text-sm">Receiver identifier<input className={field} value={editForm?.receiver_identifier || ""} onChange={(e) => setEditForm({ ...editForm, receiver_identifier: e.target.value })} /></label>
-            <label className="text-sm">Goods type<input className={field} required value={editForm?.goods_type || ""} onChange={(e) => setEditForm({ ...editForm, goods_type: e.target.value })} /></label>
+            <label className="text-sm">Sender<input className={field} required value={editForm?.sender_name || ""} onChange={(e) => updateEditField("sender_name", e.target.value)} /></label>
+            <label className="text-sm">Sender phone (optional)<input className={field} type="tel" autoComplete="tel" inputMode="tel" value={editForm?.sender_phone || ""} onChange={(e) => updateEditField("sender_phone", e.target.value)} /></label>
+            <label className="text-sm">Receiver<input className={field} required value={editForm?.receiver_name || ""} onChange={(e) => updateEditField("receiver_name", e.target.value)} /></label>
+            <label className="text-sm">Receiver phone (optional)<input className={field} type="tel" autoComplete="tel" inputMode="tel" value={editForm?.receiver_phone || ""} onChange={(e) => updateEditField("receiver_phone", e.target.value)} /></label>
+            <label className="text-sm">Receiver identifier<input className={field} value={editForm?.receiver_identifier || ""} onChange={(e) => updateEditField("receiver_identifier", e.target.value)} /></label>
+            <label className="text-sm">Goods type<input className={field} required value={editForm?.goods_type || ""} onChange={(e) => updateEditField("goods_type", e.target.value)} /></label>
             {canEditFinance && <>
-              <label className="text-sm">Bhada<input className={field} type="number" min="0" step="0.01" value={editForm?.rent ?? ""} onChange={(e) => setEditForm({ ...editForm, rent: e.target.value })} /></label>
-              <label className="text-sm">Hamali (internal)<input className={field} type="number" min="0" step="0.01" value={editForm?.hamali ?? ""} onChange={(e) => setEditForm({ ...editForm, hamali: e.target.value })} /></label>
+              <label className="text-sm">Bhada<input className={field} type="number" min="0" step="0.01" value={editForm?.rent ?? ""} onChange={(e) => updateEditField("rent", e.target.value)} /></label>
+              <label className="text-sm">Hamali (internal)<input className={field} type="number" min="0" step="0.01" value={editForm?.hamali ?? ""} onChange={(e) => updateEditField("hamali", e.target.value)} /></label>
             </>}
           </div>
           <h3 className="text-sm font-semibold">Containers</h3>
           {editForm?.containers.map((line, index) => <div key={index} className="grid grid-cols-[minmax(0,1fr)_5.5rem_auto] gap-2">
             <input className={field} required aria-label="Container type" value={line.type} onChange={(e) => setContainer(index, "type", e.target.value)} />
             <input className={field} required type="number" min="1" aria-label="Container quantity" value={line.quantity} onChange={(e) => setContainer(index, "quantity", e.target.value)} />
-            <button type="button" className="text-red-700" onClick={() => setEditForm({ ...editForm, containers: editForm.containers.filter((_, i) => i !== index) })}>Remove</button>
+            <button type="button" className="text-red-700" onClick={() => {
+              dirtyFields.current.containers = true;
+              setEditForm({ ...editForm, containers: editForm.containers.filter((_, i) => i !== index) });
+            }}>Remove</button>
           </div>)}
-          <button type="button" className="text-sm text-brand-700 underline" onClick={() => setEditForm({ ...editForm, containers: [...editForm.containers, { type: "", quantity: 1 }] })}>Add container</button>
+          <button type="button" className="text-sm text-brand-700 underline" onClick={() => {
+            dirtyFields.current.containers = true;
+            setEditForm({ ...editForm, containers: [...editForm.containers, { type: "", quantity: 1 }] });
+          }}>Add container</button>
           <Btn type="submit">Save LR corrections</Btn>
         </form>
       </Card>}

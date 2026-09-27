@@ -6,10 +6,12 @@ import { api } from "./lib/api";
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 jest.mock("./lib/api", () => ({ api: { get: jest.fn() } }));
+jest.mock("./lib/realtime", () => ({ startDataSync: jest.fn() }));
 jest.mock("./components/Layout", () => ({ children }) => <>{children}</>);
 jest.mock("./components/ui", () => ({
   Loader: () => <div>Loading</div>,
   ToastHost: () => null,
+  toast: jest.fn(),
 }));
 jest.mock("./pages/SiteConsole", () => ({
   __esModule: true,

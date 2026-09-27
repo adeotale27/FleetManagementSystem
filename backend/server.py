@@ -2,6 +2,7 @@ import os
 import re
 import traceback
 import json
+import jwt
 from typing import Optional
 
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
@@ -10,11 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from pymongo import ReturnDocument
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import ledger as L
 import storage as S
-from auth import current_user, hash_pw, make_token, require_super, seed_owner, site_user, verify_pw
+from auth import ALGO, SECRET, current_user, hash_pw, make_token, require_super, seed_owner, site_user, verify_pw
 from db import PRIMARY_TENANT, db, new_id, now_iso, platform_db, ser, sers, tenant_db, tenant_db_name, tenant_key, today
 
 app = FastAPI(title="Fleet Management System")
@@ -26,6 +28,7 @@ app.include_router(site_router, prefix="/api")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
+    expose_headers=["X-Data-Revision", "X-Data-Sync-Status"],
 )
 
 _SENSITIVE_VALUE = re.compile(
@@ -62,6 +65,30 @@ async def _record_server_error(request, status, reference_id, detail, stack=""):
         })
     except Exception:
         pass
+
+
+async def _record_data_revision(request):
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    try:
+        claims = jwt.decode(token, SECRET, algorithms=[ALGO])
+    except jwt.PyJWTError:
+        return None
+    user = await platform_db.users.find_one(
+        {"_id": claims.get("sub")}, {"tenant_id": 1},
+    )
+    if not user:
+        return None
+    scope_id = str(user.get("tenant_id") or "__platform__")
+    revision = await platform_db.data_revisions.find_one_and_update(
+        {"_id": scope_id},
+        {"$inc": {"revision": 1}, "$set": {"updated_at": now_iso()}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return int(revision["revision"])
 
 
 def _server_error_response(reference_id):
@@ -158,6 +185,22 @@ async def log_failures(request: Request, call_next):
             request, response.status_code, request.state.reference_id,
             _safe_client_error_detail(response),
         )
+    if (
+        200 <= response.status_code < 300
+        and request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+        and request.url.path.startswith("/api/")
+        and not request.url.path.rstrip("/").endswith("/auth/login")
+    ):
+        try:
+            revision = await _record_data_revision(request)
+            if revision is not None:
+                response.headers["X-Data-Revision"] = str(revision)
+        except Exception as e:
+            response.headers["X-Data-Sync-Status"] = "unavailable"
+            await _record_server_error(
+                request, 500, new_id(), "Could not publish a tenant data revision.",
+                "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+            )
     return response
 
 DEFAULT_SETTINGS = {
@@ -255,6 +298,16 @@ async def login(body: LoginIn):
 @api.get("/auth/me")
 async def me(u=Depends(site_user)):
     return u
+
+
+@api.get("/sync/revision")
+async def data_revision(response: Response, u=Depends(site_user)):
+    scope_id = str(u.get("tenant_id") or "__platform__")
+    current = await platform_db.data_revisions.find_one(
+        {"_id": scope_id}, {"revision": 1},
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {"revision": int(current.get("revision", 0)) if current else 0}
 
 
 # ------------------------------------------------------------------ settings

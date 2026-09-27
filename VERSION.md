@@ -13,7 +13,7 @@ The version format is `MAJOR.MINOR.PATCH`:
 
 - **PATCH** (`1.1.1` → `1.1.2`): backwards-compatible bug fixes, maintenance, and documentation/governance changes that affect how the app is built or maintained.
 - **MINOR** (`1.1.2` → `1.2.0`): every new backwards-compatible user-facing feature or integration. A genuinely new feature must never be merged without a version increment and release notes.
-- **MAJOR** (`1.9.1` → `2.0.0`): incompatible API, data, security, workflow, or deployment changes that require consumers or operators to adapt.
+- **MAJOR** (`1.13.0` → `2.0.0`): incompatible API, data, security, workflow, or deployment changes that require consumers or operators to adapt.
 
 For every change set: select the increment before implementation; update this file and `frontend/package.json`; add a dated changelog entry describing user-visible changes and relevant migration/compatibility notes; validate the implementation; then commit the complete change together. Do not reuse a released version. If one change set spans categories, use the highest applicable increment. Purely local experiments that are not retained in the repository do not constitute a release.
 
@@ -21,9 +21,45 @@ New features and architecture changes also require updates to [APP_SUMMARY.md](A
 
 ## Current version
 
-**v1.9.1** — 27 September 2026
+**v1.13.0** — 27 September 2026
 
 ## Changelog
+
+### v1.13.0 — 27 September 2026
+
+- **Cross-device live data updates:** Successful authenticated writes increment a tenant-scoped revision in the platform database. Active clients check that revision every two seconds, broadcast changes between same-business tabs, and refresh their mounted dashboard, finance, report, trip and LR data without a page reload.
+- **Tenant-safe polling:** The revision endpoint exposes only the signed-in user's business revision, disables response caching, and returns a revision header on successful writes. Existing canonical MongoDB records and finance calculations remain the source of truth; no business data is copied into the platform database.
+- **Verification:** Added backend coverage for tenant revision scoping/publication and frontend coverage for active polling and cross-tab notification.
+
+### v1.12.0 — 27 September 2026
+
+- **Trip-linked Booking Reports ledger:** Selecting a booking in Booking Reports now loads its trip details and the trip's LR ledger directly in the report. The ledger loads LRs in bounded pages and allows owner edits to sender/receiver contact and identity fields, goods, containers/quantities, bhada and hamali.
+- **Canonical persistence and finance:** Each save updates the canonical site LR through the existing tenant/site-scoped audited endpoint, and server-returned balances replace the displayed ledger/report values. Rent corrections made alongside an allowed receiver change now post against the resolved receiver party. Posted payments remain immutable; collections, outstanding and payment status remain server-calculated.
+- **Verification:** Added UI coverage for opening a trip-scoped ledger and saving editable LR details/finance, plus a backend regression test confirming first bhada posted with a receiver change is credited to the resolved party.
+
+### v1.11.0 — 27 September 2026
+
+- **Editable Booking Reports ledger:** Added in-place per-LR editing for receiver, goods, container lines/quantities, bhada and hamali in the Booking Reports table. The screen saves through the existing scoped, audited site-LR update API.
+- **Finance stays transaction-derived:** Updated canonical LR values are returned to the report so bhada, collected, outstanding and payment status display the backend calculation. Collected/payment status remain read-only; receiver identity and bhada changes must be saved separately to preserve correct party ledger posting.
+- **Verification:** Added report UI coverage for canonical row updates and displaying recalculated finance fields.
+
+### v1.10.0 — 27 September 2026
+
+- **In-app trip ledger editing:** Added expandable editable LR rows on site-booking trip details. Owners and site managers granted `lrs:update` can update sender/receiver, goods, container types and quantities in the trip without downloading or re-uploading a CSV.
+- **Permission and data safeguards:** LR edits use the existing tenant/site-scoped update API, preserve backend validation and audit history, and are reflected by booking finance/reports. Charge edits remain limited to owners or managers with both `lrs:update` and `finance:update`; closed trips must be reopened and reconciled/paid identity restrictions remain in force. Payment events are unchanged.
+- **Verification:** Added frontend coverage for manager LR editing and for hiding the editor without `lrs:update`; existing owner charge editing remains covered.
+
+### v1.9.3 — 27 September 2026
+
+- **Daily booking ledger download:** Added a site/day CSV export containing all trips and LRs for the selected operating date, including goods, quantities, bhada, hamali, collected/outstanding amounts, payment status and payment details.
+- **Manager permission:** Added the explicit `ledger:export` site permission and a plain-language checkbox in Booking access management. Newly assigned managers receive it by default; existing managers need the owner to grant it. Owners can always download the ledger. The API verifies tenant/site access and the export permission and enforces bounded daily record counts.
+- **Verification:** Added daily multi-trip export content/scope checks, permission-denial coverage, and a manager UI download test.
+
+### v1.9.2 — 27 September 2026
+
+- **Manager booking resources:** Site managers with trip-create or trip-read permission can load shared vehicle and driver master records for booking assignment. The resource endpoint remains tenant- and assigned-site-scoped; managers without either permission are denied.
+- **Independent resource loading:** The Booking Dashboard now loads vehicle/driver options separately from site trip lists and dashboard data, so a manager who can create bookings is not blocked from seeing assignment options when another read permission is unavailable. Any unavailable data is reported explicitly.
+- **Verification:** Added backend authorization/resource-shape tests and a frontend regression test for manager booking creation with shared vehicle and driver choices.
 
 ### v1.9.1 — 27 September 2026
 

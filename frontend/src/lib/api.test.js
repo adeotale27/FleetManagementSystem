@@ -2,6 +2,7 @@ jest.mock("../components/ui", () => ({
   scheduleMutationSuccess: jest.fn(),
   toast: jest.fn(),
 }));
+jest.mock("./realtime", () => ({ publishDataChange: jest.fn() }));
 jest.mock("axios", () => ({
   __esModule: true,
   default: {
@@ -21,6 +22,7 @@ jest.mock("axios", () => ({
 
 import { api, errMsg } from "./api";
 import { scheduleMutationSuccess, toast } from "../components/ui";
+import { publishDataChange } from "./realtime";
 
 describe("API mutation notices", () => {
   const responseInterceptor = api.interceptors.response.handlers[0];
@@ -37,6 +39,16 @@ describe("API mutation notices", () => {
     expect(scheduleMutationSuccess).toHaveBeenCalledTimes(1);
     expect(scheduleMutationSuccess).toHaveBeenCalledWith("Trip created");
     expect(toast).not.toHaveBeenCalled();
+    expect(publishDataChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("broadcasts successful tenant revisions without treating them as local refreshes", () => {
+    responseInterceptor.fulfilled({
+      config: { method: "patch", url: "/sites/site-1/trips/trip-1/lrs/lr-1" },
+      headers: { "x-data-revision": "17" },
+    });
+
+    expect(publishDataChange).toHaveBeenCalledWith("17", { notifySelf: false });
   });
 
   it.each([

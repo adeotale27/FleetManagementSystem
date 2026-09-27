@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
+import { DATA_CHANGE_EVENT } from "./realtime";
 
 export function useFetch(path, params) {
   const key = JSON.stringify(params || {});
@@ -21,7 +22,11 @@ export function useFetch(path, params) {
     }
   }, [path, key]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    window.addEventListener(DATA_CHANGE_EVENT, load);
+    return () => window.removeEventListener(DATA_CHANGE_EVENT, load);
+  }, [load]);
   return { data, loading, error, reload: load, setData };
 }
 

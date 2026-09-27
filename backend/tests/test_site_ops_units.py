@@ -35,6 +35,160 @@ def test_manager_password_models_accept_short_and_long_nonempty_passwords():
     assert long_password.password == "x" * 500
 
 
+def test_trip_resources_are_available_to_managers_who_can_create_trips(monkeypatch):
+    class Cursor:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def sort(self, *_args):
+            return self
+
+        async def to_list(self, _limit):
+            return self.rows
+
+    class Resources:
+        def __init__(self, rows):
+            self.rows = rows
+            self.query = None
+
+        def find(self, query, _projection):
+            self.query = query
+            return Cursor(self.rows)
+
+    vehicles = Resources([{
+        "_id": "vehicle-1", "vehicle_no": "MH31AB1234",
+        "vehicle_type": "Truck", "status": "Active",
+    }])
+    drivers = Resources([{"_id": "driver-1", "name": "Driver One", "mobile": "123"}])
+
+    async def site_for_user(site_id, _user):
+        assert site_id == "site-1"
+        return {"_id": site_id, "business_id": "business-1"}
+
+    monkeypatch.setattr(site_ops, "_site_for_user", site_for_user)
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(vehicles=vehicles, drivers=drivers))
+    user = {
+        "role": "site_manager", "site_permissions": {"site-1": ["trips:create"]},
+        "site_ids": ["site-1"],
+    }
+
+    result = asyncio.run(site_ops.list_site_trip_resources("site-1", user))
+
+    assert result == {
+        "vehicles": [{
+            "id": "vehicle-1", "vehicle_no": "MH31AB1234",
+            "vehicle_type": "Truck", "status": "Active",
+        }],
+        "drivers": [{"id": "driver-1", "name": "Driver One"}],
+    }
+
+
+def test_trip_resources_reject_managers_without_read_or_create_permission(monkeypatch):
+    async def site_for_user(site_id, _user):
+        return {"_id": site_id, "business_id": "business-1"}
+
+    monkeypatch.setattr(site_ops, "_site_for_user", site_for_user)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(site_ops.list_site_trip_resources(
+            "site-1", {"role": "site_manager", "site_permissions": {"site-1": ["lrs:read"]}},
+        ))
+
+    assert error.value.status_code == 403
+
+
+def test_daily_ledger_export_includes_all_site_day_trips_and_financials(monkeypatch):
+    site = {"_id": "site-1", "business_id": "business-1", "name": "North", "code": "N"}
+    trips = [
+        {"_id": "trip-1", "sequence": 1, "trip_ref": "N-001", "truck_no": "TRUCK-1", "driver_name": "Driver 1"},
+        {"_id": "trip-2", "sequence": 2, "trip_ref": "N-002", "truck_no": "TRUCK-2", "driver_name": "Driver 2"},
+    ]
+    lrs = [
+        {
+            "_id": "lr-1", "trip_id": "trip-1", "sequence": 1, "lr_ref": "N-LR-1",
+            "sender_name": "Sender", "receiver_name": "Receiver", "receiver_identifier": "",
+            "goods_type": "Grain", "containers": [{"type": "Bag", "quantity": 3}],
+            "total_quantity": 3, "rent": Decimal("100.00"), "hamali": Decimal("10.00"),
+        },
+        {
+            "_id": "lr-2", "trip_id": "trip-2", "sequence": 1, "lr_ref": "N-LR-2",
+            "sender_name": "Sender 2", "receiver_name": "Receiver 2", "receiver_identifier": "",
+            "goods_type": "Steel", "containers": [{"type": "Box", "quantity": 1}],
+            "total_quantity": 1, "rent": Decimal("50.00"), "hamali": Decimal("5.00"),
+        },
+    ]
+
+    class Cursor:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def sort(self, *_args):
+            return self
+
+        def limit(self, _limit):
+            return self
+
+        async def to_list(self, _limit):
+            return self.rows
+
+    class Collection:
+        def __init__(self, rows):
+            self.rows = rows
+            self.queries = []
+
+        def find(self, query):
+            self.queries.append(query)
+            return Cursor(self.rows)
+
+    trips_collection = Collection(trips)
+    lrs_collection = Collection(lrs)
+    payments_collection = Collection([{
+        "lr_id": "lr-1", "amount": Decimal("25.00"), "date": "2026-09-27",
+        "method": "Cash", "kind": "payment", "reference": "receipt-1",
+        "posting_status": "posted",
+    }])
+
+    async def get_site(site_id, user):
+        assert site_id == "site-1"
+        assert user["site_permissions"]["site-1"] == ["ledger:export"]
+        return site
+
+    monkeypatch.setattr(site_ops, "_site_for_user", get_site)
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(
+        site_trips=trips_collection, site_lrs=lrs_collection,
+        site_payments=payments_collection,
+    ))
+
+    response = asyncio.run(site_ops.export_site_daily_ledger(
+        "site-1", "2026-09-27",
+        {"role": "site_manager", "site_permissions": {"site-1": ["ledger:export"]}},
+    ))
+    rows = list(csv.DictReader(io.StringIO(bytes(response.body).decode("utf-8-sig"))))
+
+    assert [row["trip_ref"] for row in rows] == ["N-001", "N-002"]
+    assert [row["lr_ref"] for row in rows] == ["N-LR-1", "N-LR-2"]
+    assert rows[0]["bhada_collected_inr"] == "25.00"
+    assert rows[0]["bhada_outstanding_inr"] == "75.00"
+    assert rows[0]["payment_details"] == "2026-09-27 Cash payment 25.00 receipt-1"
+    assert trips_collection.queries[0]["operating_date"] == "2026-09-27"
+    assert lrs_collection.queries[0]["trip_id"] == {"$in": ["trip-1", "trip-2"]}
+    assert payments_collection.queries[0]["business_id"] == "business-1"
+
+
+def test_daily_ledger_export_requires_explicit_manager_permission(monkeypatch):
+    async def get_site(_site_id, _user):
+        return {"_id": "site-1", "business_id": "business-1"}
+
+    monkeypatch.setattr(site_ops, "_site_for_user", get_site)
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(site_ops.export_site_daily_ledger(
+            "site-1", "2026-09-27",
+            {"role": "site_manager", "site_permissions": {"site-1": ["trips:read", "lrs:read"]}},
+        ))
+
+    assert error.value.status_code == 403
+
+
 def test_ledger_parser_accepts_versioned_scope_and_quoted_newlines():
     site = {"_id": "site-1", "business_id": "business-1"}
     trip = {"_id": "trip-1"}
@@ -425,6 +579,55 @@ def test_lr_update_persists_phone_and_preserves_party_mobile_when_omitted(
     if requested_phone:
         assert lrs.update is not None
         assert lrs.update[1]["$set"]["receiver_phone"] == requested_phone
+
+
+def test_lr_receiver_and_first_bhada_save_posts_financial_event_to_new_party(monkeypatch):
+    site = {"_id": "site-1", "business_id": "business-1"}
+    trip = {"status": "open", "operating_date": "2026-09-27"}
+    lr = {
+        "_id": "lr-1", "party_id": "party-old", "trip_id": "trip-1",
+        "lr_ref": "N-LR-1", "operating_date": "2026-09-27",
+        "receiver_name": "Old Receiver", "receiver_label": "Old Receiver",
+        "receiver_identifier": "", "receiver_identity_id": "receiver-old",
+        "receiver_normalized": "old receiver", "receiver_phone": "",
+        "rent": None, "hamali": None, "reconciled": False,
+    }
+    financial_events = []
+
+    class SiteLRs:
+        async def update_one(self, _query, update):
+            lr.update(update["$set"])
+
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(site_lrs=SiteLRs()))
+    monkeypatch.setattr(site_ops, "_site_for_user", _async_value(site))
+    monkeypatch.setattr(site_ops, "_trip", _async_value(trip))
+    monkeypatch.setattr(site_ops, "_lr", _async_value(lr))
+    monkeypatch.setattr(site_ops, "_payments_by_lr", _async_value({"lr-1": Decimal("0.00")}))
+    monkeypatch.setattr(site_ops, "_receiver_for_lr", _async_value({
+        "_id": "receiver-new", "name": "New Receiver",
+        "normalized_name": "new receiver", "label": "New Receiver", "identifier": "",
+    }))
+    monkeypatch.setattr(site_ops, "_party_for_receiver", _async_value("party-new"))
+    monkeypatch.setattr(site_ops, "_audit", _async_value(None))
+    monkeypatch.setattr(site_ops, "_lr_rows", _async_value([lr]))
+
+    async def record_financial_event(*args):
+        financial_events.append(args)
+
+    monkeypatch.setattr(site_ops, "_financial_event", record_financial_event)
+    result = asyncio.run(site_ops.update_site_lr(
+        "site-1", "trip-1", "lr-1",
+        site_ops.LRUpdate(
+            receiver_name="New Receiver", rent=Decimal("120.00"),
+            idempotency_key="rent-correction-1",
+        ),
+        {"role": "owner"},
+    ))
+
+    assert result["party_id"] == "party-new"
+    assert lr["party_id"] == "party-new"
+    assert financial_events[0][2] == "party-new"
+    assert financial_events[0][5] == Decimal("120.00")
 
 
 def _report_fixtures():

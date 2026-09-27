@@ -5,6 +5,7 @@ import {
 import { api, errMsg } from "../lib/api";
 import { Card, ErrorState, Loader, PageHead } from "../components/ui";
 import { money0, monthStart, todayISO } from "../lib/format";
+import { DATA_CHANGE_EVENT } from "../lib/realtime";
 
 const field = "fld w-full";
 
@@ -62,7 +63,11 @@ export default function BookingFinance() {
     }
   }, [applied]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    refresh();
+    window.addEventListener(DATA_CHANGE_EVENT, refresh);
+    return () => window.removeEventListener(DATA_CHANGE_EVENT, refresh);
+  }, [refresh]);
 
   const totals = data?.totals;
   const stats = totals ? [
