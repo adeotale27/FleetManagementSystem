@@ -25,6 +25,16 @@ def _ledger_csv(site_id="site-1", trip_id="trip-1", business_id="business-1"):
     return output.getvalue().encode("utf-8")
 
 
+def test_manager_password_models_accept_short_and_long_nonempty_passwords():
+    short_password = site_ops.ManagerAssignment(
+        name="Manager One", username="manager-one", password="x",
+    )
+    long_password = site_ops.ManagerPasswordReset(password="x" * 500)
+
+    assert short_password.password == "x"
+    assert long_password.password == "x" * 500
+
+
 def test_ledger_parser_accepts_versioned_scope_and_quoted_newlines():
     site = {"_id": "site-1", "business_id": "business-1"}
     trip = {"_id": "trip-1"}
@@ -69,11 +79,132 @@ def test_document_serializer_preserves_top_level_identifier():
     assert "_id" not in result["nested"]
 
 
+def test_reassigning_existing_manager_hashes_supplied_password(monkeypatch):
+    existing = {
+        "_id": "manager-1", "tenant_id": "business-1", "role": "site_manager",
+        "password": "old-hash",
+    }
+    updates = []
+    audits = []
+
+    class Users:
+        async def find_one(self, _query):
+            return existing
+
+        async def update_one(self, query, update):
+            updates.append((query, update))
+
+    class Sites:
+        async def update_one(self, *_args, **_kwargs):
+            return None
+
+    class Team:
+        async def find_one(self, query):
+            if query["_id"] == "team-1":
+                return {"_id": "team-1", "name": "Manager One", "role": "Manager"}
+            return None
+
+    async def replace_access(*_args):
+        return None
+
+    async def site_for_user(*_args):
+        return resolved_site
+
+    async def audit(*args, **kwargs):
+        audits.append((args, kwargs))
+
+    resolved_site = {
+        "_id": "site-1", "business_id": "business-1",
+        "manager_username": "manager-1",
+    }
+    monkeypatch.setattr(site_ops, "_owner", lambda _user: None)
+    monkeypatch.setattr(site_ops, "_site_for_user", site_for_user)
+    monkeypatch.setattr(site_ops, "_tenant_id", lambda _user: "business-1")
+    monkeypatch.setattr(site_ops, "_replace_manager_access", replace_access)
+    monkeypatch.setattr(site_ops, "_audit", audit)
+    monkeypatch.setattr(site_ops, "hash_manager_pw", lambda _password: "bcrypt-hash")
+    monkeypatch.setattr(site_ops, "platform_db", SimpleNamespace(users=Users()))
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(sites=Sites(), team=Team()))
+
+    password = "new-manager-password"
+    result = asyncio.run(site_ops.assign_site_manager(
+        "site-1",
+        site_ops.ManagerAssignment(
+            name="Manager One", username="manager-1", password=password,
+            team_member_id="team-1",
+        ),
+        {"role": "owner", "tenant_id": "business-1"},
+    ))
+
+    assert updates[0][1]["$set"]["password"] == "bcrypt-hash"
+    assert updates[0][1]["$set"]["team_member_id"] == "team-1"
+    assert password not in repr(updates)
+    assert "password" not in result
+    assert any(args[2] == "manager.password_reset" for args, _kwargs in audits)
+
+
+def test_manager_register_never_returns_password_fields(monkeypatch):
+    class ManagerCursor:
+        def sort(self, *_args):
+            return self
+
+        async def to_list(self, _limit):
+            return [{
+                "_id": "manager-1", "name": "Manager One", "active": True,
+                "tenant_id": "business-1", "role": "site_manager",
+                "password": "bcrypt-hash", "team_member_id": "team-1", "site_ids": ["site-1"],
+                "site_permissions": {"site-1": ["trips:read"]},
+            }]
+
+    class Users:
+        def find(self, _query):
+            return ManagerCursor()
+
+    monkeypatch.setattr(site_ops, "_owner", lambda _user: None)
+    monkeypatch.setattr(site_ops, "_tenant_id", lambda _user: "business-1")
+    monkeypatch.setattr(site_ops, "platform_db", SimpleNamespace(users=Users()))
+
+    result = asyncio.run(site_ops.list_site_managers({"role": "owner", "tenant_id": "business-1"}))
+
+    assert result == [{
+        "username": "manager-1", "name": "Manager One", "active": True,
+        "team_member_id": "team-1",
+        "site_ids": ["site-1"], "site_permissions": {"site-1": ["trips:read"]},
+    }]
+    assert "password" not in result[0]
+
+
+def test_activity_by_date_combines_trip_and_lr_counts_and_fills_gaps():
+    activity = site_ops._activity_by_date(
+        "2026-09-25",
+        "2026-09-27",
+        [{"_id": "2026-09-25", "count": 2}, {"_id": "2026-09-27", "count": 1}],
+        [{"_id": "2026-09-26", "count": 3}],
+    )
+
+    assert activity == [
+        {"date": "2026-09-25", "total_trips": 2, "total_lrs": 0},
+        {"date": "2026-09-26", "total_trips": 0, "total_lrs": 3},
+        {"date": "2026-09-27", "total_trips": 1, "total_lrs": 0},
+    ]
+
+
 def test_payment_status_uses_amount_due_and_actual_paid_amount():
     assert site_ops._payment_status(None, Decimal("0.00")) == "unpriced"
     assert site_ops._payment_status(Decimal("100.00"), Decimal("0.00")) == "unpaid"
     assert site_ops._payment_status(Decimal("100.00"), Decimal("35.00")) == "partial"
     assert site_ops._payment_status(Decimal("100.00"), Decimal("100.00")) == "paid"
+
+
+def test_booking_lr_report_query_is_tenant_and_site_scoped_and_escapes_search():
+    query = site_ops._system_lr_report_query(
+        "business-1", ["site-1", "site-2"], "2026-09-01", "2026-09-30", "A.*",
+    )
+
+    assert query["business_id"] == "business-1"
+    assert query["site_id"] == {"$in": ["site-1", "site-2"]}
+    assert query["operating_date"] == {"$gte": "2026-09-01", "$lte": "2026-09-30"}
+    assert query["$or"][0]["lr_ref"] == {"$regex": r"A\.\*", "$options": "i"}
 
 
 def test_reversal_index_spec_matches_existing_sparse_index(monkeypatch):

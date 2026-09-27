@@ -185,6 +185,18 @@ def test_site_manager_trip_lr_ledger_and_payment_workflow():
         assert saved_lr["rent"] == "125.00"
         assert saved_lr["hamali"] == "17.00"
         assert saved_lr["paid_total"] == "40.00"
+        report = _request(
+            "GET", "/sites/system-reports/lrs", owner,
+            params={
+                "from_date": operating_date, "to_date": operating_date,
+                "site_id": site_id, "search": first_lr["lr_ref"],
+            },
+        ).json()
+        assert report["total"] == 1
+        assert report["rows"][0]["id"] == first_lr["id"]
+        assert report["rows"][0]["rent"] == "125.00"
+        assert report["rows"][0]["hamali"] == "17.00"
+        assert report["rows"][0]["paid_total"] == "40.00"
         assert saved_lr["payment_status"] == "partial"
         assert len(saved_lr["payments"]) == 2
 
@@ -203,6 +215,9 @@ def test_site_manager_trip_lr_ledger_and_payment_workflow():
         ).json()
         assert dashboard["sites"][0]["total_lrs"] == 2
         assert dashboard["sites"][0]["collected_bhada"] == "40.00"
+        assert dashboard["activity_by_date"] == [{
+            "date": operating_date, "total_trips": 1, "total_lrs": 2,
+        }]
     finally:
         if manager_token and site_id:
             _request("DELETE", f"/sites/managers/{manager_username}", owner)

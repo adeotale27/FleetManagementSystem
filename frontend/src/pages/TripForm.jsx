@@ -60,10 +60,13 @@ export default function TripForm() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <PageHead title="Create Trip" subtitle="Two steps — route and vehicle. Everything else is optional." back="/trips" />
+      <PageHead title="Create Trip" subtitle="Set the route and vehicle, then add any optional party or financial details." back="/trips" />
 
       <Card className="mb-4 p-4">
-        <p className="lbl">Trip Kind</p>
+        <div className="mb-3">
+          <h2 className="font-head text-[16px] font-bold">Trip kind</h2>
+          <p className="text-[13px] text-muted">Choose a saved route or enter a custom source and destination.</p>
+        </div>
         <div className="grid grid-cols-2 gap-3">
           {[["indoor", "Indoor Trip", "Regular route from Settings"], ["outdoor", "Outdoor Trip", "Any custom source & destination"]].map(([v, t, s]) => (
             <button key={v} data-testid={`mode-${v}`} onClick={() => setF({ ...f, mode: v })}
@@ -80,7 +83,10 @@ export default function TripForm() {
       </Card>
 
       <Card className="mb-4 space-y-4 p-4">
-        <p className="lbl">Route</p>
+        <div className="border-b border-line pb-3">
+          <h2 className="font-head text-[16px] font-bold">Route &amp; schedule</h2>
+          <p className="text-[13px] text-muted">Choose the route, trip type and operating dates.</p>
+        </div>
         {f.mode === "indoor" ? (
           <>
             <Select label="Select Route" required value={f.route_id} data-testid="trip-route"
@@ -134,7 +140,10 @@ export default function TripForm() {
       </Card>
 
       <Card className="mb-4 space-y-4 p-4">
-        <p className="lbl">Vehicle</p>
+        <div className="border-b border-line pb-3">
+          <h2 className="font-head text-[16px] font-bold">Vehicle assignment</h2>
+          <p className="text-[13px] text-muted">Select a fleet vehicle or add a trip-only vehicle.</p>
+        </div>
         {!temp ? (
           <>
             <Select label="Select Vehicle" required value={f.vehicle_id} onChange={set("vehicle_id")}
@@ -184,7 +193,10 @@ export default function TripForm() {
       </Card>
 
       <Card className="mb-4 space-y-4 p-4">
-        <p className="lbl">Driver</p>
+        <div className="border-b border-line pb-3">
+          <h2 className="font-head text-[16px] font-bold">Driver assignment</h2>
+          <p className="text-[13px] text-muted">Assign a saved driver or enter a trip-only driver.</p>
+        </div>
         {!tempDrv ? (
           <>
             <Select label="Select Driver" value={f.driver_id} onChange={set("driver_id")} data-testid="trip-driver"
@@ -240,7 +252,10 @@ export default function TripForm() {
       </Card>
 
       <Card className="mb-4 space-y-4 p-4">
-        <p className="lbl">Amount & Party (optional)</p>
+        <div className="border-b border-line pb-3">
+          <h2 className="font-head text-[16px] font-bold">Party &amp; trip amounts</h2>
+          <p className="text-[13px] text-muted">Optional values can be updated later from trip details.</p>
+        </div>
         <Autocomplete label="Party / Customer" value={partyText} testid="trip-party"
           onChange={(v) => { setPartyText(v); setF((s) => ({ ...s, party_id: null, party_name: v })); }}
           onPick={(p) => { setPartyText(p.name); setF((s) => ({ ...s, party_id: p.id, party_name: p.name })); }}

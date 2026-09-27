@@ -34,6 +34,14 @@ export default function Vehicles() {
       number: v.documents?.[k]?.number || "—", expiry: v.documents?.[k]?.expiry || "",
       state: docState(v.documents?.[k]?.expiry),
     }))).filter((r) => r.state !== "Missing" || r.number !== "—");
+  const fleetRows = vehicles.data || [];
+  const attentionDocs = docRows.filter((r) => r.state === "Expired" || r.state === "Expiring Soon").length;
+  const section = {
+    vehicles: ["Fleet overview", "Vehicle details, current assignments and availability.", `${fleetRows.length} vehicles`],
+    documents: ["Document register", "Keep compliance dates visible and review upcoming expiries.", attentionDocs ? `${attentionDocs} need attention` : "No expiry alerts"],
+    tracking: ["Live fleet position", "Latest locations reported by your connected tracking devices.", track.data?.configured ? `${track.data.vehicles?.length || 0} reporting` : "Connection status"],
+    pumps: ["Fuel accounts", "Manage pump contacts and outstanding credit balances.", `${(pumps.data || []).length} pumps`],
+  }[tab] || ["Vehicles", "Manage fleet operations.", ""];
 
   return (
     <div>
@@ -56,7 +64,17 @@ export default function Vehicles() {
                { value: "tracking", label: "Live Tracking" },
                { value: "pumps", label: "Fuel Pumps", count: (pumps.data || []).length }]} />
 
-      <Card className="mb-4 p-3.5"><SearchBox value={q} onChange={setQ} placeholder="Vehicle number, make, pump name…" /></Card>
+      <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="font-head text-[17px] font-bold text-ink">{section[0]}</h2>
+          <p className="text-[13px] text-muted">{section[1]}</p>
+        </div>
+        <p className="text-[12px] font-semibold text-muted sm:text-right">{section[2]}</p>
+      </div>
+
+      <Card className="mb-4 p-3.5">
+        <SearchBox value={q} onChange={setQ} placeholder="Vehicle number, make, pump name…" />
+      </Card>
 
       <Card className="overflow-hidden">
         {tab === "vehicles" && (
@@ -73,8 +91,12 @@ export default function Vehicles() {
                 { key: "status", label: "Status", type: "badge" },
               ]}
               rows={vehicles.data || []} onRowClick={(r) => nav(`/vehicles/${r.id}`)}
-              empty={<EmptyState title="No vehicles yet" text="Add your first truck to start creating trips."
-                action={<Btn onClick={() => setForm({ res: "vehicles" })}>Add Vehicle</Btn>} />}
+              empty={<EmptyState
+                title={q.trim() ? "No matching vehicles" : "No vehicles yet"}
+                text={q.trim() ? "Try a different vehicle number or make, or clear your search." : "Add your first truck to start creating trips."}
+                action={q.trim()
+                  ? <Btn variant="s" onClick={() => setQ("")}>Clear Search</Btn>
+                  : <Btn onClick={() => setForm({ res: "vehicles" })}>Add Vehicle</Btn>} />}
               mobile={(r) => (
                 <div>
                   <div className="flex items-center justify-between gap-2">
@@ -148,8 +170,12 @@ export default function Vehicles() {
                 { key: "status", label: "Status", type: "badge" },
               ]}
               rows={pumps.data || []} onRowClick={(r) => setForm({ res: "fuel_pumps", item: r })}
-              empty={<EmptyState title="No fuel pumps" text="Add the pumps where you fill diesel on credit."
-                action={<Btn onClick={() => setForm({ res: "fuel_pumps" })}>Add Fuel Pump</Btn>} />}
+              empty={<EmptyState
+                title={q.trim() ? "No matching fuel pumps" : "No fuel pumps"}
+                text={q.trim() ? "Try another pump name or location, or clear your search." : "Add the pumps where you fill diesel on credit."}
+                action={q.trim()
+                  ? <Btn variant="s" onClick={() => setQ("")}>Clear Search</Btn>
+                  : <Btn onClick={() => setForm({ res: "fuel_pumps" })}>Add Fuel Pump</Btn>} />}
               mobile={(r) => (
                 <div className="flex items-center justify-between gap-3">
                   <div><p className="font-semibold">{r.name}</p><p className="text-[12.5px] text-muted">{r.location || "—"}</p></div>

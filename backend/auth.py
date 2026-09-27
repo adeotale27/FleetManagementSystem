@@ -1,3 +1,4 @@
+import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -17,8 +18,17 @@ def hash_pw(pw: str) -> str:
     return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
 
 
+def hash_manager_pw(pw: str) -> str:
+    digest = hashlib.sha256(pw.encode("utf-8")).hexdigest().encode("ascii")
+    return f"bcrypt-sha256${bcrypt.hashpw(digest, bcrypt.gensalt()).decode()}"
+
+
 def verify_pw(pw: str, hashed: str) -> bool:
     try:
+        if hashed.startswith("bcrypt-sha256$"):
+            digest = hashlib.sha256(pw.encode("utf-8")).hexdigest().encode("ascii")
+            legacy_bcrypt_hash = hashed[len("bcrypt-sha256$"):]
+            return bcrypt.checkpw(digest, legacy_bcrypt_hash.encode())
         return bcrypt.checkpw(pw.encode(), hashed.encode())
     except Exception:
         return False
@@ -93,8 +103,8 @@ async def _resolve_principal(cred: HTTPAuthorizationCredentials):
 
 async def current_user(cred: HTTPAuthorizationCredentials = Depends(bearer)):
     user = await _resolve_principal(cred)
-    if user["role"] == "site_manager":
-        raise HTTPException(status_code=403, detail="Site manager access is limited to site operations")
+    if user["role"] != "owner":
+        raise HTTPException(status_code=403, detail="Business owner access only")
     return user
 
 
@@ -102,7 +112,8 @@ async def site_user(cred: HTTPAuthorizationCredentials = Depends(bearer)):
     return await _resolve_principal(cred)
 
 
-async def require_super(u=Depends(current_user)):
+async def require_super(cred: HTTPAuthorizationCredentials = Depends(bearer)):
+    u = await _resolve_principal(cred)
     if u["role"] != "superadmin":
         raise HTTPException(status_code=403, detail="Platform owner access only")
     return u

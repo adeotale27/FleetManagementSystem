@@ -13,7 +13,7 @@ The version format is `MAJOR.MINOR.PATCH`:
 
 - **PATCH** (`1.1.1` → `1.1.2`): backwards-compatible bug fixes, maintenance, and documentation/governance changes that affect how the app is built or maintained.
 - **MINOR** (`1.1.2` → `1.2.0`): every new backwards-compatible user-facing feature or integration. A genuinely new feature must never be merged without a version increment and release notes.
-- **MAJOR** (`1.9.0` → `2.0.0`): incompatible API, data, security, workflow, or deployment changes that require consumers or operators to adapt.
+- **MAJOR** (`1.9.1` → `2.0.0`): incompatible API, data, security, workflow, or deployment changes that require consumers or operators to adapt.
 
 For every change set: select the increment before implementation; update this file and `frontend/package.json`; add a dated changelog entry describing user-visible changes and relevant migration/compatibility notes; validate the implementation; then commit the complete change together. Do not reuse a released version. If one change set spans categories, use the highest applicable increment. Purely local experiments that are not retained in the repository do not constitute a release.
 
@@ -21,9 +21,74 @@ New features and architecture changes also require updates to [APP_SUMMARY.md](A
 
 ## Current version
 
-**v1.3.1** — 27 September 2026
+**v1.9.1** — 27 September 2026
 
 ## Changelog
+
+### v1.9.1 — 27 September 2026
+
+- **Booking Finance and Reports routing:** Moved owner-only Booking Finance and Booking Reports routes into the business-owner route set. Owners can open both pages directly; site managers continue to be redirected to their site workspace.
+- **New-business empty states:** Confirmed zero-value Finance metrics and a zero-row Reports state are rendered when a business has no sites or booking activity.
+- **Manager access clarity:** Grouped site permission checkboxes by dashboard, trips, LRs, and finance/payments with plain-language action labels and a clear site-specific explanation.
+- **Manager passwords:** Removed the 12-character minimum and bcrypt 72-byte cutoff for new/reset manager passwords. New manager hashes use SHA-256 pre-hashing with bcrypt; existing bcrypt hashes remain verifiable. Passwords are still never stored or returned in plaintext; the newly set value is displayed once in the page for copying.
+- **Verification:** Added direct-route role tests, fresh-business zero-state tests, grouped-permission UI coverage, and long/new plus legacy password-hash tests.
+
+### v1.9.0 — 27 September 2026
+
+- **Booking setup & access page:** Moved site creation/editing, manager assignment and permissions, legacy assignment tools, and booking categories out of the operational Booking Dashboard to a dedicated owner-only `/booking-setup` page. Added an owner dashboard shortcut; site managers cannot navigate to the page.
+- **Office Team manager selection:** Site creation now lets the owner select an active Office Team member with a manager role, or add a new manager profile. When the selected profile has no login, the flow creates a separate site-manager login and reveals its temporary password once. Existing linked logins can be assigned to additional sites.
+- **Identity linkage:** Site-manager platform accounts can retain a `team_member_id` link to a tenant Office Team profile. No credentials are stored on or copied into Team profiles; existing tenant/team records remain intact.
+- **Dashboard focus and field labels:** Removed setup/access/category controls from the operational dashboard. Site-add manager selection uses the Team roster; site metadata remains clearly labeled.
+- **Verification:** Added tests for owner-only navigation, manager-only Team selection, login creation/linkage, and temporary credential visibility.
+
+### v1.8.1 — 27 September 2026
+
+- **Owner-only Booking access management:** Separated site-manager assignment, permissions, manager register, password reset and deactivation into its own Booking Dashboard section. Site managers do not see this owner-only section.
+- **Booking categories:** Moved goods/container category controls into their own separate section.
+- **Selected-site form clarity:** The previously blank third field is the optional City. Added visible labels and helpful placeholders for the site name, location, city and time zone.
+- **Compatibility:** Presentation-only change; no API, storage, or data migration changes.
+- **Verification:** Added frontend checks for role separation, distinct section headings and the selected-site City field label.
+
+### v1.8.0 — 27 September 2026
+
+- **Manager account register:** Booking Dashboard owner settings now keep manager IDs, status and assigned sites visible in a dedicated register.
+- **One-time temporary credentials:** A password is shown in the current page only after assignment or reset so the owner can copy/share it securely. Existing passwords cannot be retrieved; issue a reset to create a new temporary credential. Passwords remain bcrypt-hashed in platform storage and are never included in manager-list responses.
+- **Existing-manager reassignment:** If the owner supplies a temporary password while assigning an existing manager, it is now hashed and applied; the password reset is recorded in the site audit log without recording the credential.
+- **Compatibility:** No database schema, collection or migration change.
+- **Verification:** Added manager-register and existing-manager password-hash regression coverage, plus a frontend test for ID/site listing and one-time reset display.
+
+### v1.7.0 — 27 September 2026
+
+- **Booking Finance and Reports:** Added owner-only booking-specific Finance and LR Reports screens. Booking Finance uses the existing site dashboard aggregation and reports query canonical site LR records with tenant/site scope, date filters, search and pagination, with CSV export for the rows currently loaded. These screens do not use or include industrial records.
+- **Less cluttered Booking Dashboard:** Kept its main KPIs focused on booking activity and moved detailed collections, outstanding, expense and receiver/goods breakdowns to Booking Finance.
+- **LR charge sheet:** Added a spreadsheet-style per-LR bhada/hamali editor on the owner’s site-trip page. Saves use the existing audited, validated LR update API and canonical `site_lrs` record; reconciled LRs remain locked, closed trips must be reopened, and bhada cannot be reduced below posted payments.
+- **Compatibility and storage:** No new collection, database, dependency or migration. Existing `site_lrs`/`site_trips` remain the booking source of truth; the LR report is read-only and paginated.
+- **Verification:** Added offline tests for tenant/site report-query scope, owner navigation boundaries, booking report/finance rendering and charge-sheet update requests. The write-enabled API workflow remains opt-in and requires a disposable test tenant.
+
+### v1.6.0 — 27 September 2026
+
+- **Separate booking and industrial workflows:** Booking Dashboard/site trips remain the daily small-goods flow; owner-only Industrial Trips, LRs, Finance and Reports no longer embed or quick-link into site booking records. Global industrial search and Quick Add actions are hidden on booking routes. Shared vehicle/driver/master data remains available.
+- **Role boundary:** Industrial business APIs now allow only business owners. Site identity/site authorization remains available to site managers, while platform superadmins continue to use independently guarded platform APIs.
+- **Financial isolation:** Industrial ledger balances/statements, cash positions, trip costs, expense lists/cancellation, vehicle expense context, cashbook and chart reads exclude site-tagged shared records. Site expenses cannot be cancelled through the industrial endpoint.
+- **Compatibility:** Site and industrial trips/LRs remain in their existing tenant-local collections. Site expenses and postings continue using existing shared collections with `site_id`; no collection, tenant database, migration, or record reset was introduced.
+- **Verification:** Focused offline backend authorization, financial-scope and site-operations tests passed (51); frontend suite passed (15 tests across 6 suites); production build completed. Live/write-enabled end-to-end tests were not run because the available local API was not confirmed to belong to this project or a disposable tenant.
+
+### v1.5.0 — 27 September 2026
+
+- **Premium presentation foundation:** Added shared brand-derived CSS/Tailwind tokens, refined surfaces and elevation, numeric typography, keyboard focus styling, and reduced-motion handling without changing the light forest-green/amber palette.
+- **Navigation:** Refined the responsive owner sidebar and mobile navigation, made Trips and LRs directly addressable as separate tabs, and kept route selection accurate when other query parameters are present.
+- **Booking Dashboard:** Added a more visual KPI/site/activity presentation, quick actions, selected-site drill-down, and responsive charts using site-dashboard data, including daily trip/LR counts and selected-period site totals. Currency charts retain their INR units.
+- **Remaining business modules:** Applied the shared visual language to Trips/LR, Finance, Reports, Vehicles, Parties, Team, Settings, and their supporting details/forms while preserving existing API and accounting workflows.
+- **Scope and compatibility:** Added a read-only `activity_by_date` aggregate to the site dashboard response; this requires no data migration, new collection, or dependency. Office and site trips/LRs remain distinct canonical record families; no data unification is implied.
+- **Verification:** Frontend suite passed (13 tests), focused offline backend site-operations suite passed (39 tests), and production build completed. The write-enabled API workflow was not run. Browser review reached the login page, but the local API was unavailable, so authenticated owner-dashboard visual review could not be completed.
+
+### v1.4.0 — 27 September 2026
+
+- **Owner Trips & LR visibility:** Added an on-demand Site bookings panel for site-created trips and their LRs, with site/trip selection, pagination, CSV export, and links to the canonical site detail/print workflows. Existing office trip/LR screens and site-specific permissions remain unchanged; records are not copied and financial events are not duplicated.
+- **Bookings Window Board clarity:** Kept the key site/trip/outstanding indicators visible while grouping detailed business analytics, alerts, filters, site setup, manager permissions, and booking categories into collapsed sections. Trip creation and the selected-site booking/LR context remain in the main workflow.
+- **Owner landing/navigation:** Made Booking Dashboard the owner home and sidebar entry, redirected the former `/dashboard` page, and added date presets and quick actions. Total trip KPIs are now explicitly computed for the selected date/site/trip filters.
+- **Compatibility and data safety:** No API schema, database, ledger, or storage migration is introduced. The panel reads the existing site-scoped endpoints only when opened and preserves tenant/site authorization.
+- **Verification:** Frontend suite passed (13 tests), focused offline backend suite passed (48 tests), and the production build completed. No live MongoDB latency benchmark or migration was run.
 
 ### v1.3.1 — 27 September 2026
 

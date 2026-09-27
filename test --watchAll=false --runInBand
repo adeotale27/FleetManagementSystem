@@ -1,0 +1,299 @@
+[1mdiff --git a/backend/server.py b/backend/server.py[m
+[1mindex f733eb4..a221a67 100644[m
+[1m--- a/backend/server.py[m
+[1m+++ b/backend/server.py[m
+[36m@@ -1,46 +1,163 @@[m
+ import os[m
+[32m+[m[32mimport re[m
+[32m+[m[32mimport traceback[m
+[32m+[m[32mimport json[m
+ from typing import Optional[m
+ [m
+ from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile[m
+ from fastapi.concurrency import run_in_threadpool[m
+ from fastapi.middleware.cors import CORSMiddleware[m
+[32m+[m[32mfrom fastapi.encoders import jsonable_encoder[m
+[32m+[m[32mfrom fastapi.responses import JSONResponse[m
+ from pydantic import BaseModel[m
+[32m+[m[32mfrom starlette.exceptions import HTTPException as StarletteHTTPException[m
+ [m
+ import ledger as L[m
+ import storage as S[m
+[31m-from auth import current_user, hash_pw, make_token, require_super, seed_owner, verify_pw[m
+[32m+[m[32mfrom auth import current_user, hash_pw, make_token, require_super, seed_owner, site_user, verify_pw[m
+ from db import PRIMARY_TENANT, db, new_id, now_iso, platform_db, ser, sers, tenant_db, tenant_db_name, tenant_key, today[m
+ [m
+ app = FastAPI(title="Fleet Management System")[m
+ api = APIRouter(prefix="/api")[m
+[32m+[m[32mfrom site_ops import initialize_site_storage, router as site_router[m
+[32m+[m
+[32m+[m[32mapp.include_router(site_router, prefix="/api")[m
+ [m
+ app.add_middleware([m
+     CORSMiddleware, allow_origins=["*"], allow_credentials=True,[m
+     allow_methods=["*"], allow_headers=["*"],[m
+ )[m
+ [m
+[32m+[m[32m_SENSITIVE_VALUE = re.compile([m
+[32m+[m[32m    r"(?i)([\"']?[A-Za-z0-9_.-]*(?:password|passwd|token|authorization|secret)"[m
+[32m+[m[32m    r"[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)"[m
+[32m+[m[32m    r"(?:(?:Bearer)\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,;}]+)"[m
+[32m+[m[32m)[m
+[32m+[m[32m_BEARER_TOKEN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")[m
+[32m+[m[32m_URI_CREDENTIALS = re.compile(r"(?i)(://[^:/@\s]+:)[^@/\s]+(@)")[m
+[32m+[m[32m_JWT = re.compile([m
+[32m+[m[32m    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}(?![A-Za-z0-9_-])"[m
+[32m+[m[32m)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _redact_error_text(value):[m
+[32m+[m[32m    text = str(value)[m
+[32m+[m[32m    text = _SENSITIVE_VALUE.sub(r"\1[REDACTED]", text)[m
+[32m+[m[32m    text = _URI_CREDENTIALS.sub(r"\1[REDACTED]\2", text)[m
+[32m+[m[32m    text = _JWT.sub("[REDACTED]", text)[m
+[32m+[m[32m    return _BEARER_TOKEN.sub("Bearer [REDACTED]", text)[m
+[32m+[m
+[32m+[m
+[32m+[m[32masync def _record_server_error(request, status, reference_id, detail, stack=""):[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        await platform_db.error_logs.insert_one({[m
+[32m+[m[32m            "_id": new_id(),[m
+[32m+[m[32m            "status": status,[m
+[32m+[m[32m            "path": request.url.path,[m
+[32m+[m[32m            "method": request.method,[m
+[32m+[m[32m            "detail": f"Reference {reference_id}: {_redact_error_text(detail)}",[m
+[32m+[m[32m            "traceback": _redact_error_text(stack) if stack else "",[m
+[32m+[m[32m            "reference_id": reference_id,[m
+[32m+[m[32m            "created_at": now_iso(),[m
+[32m+[m[32m        })[m
+[32m+[m[32m    except Exception:[m
+[32m+[m[32m        pass[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _server_error_response(reference_id):[m
+[32m+[m[32m    return JSONResponse([m
+[32m+[m[32m        status_code=500,[m
+[32m+[m[32m        content={[m
+[32m+[m[32m            "detail": "The server could not complete this request. Please try again.",[m
+[32m+[m[32m            "reference_id": reference_id,[m
+[32m+[m[32m        },[m
+[32m+[m[32m        headers={"X-Reference-ID": reference_id},[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _safe_client_error_detail(response):[m
+[32m+[m[32m    status = response.status_code[m
+[32m+[m[32m    if status >= 500 or status < 400:[m
+[32m+[m[32m        return ""[m
+[32m+[m[32m    detail = ""[m
+[32m+[m[32m    body = getattr(response, "body", b"")[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        if body:[m
+[32m+[m[32m            payload = json.loads(body.decode("utf-8"))[m
+[32m+[m[32m            detail = payload.get("detail", "") if isinstance(payload, dict) else ""[m
+[32m+[m[32m    except (UnicodeDecodeError, json.JSONDecodeError):[m
+[32m+[m[32m        return ""[m
+[32m+[m[32m    if isinstance(detail, str):[m
+[32m+[m[32m        return _redact_error_text(detail)[:400][m
+[32m+[m[32m    if isinstance(detail, list):[m
+[32m+[m[32m        messages = [][m
+[32m+[m[32m        for item in detail:[m
+[32m+[m[32m            if not isinstance(item, dict):[m
+[32m+[m[32m                if isinstance(item, str):[m
+[32m+[m[32m                    messages.append(_redact_error_text(item)[:200])[m
+[32m+[m[32m                continue[m
+[32m+[m[32m            # Validation input/context can contain private values; retain only[m
+[32m+[m[32m            # the field location and standard diagnostic message.[m
+[32m+[m[32m            location = item.get("loc")[m
+[32m+[m[32m            message = item.get("msg")[m
+[32m+[m[32m            if isinstance(location, (list, tuple)):[m
+[32m+[m[32m                location = ".".join(str(part) for part in location if part not in {"body", "query", "path"})[m
+[32m+[m[32m            else:[m
+[32m+[m[32m                location = ""[m
+[32m+[m[32m            safe_message = _redact_error_text(message)[:200] if isinstance(message, str) else ""[m
+[32m+[m[32m            if location or safe_message:[m
+[32m+[m[32m                messages.append(": ".join(part for part in (location[:160], safe_message) if part))[m
+[32m+[m[32m        return "; ".join(messages)[:400][m
+[32m+[m[32m    return ""[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@app.exception_handler(StarletteHTTPException)[m
+[32m+[m[32masync def http_exception_handler(request: Request, exc: StarletteHTTPException):[m
+[32m+[m[32m    if exc.status_code < 500:[m
+[32m+[m[32m        return JSONResponse([m
+[32m+[m[32m            status_code=exc.status_code,[m
+[32m+[m[32m            content={"detail": jsonable_encoder(exc.detail)},[m
+[32m+[m[32m            headers=exc.headers,[m
+[32m+[m[32m        )[m
+[32m+[m[32m    reference_id = getattr(request.state, "reference_id", new_id())[m
+[32m+[m[32m    await _record_server_error([m
+[32m+[m[32m        request, exc.status_code, reference_id, exc.detail,[m
+[32m+[m[32m        f"{type(exc).__name__}: {exc.detail}",[m
+[32m+[m[32m    )[m
+[32m+[m[32m    response = _server_error_response(reference_id)[m
+[32m+[m[32m    if exc.headers:[m
+[32m+[m[32m        response.headers.update(exc.headers)[m
+[32m+[m[32m    return response[m
+[32m+[m
+ [m
+ @app.middleware("http")[m
+ async def log_failures(request: Request, call_next):[m
+[32m+[m[32m    request.state.reference_id = new_id()[m
+     try:[m
+         response = await call_next(request)[m
+     except Exception as e:[m
+[31m-        try:[m
+[31m-            await platform_db.error_logs.insert_one({[m
+[31m-                "_id": new_id(), "status": 500, "path": request.url.path,[m
+[31m-                "method": request.method, "detail": str(e)[:400], "created_at": now_iso(),[m
+[31m-            })[m
+[31m-        except Exception:[m
+[31m-            pass[m
+[31m-        raise[m
+[31m-    if response.status_code >= 500:[m
+[31m-        try:[m
+[31m-            await platform_db.error_logs.insert_one({[m
+[31m-                "_id": new_id(), "status": response.status_code, "path": request.url.path,[m
+[31m-                "method": request.method, "detail": "", "created_at": now_iso(),[m
+[31m-            })[m
+[31m-        except Exception:[m
+[31m-            pass[m
+[32m+[m[32m        reference_id = request.state.reference_id[m
+[32m+[m[32m        await _record_server_error([m
+[32m+[m[32m            request, 500, reference_id, str(e),[m
+[32m+[m[32m            "".join(traceback.format_exception(type(e), e, e.__traceback__)),[m
+[32m+[m[32m        )[m
+[32m+[m[32m        return _server_error_response(reference_id)[m
+[32m+[m[32m    if response.status_code >= 500 and not response.headers.get("X-Reference-ID"):[m
+[32m+[m[32m        reference_id = request.state.reference_id[m
+[32m+[m[32m        await _record_server_error([m
+[32m+[m[32m            request, response.status_code, reference_id,[m
+[32m+[m[32m            f"Server returned HTTP {response.status_code} without an exception detail.",[m
+[32m+[m[32m        )[m
+[32m+[m[32m        response = _server_error_response(reference_id)[m
+[32m+[m[32m    elif ([m
+[32m+[m[32m        400 <= response.status_code < 500[m
+[32m+[m[32m        and request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}[m
+[32m+[m[32m        and not request.url.path.rstrip("/").endswith("/auth/login")[m
+[32m+[m[32m    ):[m
+[32m+[m[32m        await _record_server_error([m
+[32m+[m[32m            request, response.status_code, request.state.reference_id,[m
+[32m+[m[32m            _safe_client_error_detail(response),[m
+[32m+[m[32m        )[m
+     return response[m
+ [m
+ DEFAULT_SETTINGS = {[m
+[36m@@ -103,6 +220,7 @@[m [masync def next_number(kind):[m
+ async def startup():[m
+     await seed_owner()[m
+     await get_settings()[m
+[32m+[m[32m    await initialize_site_storage()[m
+     for c, f in [("trips", "trip_no"), ("lrs", "lr_no"), ("ledger", "entity_id"),[m
+                  ("cashbook", "date"), ("parties", "name")]:[m
+         try:[m
+[36m@@ -122,6 +240,8 @@[m [masync def login(body: LoginIn):[m
+     user = await platform_db.users.find_one({"_id": body.username.strip().lower()})[m
+     if not user or not verify_pw(body.password, user["password"]):[m
+         raise HTTPException(status_code=401, detail="Wrong username or password")[m
+[32m+[m[32m    if user.get("active") is False:[m
+[32m+[m[32m        raise HTTPException(status_code=403, detail="This account has been deactivated")[m
+     tenant = await platform_db.tenants.find_one({"_id": user.get("tenant_id")}) if user.get("tenant_id") else None[m
+     if tenant and tenant.get("license_status") != "Active":[m
+         raise HTTPException(status_code=403, detail="Licence is not active. Please contact the platform owner.")[m
+[36m@@ -132,7 +252,7 @@[m [masync def login(body: LoginIn):[m
+ [m
+ [m
+ @api.get("/auth/me")[m
+[31m-async def me(u=Depends(current_user)):[m
+[32m+[m[32masync def me(u=Depends(site_user)):[m
+     return u[m
+ [m
+ [m
+[36m@@ -298,6 +418,32 @@[m [masync def find_or_create_party(name, mobile=None, extra=None):[m
+ ACTIVE_TRIP = ["Assigned", "Started", "In Transit", "Delivered"][m
+ [m
+ [m
+[32m+[m[32masync def _trip_financial_totals(trip_ids):[m
+[32m+[m[32m    """Aggregate LR and trip-cost totals only for trips on the current page."""[m
+[32m+[m[32m    if not trip_ids:[m
+[32m+[m[32m        return {}, {}[m
+[32m+[m
+[32m+[m[32m    trip_id_filter = {"$in": trip_ids}[m
+[32m+[m[32m    lr_counts = {}[m
+[32m+[m[32m    async for r in db.lrs.aggregate([[m
+[32m+[m[32m        {"$match": {"cancelled": False, "trip_id": trip_id_filter}},[m
+[32m+[m[32m        {"$group": {"_id": "$trip_id", "n": {"$sum": 1}, "f": {"$sum": "$freight"}}},[m
+[32m+[m[32m    ]):[m
+[32m+[m[32m        lr_counts[r["_id"]] = (r["n"], round(r["f"], 2))[m
+[32m+[m
+[32m+[m[32m    cost = {}[m
+[32m+[m[32m    for coll in ("expenses", "fuel"):[m
+[32m+[m[32m        async for r in db[coll].aggregate([[m
+[32m+[m[32m            {"$match": {[m
+[32m+[m[32m                "cancelled": False,[m
+[32m+[m[32m                "trip_id": {"$nin": [None, ""], **trip_id_filter},[m
+[32m+[m[32m            }},[m
+[32m+[m[32m            {"$group": {"_id": "$trip_id", "t": {"$sum": "$amount"}}},[m
+[32m+[m[32m        ]):[m
+[32m+[m[32m            cost[r["_id"]] = round(cost.get(r["_id"], 0) + r["t"], 2)[m
+[32m+[m[32m    return lr_counts, cost[m
+[32m+[m
+[32m+[m
+ async def resolve_endpoint(payload, key):[m
+     """key = 'from' | 'to'. Indoor uses base locations, outdoor free/map."""[m
+     s = await get_settings()[m
+[36m@@ -472,7 +618,8 @@[m [masync def list_trips(q: Optional[str] = None, status: Optional[str] = None,[m
+                      vehicle_id: Optional[str] = None, driver_id: Optional[str] = None,[m
+                      route_id: Optional[str] = None, mode: Optional[str] = None,[m
+                      trip_type: Optional[str] = None, frm: Optional[str] = None,[m
+[31m-                     to: Optional[str] = None, limit: int = 300, u=Depends(current_user)):[m
+[32m+[m[32m                     to: Optional[str] = None,[m
+[32m+[m[32m                     limit: int = Query(300, ge=1, le=500), u=Depends(current_user)):[m
+     query = {}[m
+     for k, v in [("status", status), ("vehicle_id", vehicle_id), ("driver_id", driver_id),[m
+                  ("route_id", route_id), ("mode", mode), ("trip_type", trip_type)]:[m
+[36m@@ -488,15 +635,7 @@[m [masync def list_trips(q: Optional[str] = None, status: Optional[str] = None,[m
+         query["$or"] = [{f: {"$regex": q, "$options": "i"}} for f in[m
+                         ("trip_no", "vehicle_no", "driver_name", "from_name", "to_name", "party_name")][m
+     rows = sers(await db.trips.find(query).sort("created_at", -1).to_list(limit))[m
+[31m-    lr_counts = {}[m
+[31m-    async for r in db.lrs.aggregate([{"$match": {"cancelled": False}},[m
+[31m-                                     {"$group": {"_id": "$trip_id", "n": {"$sum": 1}, "f": {"$sum": "$freight"}}}]):[m
+[31m-        lr_counts[r["_id"]] = (r["n"], round(r["f"], 2))[m
+[31m-    cost = {}[m
+[31m-    for coll in ("expenses", "fuel"):[m
+[31m-        async for r in db[coll].aggregate([{"$match": {"cancelled": False, "trip_id": {"$nin": [None, ""]}}},[m
+[31m-                                           {"$group": {"_id": "$trip_id", "t": {"$sum": "$amount"}}}]):[m
+[31m-            cost[r["_id"]] = round(cost.get(r["_id"], 0) + r["t"], 2)[m
+[32m+[m[32m    lr_counts, cost = await _trip_financial_totals([r["id"] for r in rows])[m
+     for r in rows:[m
+         n, freight = lr_counts.get(r["id"], (0, 0))[m
+         r["lr_count"] = n[m
+[36m@@ -1535,7 +1674,7 @@[m [mDEFAULT_FEATURES = {[m
+ [m
+ [m
+ @api.get("/me")[m
+[31m-async def me_profile(u=Depends(current_user)):[m
+[32m+[m[32masync def me_profile(u=Depends(site_user)):[m
+     tenant = await platform_db.tenants.find_one({"_id": u.get("tenant_id")}) if u.get("tenant_id") else None[m
+     feats = {**DEFAULT_FEATURES, **((tenant or {}).get("features") or {})}[m
+     company = {}[m
+[36m@@ -1544,7 +1683,8 @@[m [masync def me_profile(u=Depends(current_user)):[m
+         company = s.get("company") or {}[m
+     return {"user": {"username": u["username"], "name": u.get("name"), "role": u.get("role"),[m
+                      "tenant_id": u.get("tenant_id"), "tenant_name": (tenant or {}).get("name", "") or company.get("name", ""),[m
+[31m-                     "photo": company.get("owner_photo", "")},[m
+[32m+[m[32m                     "photo": company.get("owner_photo", ""), "site_ids": u.get("site_ids", []),[m
+[32m+[m[32m                     "site_permissions": u.get("site_permissions", {})},[m
+             "features": feats,[m
+             "branding": {"logo": company.get("logo", ""), "name": company.get("name", "")},[m
+             "tenant": {"plan": (tenant or {}).get("plan", ""), "license_status": (tenant or {}).get("license_status", ""),[m
+[36m@@ -1571,6 +1711,8 @@[m [masync def upload_file(kind: str = "misc", file: UploadFile = File(...), u=Depend[m
+ [m
+ @api.get("/files/{path:path}")[m
+ async def serve_file(path: str):[m
+[32m+[m[32m    if "/site-ledgers/" in f"/{path.lstrip('/')}":[m
+[32m+[m[32m        raise HTTPException(404, "File not found")[m
+     try:[m
+         data, ctype = await run_in_threadpool(S.get_object, path)[m
+     except Exception:[m

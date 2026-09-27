@@ -1,13 +1,64 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import {
+  Activity, AlertTriangle, Banknote, Check, CheckCircle2, Clock3, Copy, FileText,
+  MapPin, Truck, X,
+} from "lucide-react";
+import {
+  Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from "recharts";
 import { api, errMsg } from "../lib/api";
 import { Btn, Card, ErrorState, Loader, PageHead } from "../components/ui";
+import { money0 } from "../lib/format";
+import { useMaster } from "../lib/hooks";
 
 const field = "fld w-full";
-const allowedPermissions = [
-  "dashboard:read", "trips:read", "trips:create", "trips:update", "trips:close",
-  "lrs:read", "lrs:create", "lrs:update", "finance:read", "finance:update",
-  "payments:read", "payments:create",
+const isoDay = (offset = 0) => {
+  const day = new Date();
+  day.setDate(day.getDate() + offset);
+  return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+};
+const dateRangeForPreset = (preset) => {
+  if (preset === "yesterday") return { from_date: isoDay(-1), to_date: isoDay(-1) };
+  if (preset === "last7") return { from_date: isoDay(-6), to_date: isoDay() };
+  if (preset === "last30") return { from_date: isoDay(-29), to_date: isoDay() };
+  return { from_date: isoDay(), to_date: isoDay() };
+};
+const permissionGroups = [
+  {
+    title: "Booking dashboard",
+    description: "View the selected site's booking overview.",
+    permissions: [["dashboard:read", "View dashboard"]],
+  },
+  {
+    title: "Trips",
+    description: "View trips, create trips, edit trip details, or close trips.",
+    permissions: [
+      ["trips:read", "View trips"],
+      ["trips:create", "Create trips"],
+      ["trips:update", "Edit trips"],
+      ["trips:close", "Close trips"],
+    ],
+  },
+  {
+    title: "Lorry receipts (LRs)",
+    description: "View, create, or edit LRs on the selected site.",
+    permissions: [
+      ["lrs:read", "View LRs"],
+      ["lrs:create", "Create LRs"],
+      ["lrs:update", "Edit LRs"],
+    ],
+  },
+  {
+    title: "Finance and payments",
+    description: "View site finance, update finance details, and manage payment records.",
+    permissions: [
+      ["finance:read", "View finance"],
+      ["finance:update", "Update finance"],
+      ["payments:read", "View payments"],
+      ["payments:create", "Record payments"],
+    ],
+  },
 ];
 
 function ReceivableGroups({ title, breakdown }) {
@@ -46,7 +97,136 @@ function ReceivableGroups({ title, breakdown }) {
   );
 }
 
-export default function SiteConsole({ user }) {
+function SiteActivityCharts({ sites, activityByDate, fromDate, toDate }) {
+  const rows = sites || [];
+  if (!rows.length) return null;
+  const hasActivity = rows.some((site) =>
+    Number(site.total_trips) || Number(site.total_lrs));
+  if (!hasActivity) return null;
+  const activity = rows.map((row) => ({
+    site: row.site.name,
+    trips: Number(row.total_trips) || 0,
+    lrs: Number(row.total_lrs) || 0,
+  }));
+  const dailyActivity = (activityByDate || []).map((row) => ({
+    date: row.date,
+    trips: Number(row.total_trips) || 0,
+    lrs: Number(row.total_lrs) || 0,
+  }));
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card className="p-4">
+        <div className="mb-2">
+          <h2 className="font-semibold">Daily bookings and booking LR volume</h2>
+          <p className="text-xs text-muted">Operations by operating date · counts</p>
+        </div>
+        <div role="img" aria-label="Line chart showing daily booking and booking LR counts for the selected period">
+          <ResponsiveContainer width="100%" height={230}>
+            <LineChart data={dailyActivity} margin={{ top: 8, right: 12, bottom: 8, left: 4 }}>
+              <CartesianGrid stroke="var(--line)" vertical={false} />
+              <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false}
+                tickFormatter={(value) => new Date(`${value}T12:00:00`).toLocaleDateString("en-IN", {
+                  day: "2-digit", month: "short",
+                })} interval="preserveStartEnd"
+                label={{ value: "Operating date", position: "insideBottom", offset: -2, fontSize: 11 }} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 11 }} tickLine={false}
+                label={{ value: "Records", angle: -90, position: "insideLeft", fontSize: 11 }} />
+              <Tooltip />
+              <Legend />
+              <Line type="monotone" dataKey="trips" name="Bookings" stroke="var(--brand)"
+                strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+              <Line type="monotone" dataKey="lrs" name="Booking LRs" stroke="var(--brand-light)"
+                strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <p className="mt-1 text-[11px] text-muted">Source: site dashboard · {fromDate} to {toDate}</p>
+      </Card>
+      <Card className="p-4">
+        <div className="mb-2">
+          <h2 className="font-semibold">Booking and LR totals by site</h2>
+          <p className="text-xs text-muted">Selected period · booking and booking LR counts</p>
+        </div>
+        <div role="img" aria-label="Bar chart comparing booking and booking LR counts by site in the selected period">
+          <ResponsiveContainer width="100%" height={230}>
+            <BarChart data={activity} margin={{ top: 8, right: 8, bottom: 8, left: 4 }}>
+              <CartesianGrid stroke="var(--line)" vertical={false} />
+              <XAxis dataKey="site" tick={{ fontSize: 11 }} tickLine={false}
+                label={{ value: "Site", position: "insideBottom", offset: -2, fontSize: 11 }} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 11 }} tickLine={false}
+                label={{ value: "Records", angle: -90, position: "insideLeft", fontSize: 11 }} />
+              <Tooltip />
+              <Legend />
+              <Bar dataKey="trips" name="Bookings in range" fill="var(--brand)" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="lrs" name="Booking LRs in range" fill="var(--brand-light)" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <p className="mt-1 text-[11px] text-muted">Source: site dashboard · {fromDate} to {toDate}</p>
+      </Card>
+    </div>
+  );
+}
+
+function activityHref(item) {
+  if (!item.site_id) return null;
+  if (item.target_type === "trip") return `/sites/${item.site_id}/trips/${item.target_id}`;
+  const tripId = item.new_values?.trip_id || item.old_values?.trip_id;
+  if (item.target_type === "lr" && tripId) {
+    return `/sites/${item.site_id}/trips/${tripId}/lrs/${item.target_id}`;
+  }
+  return null;
+}
+
+function ActivityTimeline({ rows }) {
+  if (!rows?.length) return null;
+  const iconFor = (action) => action?.includes("payment") ? Banknote
+    : action?.startsWith("trip.") ? Truck
+      : action?.startsWith("lr.") ? FileText
+        : action?.startsWith("ledger.") ? CheckCircle2 : Activity;
+  return (
+    <Card className="p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <h2 className="font-semibold">Recent activity</h2>
+          <p className="text-xs text-muted">Latest site operations</p>
+        </div>
+        <Clock3 size={17} className="text-muted" aria-hidden="true" />
+      </div>
+      <ul className="activity-timeline space-y-3">
+        {rows.slice(0, 6).map((item) => {
+          const Icon = iconFor(item.action);
+          const href = activityHref(item);
+          const content = (
+            <>
+              <span className="activity-dot mt-0.5 shrink-0" aria-hidden="true" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium text-ink">
+                  {(item.action || "activity").replaceAll(".", " ")}
+                  {item.new_values?.trip_ref ? ` · ${item.new_values.trip_ref}` : ""}
+                  {item.new_values?.lr_ref ? ` · ${item.new_values.lr_ref}` : ""}
+                </span>
+                <span className="mt-0.5 block text-xs text-muted">
+                  {item.actor_name || item.actor_username || "Team member"} · {new Date(item.created_at).toLocaleString()}
+                </span>
+              </span>
+              <Icon size={16} className="mt-0.5 shrink-0 text-brand-500" aria-hidden="true" />
+            </>
+          );
+          return (
+            <li key={item.id} className="relative flex items-start gap-3 pl-0.5">
+              {href
+                ? <Link to={href} className="flex min-w-0 flex-1 items-start gap-3 rounded-lg py-1 hover:text-brand-700">{content}</Link>
+                : <div className="flex min-w-0 flex-1 items-start gap-3 py-1">{content}</div>}
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
+  );
+}
+
+export default function SiteConsole({ user, adminOnly = false }) {
   const owner = user?.role === "owner";
   const [sites, setSites] = useState([]);
   const [dashboard, setDashboard] = useState(null);
@@ -57,11 +237,11 @@ export default function SiteConsole({ user }) {
   const [tripOffset, setTripOffset] = useState(0);
   const [boardTripId, setBoardTripId] = useState("");
   const [boardLrs, setBoardLrs] = useState([]);
-  const [boardReceivables, setBoardReceivables] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [dates, setDates] = useState({ from_date: "", to_date: "" });
+  const [datePreset, setDatePreset] = useState("today");
   const [filters, setFilters] = useState({ site_id: "", trip_id: "", trip_status: "", receiver: "" });
   const datesRef = useRef(dates);
   const filtersRef = useRef(filters);
@@ -76,35 +256,27 @@ export default function SiteConsole({ user }) {
   const [tripForm, setTripForm] = useState({ truck_no: "", driver_name: "", vehicle_id: "", driver_id: "" });
   const [tripResources, setTripResources] = useState({ vehicles: [], drivers: [] });
   const [managerForm, setManagerForm] = useState({ name: "", username: "", password: "" });
+  const [siteManagerTeamId, setSiteManagerTeamId] = useState("");
+  const [newSiteManager, setNewSiteManager] = useState(false);
+  const [newTeamManager, setNewTeamManager] = useState({ name: "", mobile: "", role: "Manager" });
+  const [temporaryCredential, setTemporaryCredential] = useState(null);
+  const [credentialCopied, setCredentialCopied] = useState(false);
   const [grantForm, setGrantForm] = useState({ username: "", site_id: "", permissions: ["dashboard:read", "trips:read", "lrs:read"] });
+  const teamDirectory = useMaster(owner ? "team" : null);
 
-  const loadBoardLrs = useCallback(async (id, tripId, operatingDate) => {
+  const loadBoardLrs = useCallback(async (id, tripId) => {
     setBoardTripId(tripId || "");
     setBoardLrs([]);
-    setBoardReceivables(null);
     if (!id || !tripId) return;
     const sitePermissions = user?.site_permissions?.[id] || [];
     if (!owner && !sitePermissions.includes("lrs:read")) return;
     try {
-      const requests = [
-        api.get(`/sites/${id}/trips/${tripId}/lrs`, { params: { limit: 100, offset: 0 } }),
-      ];
-      if (owner) {
-        const dateFilters = { ...datesRef.current };
-        if (!dateFilters.from_date && !dateFilters.to_date && operatingDate) {
-          dateFilters.from_date = operatingDate;
-          dateFilters.to_date = operatingDate;
-        }
-        requests.push(api.get("/sites/system-dashboard", { params: {
-          ...dateFilters, ...filtersRef.current, site_id: id, trip_id: tripId,
-        } }));
-      }
-      const [response, receivableResponse] = await Promise.all(requests);
+      const response = await api.get(`/sites/${id}/trips/${tripId}/lrs`, {
+        params: { limit: 100, offset: 0 },
+      });
       setBoardLrs(response.data.rows || []);
-      if (receivableResponse) setBoardReceivables(receivableResponse.data.receivables || null);
     } catch {
       setBoardLrs([]);
-      setBoardReceivables(null);
     }
   }, [owner, user]);
 
@@ -114,7 +286,7 @@ export default function SiteConsole({ user }) {
     try {
       const [siteResponse, dashboardResponse, managerResponse] = await Promise.all([
         api.get("/sites"),
-        owner
+        owner && !adminOnly
           ? api.get("/sites/system-dashboard", { params: Object.fromEntries(
             Object.entries({ ...datesRef.current, ...filtersRef.current }).filter(([, v]) => v),
           ) })
@@ -123,7 +295,7 @@ export default function SiteConsole({ user }) {
       ]);
       const availableSites = siteResponse.data;
       setSites(availableSites);
-      setDashboard(dashboardResponse?.data || null);
+      if (!adminOnly) setDashboard(dashboardResponse?.data || null);
       setManagers(managerResponse?.data || []);
       const selected = availableSites.find((item) => item.id === preferredSite) || availableSites[0];
       setSiteId(selected?.id || "");
@@ -131,7 +303,7 @@ export default function SiteConsole({ user }) {
         name: selected.name, location: selected.location || "",
         city: selected.city || "", timezone: selected.timezone || "Asia/Kolkata",
       });
-      if (selected) {
+      if (selected && !adminOnly) {
         const [siteDash, trips, resources] = await Promise.all([
           owner ? Promise.resolve(null) : api.get(`/sites/${selected.id}/dashboard`),
           api.get(`/sites/${selected.id}/trips`, { params: { limit: 20, offset: 0 } }),
@@ -142,9 +314,14 @@ export default function SiteConsole({ user }) {
         setTripTotal(trips.data.total);
         setTripOffset(trips.data.rows.length);
         setTripResources(resources.data);
-        await loadBoardLrs(
-          selected.id, trips.data.rows[0]?.id, trips.data.rows[0]?.operating_date,
-        );
+        await loadBoardLrs(selected.id, trips.data.rows[0]?.id);
+      } else if (selected) {
+        setTripRows([]);
+        setTripTotal(0);
+        setTripOffset(0);
+        setTripResources({ vehicles: [], drivers: [] });
+        setBoardTripId("");
+        setBoardLrs([]);
       } else {
         setTripRows([]);
         setTripTotal(0);
@@ -152,14 +329,13 @@ export default function SiteConsole({ user }) {
         setTripResources({ vehicles: [], drivers: [] });
         setBoardTripId("");
         setBoardLrs([]);
-        setBoardReceivables(null);
       }
     } catch (e) {
       setError(errMsg(e));
     } finally {
       setLoading(false);
     }
-  }, [loadBoardLrs, owner]);
+  }, [adminOnly, loadBoardLrs, owner]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -173,7 +349,6 @@ export default function SiteConsole({ user }) {
       setTripResources({ vehicles: [], drivers: [] });
       setBoardTripId("");
       setBoardLrs([]);
-      setBoardReceivables(null);
       return;
     }
     const selected = sites.find((item) => item.id === id);
@@ -181,6 +356,7 @@ export default function SiteConsole({ user }) {
       name: selected.name, location: selected.location || "",
       city: selected.city || "", timezone: selected.timezone || "Asia/Kolkata",
     });
+    if (adminOnly) return;
     try {
       const [trips, dash, resources] = await Promise.all([
         api.get(`/sites/${id}/trips`, { params: { limit: 20, offset: 0 } }),
@@ -191,7 +367,7 @@ export default function SiteConsole({ user }) {
       setTripTotal(trips.data.total);
       setTripOffset(trips.data.rows.length);
       setTripResources(resources.data);
-      await loadBoardLrs(id, trips.data.rows[0]?.id, trips.data.rows[0]?.operating_date);
+      await loadBoardLrs(id, trips.data.rows[0]?.id);
       if (!owner) setDashboard(dash.data);
     } catch (e) { setError(errMsg(e)); }
   };
@@ -269,11 +445,66 @@ export default function SiteConsole({ user }) {
   const createSite = async (event) => {
     event.preventDefault();
     try {
+      let teamMemberId = siteManagerTeamId;
+      let teamMember = teamDirectory.data?.find((member) => member.id === teamMemberId);
       const result = await api.post("/sites", siteForm);
-      setMessage(`Site ${result.data.name} created.`);
+      if (newSiteManager) {
+        try {
+          const newMember = await api.post("/masters/team", newTeamManager);
+          teamMemberId = newMember.data.id;
+          teamMember = newMember.data;
+          await teamDirectory.reload();
+        } catch (teamError) {
+          setMessage(`Site ${result.data.name} was created.`);
+          setError(`Could not add the manager to Office Team: ${errMsg(teamError)} You can finish manager setup from Booking access management.`);
+          setSiteForm({ name: "", code: "", location: "", timezone: "Asia/Kolkata" });
+          await refresh(result.data.id);
+          return;
+        }
+      }
+
+      if (teamMemberId && teamMember) {
+        const existingManager = managers.find((manager) => manager.team_member_id === teamMemberId);
+        const username = existingManager?.username || managerForm.username.trim().toLowerCase();
+        try {
+          await api.post(`/sites/${result.data.id}/manager`, {
+            name: teamMember.name,
+            username,
+            team_member_id: teamMemberId,
+            ...(existingManager ? {} : { password: managerForm.password }),
+          });
+          if (!existingManager) {
+            setTemporaryCredential({ username, password: managerForm.password });
+            setCredentialCopied(false);
+          }
+          setMessage(`Site ${result.data.name} created and manager ${teamMember.name} assigned.`);
+        } catch (managerError) {
+          setMessage(`Site ${result.data.name} was created.`);
+          setError(`The site manager could not be assigned: ${errMsg(managerError)} Open Booking access management to finish the assignment.`);
+        }
+      } else {
+        setMessage(`Site ${result.data.name} created.`);
+      }
       setSiteForm({ name: "", code: "", location: "", timezone: "Asia/Kolkata" });
+      setSiteManagerTeamId("");
+      setNewSiteManager(false);
+      setNewTeamManager({ name: "", mobile: "", role: "Manager" });
+      setManagerForm({ name: "", username: "", password: "" });
       await refresh(result.data.id);
     } catch (e) { setError(errMsg(e)); }
+  };
+
+  const selectSiteManager = (teamMemberId) => {
+    setSiteManagerTeamId(teamMemberId);
+    setNewSiteManager(teamMemberId === "__new__");
+    const member = teamDirectory.data?.find((row) => row.id === teamMemberId);
+    setManagerForm((current) => ({
+      ...current,
+      name: member?.name || "",
+      username: "",
+      password: "",
+    }));
+    setNewTeamManager((current) => ({ ...current, name: "" }));
   };
 
   const assignManager = async (event) => {
@@ -281,8 +512,17 @@ export default function SiteConsole({ user }) {
     try {
       const body = { ...managerForm };
       if (!body.password) delete body.password;
+      const username = body.username.trim().toLowerCase();
+      const temporaryPassword = body.password;
       await api.post(`/sites/${siteId}/manager`, body);
-      setMessage("Site manager assigned. Share the username and temporary password securely.");
+      if (temporaryPassword) {
+        setTemporaryCredential({ username, password: temporaryPassword });
+        setCredentialCopied(false);
+        setMessage("Site manager assigned. Copy the temporary credential now and share it securely.");
+      } else {
+        setTemporaryCredential(null);
+        setMessage("Site manager assigned.");
+      }
       setManagerForm({ name: "", username: "", password: "" });
       await refresh(siteId);
     } catch (e) { setError(errMsg(e)); }
@@ -319,37 +559,385 @@ export default function SiteConsole({ user }) {
 
   if (loading && sites.length === 0) return <Loader label="Loading sites…" />;
 
+  if (adminOnly) return (
+    <div className="space-y-5">
+      <PageHead title="Booking setup & access"
+        subtitle="Manage booking sites, site-manager access, and booking categories separately from daily operations." />
+      {error && <ErrorState text={error} onRetry={() => refresh()} />}
+      {message && <div role="status" className="rounded-lg bg-brand-50 px-4 py-3 text-sm text-brand-700">{message}</div>}
+      <Card className="p-4">
+        <label className="block max-w-sm text-sm font-medium">Site for setup and access
+          <select className={field} value={siteId} onChange={(event) => selectSite(event.target.value)}>
+            <option value="">Select site...</option>
+            {sites.map((site) => <option key={site.id} value={site.id}>{site.name} ({site.code})</option>)}
+          </select>
+        </label>
+      </Card>
+
+      <details open className="rounded-xl border border-line bg-white p-4">
+        <summary className="min-h-11 cursor-pointer content-center font-semibold text-brand-700">Site setup</summary>
+        <div className="mt-3 space-y-3">
+          <Card className="p-4">
+            <h2 className="mb-3 font-semibold">Add a site</h2>
+            <form onSubmit={createSite} className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <label className="text-sm">Site name
+                  <input className={field} placeholder="Site name" required value={siteForm.name}
+                    onChange={(e) => setSiteForm({ ...siteForm, name: e.target.value })} />
+                </label>
+                <label className="text-sm">Short code
+                  <input className={field} placeholder="e.g. NGP" required value={siteForm.code}
+                    onChange={(e) => setSiteForm({ ...siteForm, code: e.target.value })} />
+                </label>
+                <label className="text-sm">Location (optional)
+                  <input className={field} placeholder="Street, area, or landmark" value={siteForm.location}
+                    onChange={(e) => setSiteForm({ ...siteForm, location: e.target.value })} />
+                </label>
+                <label className="text-sm">Time zone
+                  <input className={field} aria-label="IANA time zone" value={siteForm.timezone}
+                    onChange={(e) => setSiteForm({ ...siteForm, timezone: e.target.value })} />
+                </label>
+              </div>
+              <label className="block max-w-xl text-sm">Site manager (optional)
+                <select className={field} value={newSiteManager ? "__new__" : siteManagerTeamId}
+                  onChange={(event) => selectSiteManager(event.target.value)}>
+                  <option value="">Assign later</option>
+                  {(teamDirectory.data || []).filter((member) =>
+                    member.status !== "Inactive" && /manager/i.test(member.role || "")
+                  ).map((member) => (
+                    <option key={member.id} value={member.id}>{member.name}{member.role ? ` · ${member.role}` : ""}</option>
+                  ))}
+                  <option value="__new__">+ Add a new manager</option>
+                </select>
+              </label>
+              {teamDirectory.loading && <p className="text-xs text-muted">Loading Office Team…</p>}
+              {teamDirectory.error && <p className="text-sm text-red-700">Could not load Office Team: {teamDirectory.error}</p>}
+              {newSiteManager && <div className="space-y-3 rounded-lg border border-line bg-canvas p-3">
+                <h3 className="font-semibold">Add manager to Office Team</h3>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <label className="text-sm">Manager name
+                    <input className={field} required value={newTeamManager.name}
+                      onChange={(e) => {
+                        setNewTeamManager({ ...newTeamManager, name: e.target.value });
+                        setManagerForm({ ...managerForm, name: e.target.value });
+                      }} />
+                  </label>
+                  <label className="text-sm">Mobile (optional)
+                    <input className={field} value={newTeamManager.mobile}
+                      onChange={(e) => setNewTeamManager({ ...newTeamManager, mobile: e.target.value })} />
+                  </label>
+                  <label className="text-sm">Office Team role
+                    <input className={field} required value={newTeamManager.role}
+                      onChange={(e) => setNewTeamManager({ ...newTeamManager, role: e.target.value })} />
+                  </label>
+                </div>
+              </div>}
+              {siteManagerTeamId && siteManagerTeamId !== "__new__" && (() => {
+                const linked = managers.find((manager) => manager.team_member_id === siteManagerTeamId);
+                return <p className="text-sm text-muted">{linked
+                  ? `This team member already has manager login ${linked.username}; it will be assigned to the site.`
+                  : "This team member does not have a site login yet. Create a login to grant site access."}</p>;
+              })()}
+              {(newSiteManager || (siteManagerTeamId && siteManagerTeamId !== "__new__"
+                && !managers.some((manager) => manager.team_member_id === siteManagerTeamId))) && (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="text-sm">Manager login ID
+                    <input className={field} aria-label="Manager login ID" required minLength={3} value={managerForm.username}
+                      onChange={(e) => setManagerForm({ ...managerForm, username: e.target.value })} />
+                  </label>
+                  <label className="text-sm">Manager password
+                    <input className={field} aria-label="Manager password" type="password" required value={managerForm.password}
+                      onChange={(e) => setManagerForm({ ...managerForm, password: e.target.value })} />
+                  </label>
+                </div>
+              )}
+              {(newSiteManager || (siteManagerTeamId && siteManagerTeamId !== "__new__"
+                && !managers.some((manager) => manager.team_member_id === siteManagerTeamId))) && (
+                <p className="text-xs text-muted">
+                  Any non-empty password is accepted. Short passwords are easier to guess; the password is stored as a hash and shown once after creation.
+                </p>
+              )}
+              <Btn type="submit">Create site</Btn>
+            </form>
+          </Card>
+          {siteId && <Card className="p-4">
+            <h2 className="mb-3 font-semibold">Edit selected site</h2>
+            <form onSubmit={saveSite} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <label className="text-xs font-medium text-muted">Site name
+                <input className={field} aria-label="Site name" required value={siteEdit.name}
+                  onChange={(e) => setSiteEdit({ ...siteEdit, name: e.target.value })} />
+              </label>
+              <label className="text-xs font-medium text-muted">Location (optional)
+                <input className={field} aria-label="Location" placeholder="Street, area, or landmark" value={siteEdit.location}
+                  onChange={(e) => setSiteEdit({ ...siteEdit, location: e.target.value })} />
+              </label>
+              <label className="text-xs font-medium text-muted">City (optional)
+                <input className={field} aria-label="City" placeholder="City" value={siteEdit.city}
+                  onChange={(e) => setSiteEdit({ ...siteEdit, city: e.target.value })} />
+              </label>
+              <label className="text-xs font-medium text-muted">Time zone
+                <input className={field} aria-label="Site time zone" placeholder="Asia/Kolkata" value={siteEdit.timezone}
+                  onChange={(e) => setSiteEdit({ ...siteEdit, timezone: e.target.value })} />
+              </label>
+              <Btn type="submit">Save site</Btn>
+            </form>
+            {sites.find((site) => site.id === siteId)?.is_default && <div className="mt-3">
+              <Btn variant="s" onClick={previewMigration}>Preview legacy-data migration</Btn>
+              {migration && <div className="mt-3 rounded border p-3 text-sm">
+                <p>Dry-run: {migration.total} records lack site assignment. No records have changed.</p>
+                <pre className="my-2 whitespace-pre-wrap">{JSON.stringify(migration.unassigned, null, 2)}</pre>
+                {!migration.applied && migration.total > 0 && <Btn variant="s" onClick={applyMigration}>Confirm assignment to default site</Btn>}
+                {migration.applied && <p>Migration status: {migration.result?.status}</p>}
+              </div>}
+            </div>}
+          </Card>}
+        </div>
+      </details>
+
+      <details data-testid="booking-access-management" open={Boolean(temporaryCredential) || undefined}
+        className="rounded-xl border border-line bg-white p-4">
+        <summary className="min-h-11 cursor-pointer content-center font-semibold text-brand-700">Booking access management</summary>
+        <div className="mt-3 space-y-3">
+          {siteId && <Card className="p-4">
+            <h2 className="mb-3 font-semibold">Assign or replace the site manager</h2>
+            <form onSubmit={assignManager} className="grid gap-3 md:grid-cols-4">
+              <label className="text-sm">Manager name
+                <input className={field} placeholder="Manager name" required value={managerForm.name}
+                  onChange={(e) => setManagerForm({ ...managerForm, name: e.target.value })} />
+              </label>
+              <label className="text-sm">Manager ID
+                <input className={field} placeholder="Username" required value={managerForm.username}
+                  onChange={(e) => setManagerForm({ ...managerForm, username: e.target.value })} />
+              </label>
+              <label className="text-sm">Manager password
+                <input className={field} type="password" aria-label="Manager password for assignment"
+                  placeholder={managers.some((manager) => manager.username === managerForm.username.trim().toLowerCase())
+                    ? "Leave blank to keep current" : "Required for a new login"}
+                  required={!managers.some((manager) => manager.username === managerForm.username.trim().toLowerCase())}
+                  autoComplete="new-password" value={managerForm.password}
+                  onChange={(e) => setManagerForm({ ...managerForm, password: e.target.value })} />
+              </label>
+              <Btn type="submit">Assign manager</Btn>
+            </form>
+            <p className="mt-2 text-xs text-muted">
+              For a new manager, use any non-empty password and share it securely. It is stored as a hash and shown once after assignment. Replacing a manager revokes that site’s access without removing historical records.
+            </p>
+          </Card>}
+          <Card className="p-4">
+            <h2 className="font-semibold">Manager site access</h2>
+            <p className="mt-1 text-sm text-muted">
+              Choose a manager and site, then tick only the actions that manager needs there.
+              This changes access for that site only; it does not grant access to every site.
+            </p>
+            <form onSubmit={grantAccess} className="mt-4 space-y-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="text-sm font-medium">Manager
+                  <select className={field} aria-label="Manager for site access" required value={grantForm.username}
+                    onChange={(e) => {
+                      const permissions = managers.find((manager) => manager.username === e.target.value)
+                        ?.site_permissions?.[grantForm.site_id];
+                      setGrantForm({
+                        ...grantForm,
+                        username: e.target.value,
+                        permissions: permissions || ["dashboard:read", "trips:read", "lrs:read"],
+                      });
+                    }}>
+                    <option value="">Select a manager</option>
+                    {managers.filter((manager) => manager.active).map((manager) => (
+                      <option key={manager.username} value={manager.username}>{manager.name} ({manager.username})</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm font-medium">Site
+                  <select className={field} aria-label="Site for manager access" required value={grantForm.site_id}
+                    onChange={(e) => {
+                      const existingPermissions = managers.find((manager) => manager.username === grantForm.username)?.site_permissions?.[e.target.value];
+                      setGrantForm({ ...grantForm, site_id: e.target.value,
+                        permissions: existingPermissions || ["dashboard:read", "trips:read", "lrs:read"] });
+                    }}>
+                    <option value="">Select a site</option>
+                    {sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {permissionGroups.map((group) => (
+                  <fieldset key={group.title} className="rounded-lg border border-line bg-canvas p-3">
+                    <legend className="px-1 text-sm font-semibold">{group.title}</legend>
+                    <p className="mb-3 text-xs text-muted">{group.description}</p>
+                    <div className="space-y-2">
+                      {group.permissions.map(([permission, label]) => (
+                        <label key={permission} className="flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-sm hover:bg-white">
+                          <input type="checkbox" className="h-4 w-4 accent-brand-700"
+                            aria-label={label} disabled={!grantForm.username || !grantForm.site_id}
+                            checked={grantForm.permissions.includes(permission)}
+                            onChange={(event) => setGrantForm({ ...grantForm, permissions: event.target.checked
+                              ? [...grantForm.permissions, permission]
+                              : grantForm.permissions.filter((value) => value !== permission) })} />
+                          <span>{label}<span className="ml-2 text-xs text-muted">({permission})</span></span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
+                <p className="text-xs text-muted">Unticked actions are unavailable to this manager at this site.</p>
+                <Btn type="submit">Save site access</Btn>
+              </div>
+            </form>
+            <h3 className="mt-4 border-t pt-4 font-semibold">Manager account register</h3>
+            <p className="mt-1 text-xs text-muted">Manager IDs, status, and assigned sites stay listed here. A newly set password is shown only once after assignment/reset; if it is lost, reset it to create a new one.</p>
+            {temporaryCredential && <div className="mt-3 rounded-lg border border-brand-200 bg-brand-50 p-3" role="status" aria-live="polite">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <strong className="block">Temporary credential — copy it now</strong>
+                  <p className="mt-1 text-sm">Manager ID: <code>{temporaryCredential.username}</code></p>
+                  <p className="mt-1 break-all text-sm">Temporary password: <code>{temporaryCredential.password}</code></p>
+                  <p className="mt-1 text-xs text-muted">Held only in this page’s memory; it is not returned by the server.</p>
+                </div>
+                <button type="button" className="rounded p-1 text-muted hover:text-ink" aria-label="Dismiss temporary credential"
+                  onClick={() => setTemporaryCredential(null)}><X size={18} /></button>
+              </div>
+              <button type="button" className="mt-2 inline-flex min-h-10 items-center gap-2 rounded-lg border border-line bg-white px-3 text-sm font-semibold"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(`Manager ID: ${temporaryCredential.username}\nTemporary password: ${temporaryCredential.password}`);
+                    setCredentialCopied(true);
+                  } catch {
+                    setError("Could not copy the credential. Select and copy it manually, then share it securely.");
+                  }
+                }}>
+                {credentialCopied ? <Check size={16} /> : <Copy size={16} />}
+                {credentialCopied ? "Copied" : "Copy credential"}
+              </button>
+            </div>}
+            <div className="mt-4 divide-y border-t">
+              {managers.length === 0
+                ? <p className="py-3 text-sm text-muted">No manager accounts have been created.</p>
+                : managers.map((manager) => <div key={manager.username} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm">
+                  <span className="min-w-0">
+                    <strong className="block">{manager.name} · {manager.active ? "Active" : "Inactive"}</strong>
+                    <span>Manager ID: <code>{manager.username}</code></span>
+                    <span className="block">Office team profile: {teamDirectory.data?.find((member) => member.id === manager.team_member_id)?.name || "Not linked"}</span>
+                    <span className="block">Assigned sites: {sites.filter((site) => manager.site_ids?.includes(site.id)).map((site) => site.name).join(", ") || "None"}</span>
+                  </span>
+                  <div className="flex gap-2">
+                    <button className="text-brand-700 underline" onClick={async () => {
+                      const password = window.prompt("Enter a new manager password:");
+                      if (!password) return;
+                      try {
+                        await api.post(`/sites/managers/${encodeURIComponent(manager.username)}/reset-password`, { password });
+                        setTemporaryCredential({ username: manager.username, password });
+                        setCredentialCopied(false);
+                        setMessage("Manager password reset. Copy the temporary credential now and share it securely.");
+                      } catch (e) { setError(errMsg(e)); }
+                    }}>Reset password</button>
+                    {manager.active && <button className="text-red-700 underline" onClick={async () => {
+                      if (!window.confirm(`Deactivate ${manager.name} and revoke all site access?`)) return;
+                      try {
+                        await api.delete(`/sites/managers/${encodeURIComponent(manager.username)}`);
+                        setMessage("Manager deactivated; historical records and audit events were retained.");
+                        await refresh(siteId);
+                      } catch (e) { setError(errMsg(e)); }
+                    }}>Deactivate</button>}
+                  </div>
+                </div>)}
+            </div>
+          </Card>
+        </div>
+      </details>
+
+      <details className="rounded-xl border border-line bg-white p-4">
+        <summary className="min-h-11 cursor-pointer content-center font-semibold text-brand-700">Booking categories</summary>
+        {siteId ? <Card className="mt-3 grid gap-4 p-4 md:grid-cols-2">
+          <form onSubmit={(event) => addCategory("goods", event)} className="flex gap-2">
+            <input className={field} aria-label="New goods category" placeholder="Add goods category"
+              value={categoryForm.goods} onChange={(event) => setCategoryForm({ ...categoryForm, goods: event.target.value })} />
+            <Btn type="submit">Add goods</Btn>
+          </form>
+          <form onSubmit={(event) => addCategory("containers", event)} className="flex gap-2">
+            <input className={field} aria-label="New container category" placeholder="Add container category"
+              value={categoryForm.containers} onChange={(event) => setCategoryForm({ ...categoryForm, containers: event.target.value })} />
+            <Btn type="submit">Add container</Btn>
+          </form>
+        </Card> : <p className="mt-3 text-sm text-muted">Select a site to manage its booking categories.</p>}
+      </details>
+    </div>
+  );
+
   return (
     <div className="space-y-5">
-      <PageHead title={owner ? "Bookings Window Board" : "Site Operations"}
-        subtitle={owner ? "Business overview, selected-site bookings, receivables and administration." : "Your assigned site's trips and daily transport activity."} />
+      <PageHead title="Booking Dashboard"
+        subtitle={owner
+          ? `Daily booking activity · ${dashboard?.from_date || "today"} to ${dashboard?.to_date || "today"}`
+          : "Daily bookings and transport activity for your assigned site."} />
       {error && <ErrorState text={error} onRetry={() => refresh()} />}
       {message && <div role="status" className="rounded-lg bg-brand-50 px-4 py-3 text-sm text-brand-700">{message}</div>}
       {owner && dashboard?.totals && (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             {[
-              ["Active sites", dashboard.totals.active_sites],
-              ["Managers", dashboard.totals.active_managers],
-              ["Trips today", dashboard.totals.trips_today],
-              ["Open trips", dashboard.totals.open_trips],
-              ["Trips pending ledger", dashboard.totals.pending_reconciliation],
-              ["Total LRs", dashboard.totals.total_lrs],
-              ["Parcels", dashboard.totals.total_parcels],
-              ["Reconciled bhada", dashboard.totals.reconciled_bhada],
-              ["Collectible outstanding bhada", dashboard.totals.outstanding_bhada],
-              ["Recorded rent net of posted collections", dashboard.totals.recorded_outstanding_bhada],
-            ].map(([label, value]) => <Card key={label} className="p-4">
-              <p className="text-xs text-muted">{label}</p><p className="num mt-1 text-xl font-bold">{value}</p>
-            </Card>)}
+              { label: "Bookings", value: dashboard.totals.total_trips, icon: Truck },
+              { label: "Active bookings", value: dashboard.totals.open_trips, icon: Activity },
+              { label: "Booking LRs", value: dashboard.totals.total_lrs, icon: FileText },
+              { label: "Pending reconciliation", value: dashboard.totals.pending_reconciliation, icon: CheckCircle2 },
+            ].map(({ label, value, icon: Icon }) => (
+              <Card key={label} className="dashboard-kpi dashboard-hero p-3.5">
+                <span className="dashboard-kpi-icon"><Icon size={17} strokeWidth={1.9} /></span>
+                <p className="mt-3 text-[11px] font-semibold leading-tight text-muted">{label}</p>
+                <p className="num mt-1.5 break-words text-lg font-bold leading-tight text-ink">{value}</p>
+              </Card>
+            ))}
           </div>
+          <Card className="dashboard-hero p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="font-semibold">Quick actions</h2>
+                <p className="mt-0.5 text-xs text-muted">Common tasks, one step away</p>
+              </div>
+              <MapPin size={17} className="text-brand-500" aria-hidden="true" />
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <a className="btn-p justify-center" href="#site-trip-create-form">Create booking</a>
+              {selectedBoardTrip
+                ? <Link className="btn-s justify-center" to={`/sites/${siteId}/trips/${selectedBoardTrip.id}`}>Open selected booking</Link>
+                : <a className="btn-s justify-center" href="#booking-lrs">Choose a booking for an LR</a>}
+              <a className="btn-s justify-center" href="#booking-records">View booking records</a>
+              <Link className="btn-s justify-center" to="/booking-finance">Booking finance</Link>
+              <Link className="btn-s justify-center" to="/booking-reports">Booking reports</Link>
+              {owner && <Link className="btn-s justify-center" to="/booking-setup">Booking setup & access</Link>}
+              <Link className="btn-s justify-center" to="/vehicles">Manage Vehicles</Link>
+              <Link className="btn-s justify-center" to="/parties">Manage Parties</Link>
+            </div>
+          </Card>
+          <SiteActivityCharts sites={dashboard.sites} activityByDate={dashboard.activity_by_date}
+            fromDate={dashboard.from_date} toDate={dashboard.to_date} />
+          <details className="rounded-xl border border-line bg-white p-4">
+            <summary className="min-h-11 cursor-pointer content-center font-semibold text-brand-700">
+              Dashboard filters
+            </summary>
+            <div className="mt-3 space-y-4">
           <Card className="p-4">
-            <h2 className="mb-3 font-semibold">Filter the business dashboard</h2>
+            <h2 className="mb-3 font-semibold">Filter dashboard totals</h2>
             <div className="grid gap-3 md:grid-cols-6">
-              <label className="text-sm">From<input className={field} type="date" value={dates.from_date}
-                onChange={(e) => setDates((x) => ({ ...x, from_date: e.target.value }))} /></label>
-              <label className="text-sm">To<input className={field} type="date" value={dates.to_date}
-                onChange={(e) => setDates((x) => ({ ...x, to_date: e.target.value }))} /></label>
+              <label className="text-sm">Period<select className={field} value={datePreset} onChange={(event) => {
+                const value = event.target.value;
+                setDatePreset(value);
+                if (value !== "custom") setDates(dateRangeForPreset(value));
+              }}>
+                <option value="today">Today</option>
+                <option value="yesterday">Yesterday</option>
+                <option value="last7">Last 7 days</option>
+                <option value="last30">Last 30 days</option>
+                <option value="custom">Custom range</option>
+              </select></label>
+              {datePreset === "custom" && <>
+                <label className="text-sm">From<input className={field} type="date" value={dates.from_date}
+                  onChange={(e) => setDates((x) => ({ ...x, from_date: e.target.value }))} /></label>
+                <label className="text-sm">To<input className={field} type="date" value={dates.to_date}
+                  onChange={(e) => setDates((x) => ({ ...x, to_date: e.target.value }))} /></label>
+              </>}
               <label className="text-sm">Site<select className={field} value={filters.site_id}
                 onChange={(e) => {
                   const id = e.target.value;
@@ -371,92 +959,104 @@ export default function SiteConsole({ user }) {
             </div>
             <Btn className="mt-3" onClick={() => refresh(siteId)}>Apply filters</Btn>
           </Card>
+            </div>
+          </details>
           {dashboard.alerts && <Card className="p-4">
-            <h2 className="mb-3 font-semibold">Alerts</h2>
-            <div className="grid gap-2 text-sm md:grid-cols-3">
-              <p>Trips awaiting closure: <strong>{dashboard.alerts.trips_awaiting_closure}</strong></p>
-              <p>Trips awaiting ledger upload: <strong>{dashboard.alerts.ledgers_awaiting_upload}</strong></p>
-              <p>Ledger imports needing review: <strong>{dashboard.alerts.ledger_imports_needing_review}</strong></p>
-              <p>Unpaid LRs: <strong>{dashboard.alerts.unpaid_lrs}</strong></p>
-              <p>Collectible outstanding bhada: <strong>{dashboard.alerts.outstanding_bhada}</strong></p>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="dashboard-kpi-icon bg-amber-50 text-amber-600"><AlertTriangle size={17} /></span>
+              <div><h2 className="font-semibold">Needs attention</h2><p className="text-xs text-muted">Operational items that may need action</p></div>
             </div>
-          </Card>}
-          {dashboard.receivables && <Card className="space-y-4 p-4">
-            <div>
-              <h2 className="font-semibold">Collectible receivables by receiver and goods</h2>
-              <p className="mt-1 text-sm text-muted">{dashboard.receivables.basis}</p>
-            </div>
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
               {[
-                ["Collectible outstanding", dashboard.receivables.collectible_outstanding, "text-amber-800"],
-                ["Reconciled rent", dashboard.receivables.reconciled_rent, ""],
-                ["Posted payments", dashboard.receivables.posted_payments, ""],
-                ["Unreconciled bhada · not collectible", dashboard.receivables.unreconciled_bhada, "text-amber-800"],
-                ["Unpriced LRs", dashboard.receivables.unpriced_lrs, ""],
-              ].map(([label, value, tone]) => <div key={label} className="rounded-lg bg-canvas p-3">
-                <p className="text-xs text-muted">{label}</p>
-                <p className={`num mt-1 break-words text-lg font-bold ${tone}`}>{value}</p>
+                ["Trips awaiting closure", dashboard.alerts.trips_awaiting_closure],
+                ["Trips awaiting ledger upload", dashboard.alerts.ledgers_awaiting_upload],
+                ["Ledger imports to review", dashboard.alerts.ledger_imports_needing_review],
+              ].map(([label, value]) => <div key={label} className="flex items-center justify-between gap-3 rounded-lg bg-canvas px-3 py-2.5 text-sm">
+                <span className="text-muted">{label}</span><strong className="num text-ink">{value}</strong>
               </div>)}
             </div>
-            <p className="text-xs text-muted">
-              {dashboard.receivables.unreconciled_lrs} unreconciled LRs and {dashboard.receivables.unpriced_lrs} unpriced LRs are excluded from collectible balances.
-              {dashboard.receivables.unpaid_lrs > 0 ? ` ${dashboard.receivables.unpaid_lrs} reconciled LRs have a remaining balance.` : ""}
-            </p>
-            <div className="grid gap-4 lg:grid-cols-2">
-              <ReceivableGroups title="By receiver / person" breakdown={dashboard.receivables.by_receiver} />
-              <ReceivableGroups title="By goods" breakdown={dashboard.receivables.by_goods} />
-            </div>
           </Card>}
+          {!owner && dashboard.receivables && <details className="rounded-xl border border-line bg-white p-4">
+            <summary className="min-h-10 cursor-pointer content-center font-semibold text-brand-700">
+              Detailed receivables by receiver and goods
+            </summary>
+            <div className="mt-3 space-y-4">
+              <p className="text-sm text-muted">{dashboard.receivables.basis}</p>
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                {[
+                  ["Collectible outstanding", money0(dashboard.receivables.collectible_outstanding), "text-amber-800"],
+                  ["Reconciled rent", money0(dashboard.receivables.reconciled_rent), ""],
+                  ["Posted payments", money0(dashboard.receivables.posted_payments), ""],
+                  ["Unreconciled bhada · not collectible", money0(dashboard.receivables.unreconciled_bhada), "text-amber-800"],
+                  ["Unpriced LRs", dashboard.receivables.unpriced_lrs, ""],
+                ].map(([label, value, tone]) => <div key={label} className="rounded-lg bg-canvas p-3">
+                  <p className="text-xs text-muted">{label}</p>
+                  <p className={`num mt-1 break-words text-lg font-bold ${tone}`}>{value}</p>
+                </div>)}
+              </div>
+              <p className="text-xs text-muted">
+                {dashboard.receivables.unreconciled_lrs} unreconciled LRs and {dashboard.receivables.unpriced_lrs} unpriced LRs are excluded from collectible balances.
+                {dashboard.receivables.unpaid_lrs > 0 ? ` ${dashboard.receivables.unpaid_lrs} reconciled LRs have a remaining balance.` : ""}
+              </p>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <ReceivableGroups title="By receiver / person" breakdown={dashboard.receivables.by_receiver} />
+                <ReceivableGroups title="By goods" breakdown={dashboard.receivables.by_goods} />
+              </div>
+            </div>
+          </details>}
           <Card className="p-4">
-            <h2 className="mb-3 font-semibold">Site-wise operations and finances</h2>
-            <div className="hidden overflow-x-auto md:block">
-            <table className="w-full min-w-[800px] text-left text-sm">
-              <thead><tr className="border-b text-muted">
-                {["Site", "Trips today", "Open", "Closed", "Pending ledger", "LRs", "Bhada recorded", "Reconciled", "Collected", "Collectible outstanding", "Recorded rent net of posted collections", "Manager", "Status"].map((x) => <th key={x} className="p-2">{x}</th>)}
-              </tr></thead>
-              <tbody>{(dashboard.sites || []).map((row) => (
-                <tr className="border-b last:border-0" key={row.site.id}>
-                  <td className="p-2"><button className="font-semibold text-brand-700" onClick={() => selectSite(row.site.id)}>{row.site.name} ({row.site.code})</button></td>
-                  {[row.trips_today, row.open_trips, row.closed_trips, row.pending_reconciliation, row.total_lrs,
-                    row.recorded_bhada, row.reconciled_bhada, row.collected_bhada, row.outstanding_bhada,
-                    row.recorded_outstanding_bhada].map((x, i) => <td className="p-2" key={i}>{x}</td>)}
-                  <td className="p-2">{row.active_managers ? "Assigned" : "Unassigned"}</td>
-                  <td className="p-2">{row.site.status} <button className="ml-1 text-brand-700 underline" onClick={() => setStatus(row.site)}>{row.site.status === "Active" ? "Deactivate" : "Activate"}</button></td>
-                </tr>
-              ))}</tbody>
-            </table>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div><h2 className="font-semibold">Site overview</h2><p className="text-xs text-muted">Select a site to jump to its operational workspace</p></div>
+              <MapPin size={18} className="text-brand-500" aria-hidden="true" />
             </div>
-            <div className="space-y-3 md:hidden">{(dashboard.sites || []).map((row) => (
-              <article key={row.site.id} className="rounded-lg border border-line p-3">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <button className="text-left font-semibold text-brand-700 underline" onClick={() => selectSite(row.site.id)}>
-                    {row.site.name} <span className="font-normal text-muted">({row.site.code})</span>
+            {(dashboard.sites || []).length === 0
+              ? <p className="py-5 text-sm text-muted">No sites match the selected dashboard filters.</p>
+              : <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{dashboard.sites.map((row) => (
+                <article key={row.site.id} className={`site-overview-card card p-4 ${siteId === row.site.id ? "border-brand-400" : ""}`}>
+                  <button type="button" aria-pressed={siteId === row.site.id}
+                    className="flex w-full items-start justify-between gap-3 rounded-lg text-left focus-visible:outline"
+                    onClick={() => {
+                      selectSite(row.site.id);
+                      document.getElementById("booking-lrs")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }}>
+                    <span className="flex min-w-0 items-start gap-3">
+                      <span className="dashboard-kpi-icon shrink-0"><MapPin size={17} /></span>
+                      <span className="min-w-0">
+                        <span className="block truncate font-semibold text-ink">{row.site.name}</span>
+                        <span className="mt-0.5 block text-xs text-muted">{row.site.code} · {row.site.location || "Location not set"}</span>
+                      </span>
+                    </span>
+                    <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${
+                      row.site.status === "Active" ? "bg-brand-50 text-brand-700" : "bg-canvas text-muted"}`}>
+                      {row.site.status}
+                    </span>
                   </button>
-                  <span className="rounded-full bg-canvas px-2.5 py-1 text-xs">{row.site.status}</span>
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
-                  <p>Trips today <strong>{row.trips_today}</strong></p><p>Open trips <strong>{row.open_trips}</strong></p>
-                  <p>Pending ledger <strong>{row.pending_reconciliation}</strong></p><p>LRs <strong>{row.total_lrs}</strong></p>
-                  <p>Collected <strong>{row.collected_bhada}</strong></p><p className="font-semibold text-amber-800">Collectible outstanding <strong>{row.outstanding_bhada}</strong></p>
-                  <p>Recorded rent net of posted collections <strong>{row.recorded_outstanding_bhada}</strong></p>
-                  <p>Manager <strong>{row.active_managers ? "Assigned" : "None"}</strong></p>
-                </div>
-                <button className="mt-3 min-h-11 text-sm text-brand-700 underline" onClick={() => setStatus(row.site)}>
-                  {row.site.status === "Active" ? "Deactivate site" : "Activate site"}
-                </button>
-              </article>
-            ))}</div>
+                  <div className="mt-4 grid grid-cols-2 gap-x-3 gap-y-3 border-t border-line pt-3">
+                    {[
+                      ["Trips today", row.trips_today],
+                      ["Active trips", row.open_trips],
+                      ["Total LRs", row.total_lrs],
+                      ["Pending reconciliation", row.pending_reconciliation],
+                    ].map(([label, value]) => <div key={label} className="min-w-0">
+                      <p className="truncate text-[10px] font-medium text-muted">{label}</p>
+                      <p className="num mt-0.5 truncate text-sm font-semibold text-ink">{value}</p>
+                    </div>)}
+                  </div>
+                  <div className="mt-3 flex items-center justify-between border-t border-line pt-3 text-xs">
+                    <span className="text-muted">Manager {row.active_managers ? "assigned" : "unassigned"}</span>
+                    {owner && <button type="button" className="min-h-8 rounded-md px-2 font-medium text-brand-700 hover:bg-brand-50"
+                      onClick={() => setStatus(row.site)}>
+                      {row.site.status === "Active" ? "Deactivate" : "Activate"}
+                    </button>}
+                  </div>
+                </article>
+              ))}</div>}
           </Card>
-          {dashboard.recent_activity?.length > 0 && <Card className="p-4">
-            <h2 className="mb-3 font-semibold">Recent activity</h2>
-            <ul className="space-y-2 text-sm">{dashboard.recent_activity.map((item) => <li key={item.id}>
-              <span className="font-medium">{item.actor_name || item.actor_username}</span> · {item.action.replaceAll(".", " ")} · {new Date(item.created_at).toLocaleString()}
-            </li>)}</ul>
-          </Card>}
+          <ActivityTimeline rows={dashboard.recent_activity} />
         </>
       )}
 
-      <Card className="p-4">
+      <Card id="site-operations" className="p-4">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <label className="min-w-52 text-sm font-medium">Selected site
             <select className={field} value={siteId} onChange={(e) => selectSite(e.target.value)}>
@@ -467,36 +1067,6 @@ export default function SiteConsole({ user }) {
           {sites.length === 0 && <p className="text-sm text-muted">No sites are configured for this business yet.</p>}
         </div>
       </Card>
-
-      {owner && <Card className="p-4">
-        <h2 className="mb-3 font-semibold">Add a site</h2>
-        <form onSubmit={createSite} className="grid gap-3 md:grid-cols-4">
-          <input className={field} placeholder="Site name" required value={siteForm.name} onChange={(e) => setSiteForm({ ...siteForm, name: e.target.value })} />
-          <input className={field} placeholder="Short code, e.g. NGP" required value={siteForm.code} onChange={(e) => setSiteForm({ ...siteForm, code: e.target.value })} />
-          <input className={field} placeholder="Location" value={siteForm.location} onChange={(e) => setSiteForm({ ...siteForm, location: e.target.value })} />
-          <div className="flex gap-2"><input className={field} aria-label="IANA time zone" value={siteForm.timezone} onChange={(e) => setSiteForm({ ...siteForm, timezone: e.target.value })} /><Btn type="submit">Create site</Btn></div>
-        </form>
-      </Card>}
-
-      {owner && siteId && <Card className="p-4">
-        <h2 className="mb-3 font-semibold">Edit selected site</h2>
-        <form onSubmit={saveSite} className="grid gap-3 md:grid-cols-5">
-          <input className={field} aria-label="Site name" required value={siteEdit.name} onChange={(e) => setSiteEdit({ ...siteEdit, name: e.target.value })} />
-          <input className={field} aria-label="Location" value={siteEdit.location} onChange={(e) => setSiteEdit({ ...siteEdit, location: e.target.value })} />
-          <input className={field} aria-label="City" value={siteEdit.city} onChange={(e) => setSiteEdit({ ...siteEdit, city: e.target.value })} />
-          <input className={field} aria-label="Site time zone" value={siteEdit.timezone} onChange={(e) => setSiteEdit({ ...siteEdit, timezone: e.target.value })} />
-          <Btn type="submit">Save site</Btn>
-        </form>
-        {sites.find((site) => site.id === siteId)?.is_default && <div className="mt-3">
-          <Btn variant="s" onClick={previewMigration}>Preview legacy-data migration</Btn>
-          {migration && <div className="mt-3 rounded border p-3 text-sm">
-            <p>Dry-run: {migration.total} records lack site assignment. No records have changed.</p>
-            <pre className="my-2 whitespace-pre-wrap">{JSON.stringify(migration.unassigned, null, 2)}</pre>
-            {!migration.applied && migration.total > 0 && <Btn variant="s" onClick={applyMigration}>Confirm assignment to default site</Btn>}
-            {migration.applied && <p>Migration status: {migration.result?.status}</p>}
-          </div>}
-        </div>}
-      </Card>}
 
       {siteId && dashboard && !owner && <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {[["Trips today", dashboard.trips_today], ["Open trips", dashboard.open_trips],
@@ -511,7 +1081,7 @@ export default function SiteConsole({ user }) {
           .map(([label, value]) => <Card key={label} className="p-4"><p className="text-xs text-muted">{label}</p><p className="mt-1 text-xl font-bold">{value}</p></Card>)}
       </div>}
 
-      {siteId && <Card className="space-y-4 p-4">
+      {siteId && <Card id="booking-lrs" className="space-y-4 p-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="font-semibold">Selected-site booking window</h2>
@@ -519,8 +1089,7 @@ export default function SiteConsole({ user }) {
           </div>
           <label className="w-full text-sm sm:max-w-sm">Trip
             <select className={field} value={boardTripId} onChange={(e) => {
-              const selectedTrip = tripRows.find((trip) => trip.id === e.target.value);
-              loadBoardLrs(siteId, e.target.value, selectedTrip?.operating_date);
+              loadBoardLrs(siteId, e.target.value);
             }}>
               <option value="">Choose a trip</option>
               {tripRows.map((trip) => <option key={trip.id} value={trip.id}>{trip.trip_ref} · {trip.operating_date}</option>)}
@@ -532,32 +1101,19 @@ export default function SiteConsole({ user }) {
           <span>{selectedBoardTrip.operating_date} · <strong>{selectedBoardTrip.status}</strong></span>
           <Link className="min-h-11 content-center text-brand-700 underline" to={`/sites/${siteId}/trips/${selectedBoardTrip.id}`}>Open trip</Link>
         </div>}
-        {!selectedBoardTrip && <p className="text-sm text-muted">Select a trip to view its LR and receivable detail.</p>}
+        {!selectedBoardTrip && <p className="text-sm text-muted">Select a trip to view its LR context.</p>}
         {boardTripId && <>
-          {owner && boardReceivables && <div className="space-y-3">
-            <p className="text-xs text-muted">{boardReceivables.basis}</p>
-            <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-              <p>Collectible outstanding <strong className="num block">₹{boardReceivables.collectible_outstanding}</strong></p>
-              <p>Reconciled rent <strong className="num block">₹{boardReceivables.reconciled_rent}</strong></p>
-              <p>Unreconciled bhada <strong className="num block">₹{boardReceivables.unreconciled_bhada}</strong></p>
-              <p>Unpriced LRs <strong className="block">{boardReceivables.unpriced_lrs}</strong></p>
-            </div>
-          </div>}
           {boardLrs.length === 0
             ? <p className="text-sm text-muted">No LRs found, or LR detail is not available to this role.</p>
             : <div className="grid gap-4 lg:grid-cols-2">
-              {owner && boardReceivables
-                ? <ReceivableGroups title="Trip collectible outstanding by receiver / person" breakdown={boardReceivables.by_receiver} />
-                : <section className="rounded-lg border border-line p-3">
+              {!owner && <section className="rounded-lg border border-line p-3">
                 <h3 className="mb-2 text-sm font-semibold">Outstanding by receiver / person</h3>
                 <div className="space-y-2">{receivableByReceiver.map((group) => <div key={group.label} className="flex items-start justify-between gap-3 border-b pb-2 text-sm last:border-0">
                   <span className="min-w-0"><strong className="block break-words">{group.label}</strong><span className="text-xs text-muted">{group.lrs} LR{group.lrs === 1 ? "" : "s"} · {group.parcels} parcels</span></span>
                   {group.hasFinance && <strong className="num shrink-0">{group.outstanding.toFixed(2)}</strong>}
                 </div>)}</div>
               </section>}
-              {owner && boardReceivables
-                ? <ReceivableGroups title="Trip collectible outstanding by goods" breakdown={boardReceivables.by_goods} />
-                : <section className="rounded-lg border border-line p-3">
+              {!owner && <section className="rounded-lg border border-line p-3">
                 <h3 className="mb-2 text-sm font-semibold">Goods and outstanding</h3>
                 <div className="space-y-2">{receivableByGoods.map((group) => <div key={group.label} className="flex items-start justify-between gap-3 border-b pb-2 text-sm last:border-0">
                   <span className="min-w-0"><strong className="block break-words">{group.label}</strong><span className="text-xs text-muted">{group.lrs} LR{group.lrs === 1 ? "" : "s"} · {group.parcels} parcels</span></span>
@@ -579,8 +1135,8 @@ export default function SiteConsole({ user }) {
         </>}
       </Card>}
 
-      {siteId && <Card className="p-4">
-        <h2 className="mb-3 font-semibold">Create a trip</h2>
+      {siteId && <Card id="site-trip-create-form" className="p-4">
+        <h2 className="mb-3 font-semibold">Create a daily booking</h2>
         <form onSubmit={createTrip} className="grid gap-3 md:grid-cols-2">
           <label className="text-sm">Vehicle
             <select className={field} value={tripForm.vehicle_id} onChange={(e) => {
@@ -608,86 +1164,13 @@ export default function SiteConsole({ user }) {
               onChange={(e) => setTripForm({ ...tripForm, driver_name: e.target.value })} />}
             {tripForm.driver_id && <p className="mt-1 text-xs text-muted">Selected: {tripForm.driver_name}</p>}
           </label>
-          <Btn type="submit">Create trip</Btn>
+          <Btn type="submit">Create booking</Btn>
         </form>
       </Card>}
 
-      {owner && siteId && <Card className="p-4">
-        <h2 className="mb-3 font-semibold">Assign or replace the site manager</h2>
-        <form onSubmit={assignManager} className="grid gap-3 md:grid-cols-4">
-          <input className={field} placeholder="Manager name" required value={managerForm.name} onChange={(e) => setManagerForm({ ...managerForm, name: e.target.value })} />
-          <input className={field} placeholder="Username" required value={managerForm.username} onChange={(e) => setManagerForm({ ...managerForm, username: e.target.value })} />
-          <input className={field} type="password" placeholder="Temporary password (12+ chars)" minLength="12" value={managerForm.password} onChange={(e) => setManagerForm({ ...managerForm, password: e.target.value })} />
-          <Btn type="submit">Assign manager</Btn>
-        </form>
-        <p className="mt-2 text-xs text-muted">For a new manager, set a temporary password and share it securely. A replaced manager loses this site's access while their audit history remains.</p>
-      </Card>}
-
-      {owner && managers.length > 0 && <Card className="p-4">
-        <h2 className="mb-3 font-semibold">Grant explicit cross-site access</h2>
-        <form onSubmit={grantAccess} className="grid gap-3 md:grid-cols-3">
-          <select className={field} required value={grantForm.username} onChange={(e) => setGrantForm({ ...grantForm, username: e.target.value })}>
-            <option value="">Select manager</option>{managers.filter((m) => m.active).map((m) => <option key={m.username} value={m.username}>{m.name} ({m.username})</option>)}
-          </select>
-          <select className={field} required value={grantForm.site_id} onChange={(e) => {
-            const existingPermissions = managers.find((m) => m.username === grantForm.username)?.site_permissions?.[e.target.value];
-            setGrantForm({ ...grantForm, site_id: e.target.value,
-              permissions: existingPermissions || ["dashboard:read", "trips:read", "lrs:read"] });
-          }}>
-            <option value="">Select site</option>{sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-          <Btn type="submit">Save access permissions</Btn>
-        </form>
-        <div className="my-3 grid gap-2 sm:grid-cols-3">
-          {allowedPermissions.map((permission) => <label key={permission} className="text-xs">
-            <input type="checkbox" checked={grantForm.permissions.includes(permission)}
-              onChange={(event) => setGrantForm({ ...grantForm, permissions: event.target.checked
-                ? [...grantForm.permissions, permission]
-                : grantForm.permissions.filter((value) => value !== permission) })} /> {permission}
-          </label>)}
-        </div>
-        <p className="mt-2 text-xs text-muted">A manager can access only the selected site and only the checked actions.</p>
-        <div className="mt-4 divide-y border-t">
-          {managers.map((manager) => <div key={manager.username} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm">
-            <span>{manager.name} · {manager.username} · {manager.active ? "Active" : "Inactive"} · Sites: {sites.filter((site) => manager.site_ids?.includes(site.id)).map((site) => site.name).join(", ") || "None"}</span>
-            <div className="flex gap-2">
-              <button className="text-brand-700 underline" onClick={async () => {
-                const password = window.prompt("Enter a new temporary password (12+ characters):");
-                if (!password) return;
-                try {
-                  await api.post(`/sites/managers/${encodeURIComponent(manager.username)}/reset-password`, { password });
-                  setMessage("Manager password reset.");
-                } catch (e) { setError(errMsg(e)); }
-              }}>Reset password</button>
-              {manager.active && <button className="text-red-700 underline" onClick={async () => {
-                if (!window.confirm(`Deactivate ${manager.name} and revoke all site access?`)) return;
-                try {
-                  await api.delete(`/sites/managers/${encodeURIComponent(manager.username)}`);
-                  setMessage("Manager deactivated; historical records and audit events were retained.");
-                  await refresh(siteId);
-                } catch (e) { setError(errMsg(e)); }
-              }}>Deactivate</button>}
-            </div>
-          </div>)}
-        </div>
-      </Card>}
-
-      {owner && siteId && <Card className="grid gap-4 p-4 md:grid-cols-2">
-        <form onSubmit={(e) => addCategory("goods", e)} className="flex gap-2">
-          <input className={field} aria-label="New goods category" placeholder="Add goods category" value={categoryForm.goods}
-            onChange={(e) => setCategoryForm({ ...categoryForm, goods: e.target.value })} />
-          <Btn type="submit">Add goods</Btn>
-        </form>
-        <form onSubmit={(e) => addCategory("containers", e)} className="flex gap-2">
-          <input className={field} aria-label="New container category" placeholder="Add container category" value={categoryForm.containers}
-            onChange={(e) => setCategoryForm({ ...categoryForm, containers: e.target.value })} />
-          <Btn type="submit">Add container</Btn>
-        </form>
-      </Card>}
-
-      {siteId && <Card className="p-4">
-        <h2 className="mb-3 font-semibold">Site trips ({tripRows.length} of {tripTotal})</h2>
-        {tripRows.length === 0 ? <p className="text-sm text-muted">No trips recorded at this site yet.</p> :
+      {siteId &&       <Card id="booking-records" className="p-4">
+        <h2 className="mb-3 font-semibold">Site bookings ({tripRows.length} of {tripTotal})</h2>
+        {tripRows.length === 0 ? <p className="text-sm text-muted">No bookings recorded at this site yet.</p> :
           <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">{tripRows.map((trip) => <Link key={trip.id}
             className="rounded-lg border border-line p-3 hover:border-brand-400 hover:text-brand-700"
             to={`/sites/${siteId}/trips/${trip.id}`}>
@@ -695,7 +1178,7 @@ export default function SiteConsole({ user }) {
             <p className="mt-1 break-words text-sm">{trip.truck_no} · {trip.driver_name}</p>
             <p className="mt-1 text-xs text-muted">{trip.operating_date}</p>
           </Link>)}</div>}
-        {tripRows.length < tripTotal && <Btn variant="s" className="mt-3" onClick={loadMoreTrips}>Load more trips</Btn>}
+        {tripRows.length < tripTotal && <Btn variant="s" className="mt-3" onClick={loadMoreTrips}>Load more bookings</Btn>}
       </Card>}
     </div>
   );

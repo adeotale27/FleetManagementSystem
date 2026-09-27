@@ -154,11 +154,11 @@ export default function SiteLRPage({ user }) {
   return (
     <div className="space-y-5 print-shell">
       <div className="no-print">
-        <PageHead title={lr.lr_ref} subtitle={`${site?.name || "Site"} · ${trip?.trip_ref || ""}`} />
+        <PageHead title={`Booking LR ${lr.lr_ref}`} subtitle={`${site?.name || "Site"} · Booking ${trip?.trip_ref || ""}`} />
         {error && <div role="alert" className="mb-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
         {message && <div role="status" className="mb-3 rounded-lg bg-brand-50 px-4 py-3 text-sm text-brand-700">{message}</div>}
         <div className="flex flex-wrap gap-3">
-          <Link className="text-sm text-brand-700 underline" to={`/sites/${siteId}/trips/${tripId}`}>Back to trip</Link>
+          <Link className="text-sm text-brand-700 underline" to={`/sites/${siteId}/trips/${tripId}`}>Back to booking</Link>
           <Btn onClick={() => window.print()}>Print / Save PDF</Btn>
         </div>
         <p className="mt-2 text-xs text-muted">Choose a paired printer or Save as PDF in your browser or device print dialog.</p>
@@ -173,7 +173,7 @@ export default function SiteLRPage({ user }) {
         </header>
         <div className="grid grid-cols-2 gap-3 border-b py-4 text-sm">
           <p><strong>LR number:</strong> {lr.lr_ref}</p><p><strong>Date:</strong> {lr.operating_date}</p>
-          <p><strong>Trip:</strong> {trip?.trip_ref}</p><p><strong>Truck number:</strong> {trip?.truck_no}</p>
+          <p><strong>Booking:</strong> {trip?.trip_ref}</p><p><strong>Truck number:</strong> {trip?.truck_no}</p>
         </div>
         <section className="grid gap-4 border-b py-5 md:grid-cols-2">
           <div><p className="text-xs font-semibold uppercase text-muted">Sender</p><p className="mt-1 text-lg font-semibold">{lr.sender_name}</p>
@@ -202,7 +202,7 @@ export default function SiteLRPage({ user }) {
 
       {(canSeeFinance || canPay || canReadPayments) && <Card className="no-print space-y-3 p-4">
         <div className="flex flex-wrap justify-between gap-2">
-          <h2 className="font-semibold">Internal trip financials</h2>
+          <h2 className="font-semibold">Internal booking financials</h2>
           {canSeeFinance && <span className="text-sm">Bhada paid: {lr.paid_total} · Outstanding: {lr.outstanding} · Status: {lr.payment_status}</span>}
         </div>
         {canSeeFinance && <p className="text-sm text-muted">Hamali: {lr.hamali ?? "Not entered"} (internal only; never printed on the LR).</p>}

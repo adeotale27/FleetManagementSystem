@@ -131,7 +131,8 @@ export default function LRView() {
           ))}
         </div>
 
-        <table className="w-full text-[13px]">
+        <div className="lr-items-scroll overflow-x-auto">
+        <table className="lr-items-table w-full min-w-[560px] text-[13px]">
           <thead className="bg-canvas">
             <tr>
               <th className="th">Description of Goods</th>
@@ -157,6 +158,7 @@ export default function LRView() {
             </tr>
           </tbody>
         </table>
+        </div>
 
         {lr.remarks && <p className="border-t border-line px-6 py-3 text-[13px]"><b>Remarks:</b> {lr.remarks}</p>}
 

@@ -434,11 +434,14 @@ async def _trip_financial_totals(trip_ids):
 
     cost = {}
     for coll in ("expenses", "fuel"):
+        match = {
+            "cancelled": False,
+            "trip_id": {"$nin": [None, ""], **trip_id_filter},
+        }
+        if coll == "expenses":
+            match["site_id"] = {"$exists": False}
         async for r in db[coll].aggregate([
-            {"$match": {
-                "cancelled": False,
-                "trip_id": {"$nin": [None, ""], **trip_id_filter},
-            }},
+            {"$match": match},
             {"$group": {"_id": "$trip_id", "t": {"$sum": "$amount"}}},
         ]):
             cost[r["_id"]] = round(cost.get(r["_id"], 0) + r["t"], 2)
@@ -653,7 +656,9 @@ async def get_trip(trip_id: str, u=Depends(current_user)):
         raise HTTPException(404, "Trip not found")
     out = ser(t)
     out["lrs"] = sers(await db.lrs.find({"trip_id": trip_id}).to_list(100))
-    out["expenses"] = sers(await db.expenses.find({"trip_id": trip_id, "cancelled": False}).to_list(100))
+    out["expenses"] = sers(await db.expenses.find({
+        "trip_id": trip_id, "cancelled": False, "site_id": {"$exists": False},
+    }).to_list(100))
     out["fuel"] = sers(await db.fuel.find({"trip_id": trip_id, "cancelled": False}).to_list(100))
     lr_freight = round(sum(l["freight"] for l in out["lrs"] if not l.get("cancelled")), 2)
     expense_total = round(sum(e["amount"] for e in out["expenses"]), 2)
@@ -1051,7 +1056,7 @@ async def list_expenses(frm: Optional[str] = None, to: Optional[str] = None,
                         category: Optional[str] = None, vehicle_id: Optional[str] = None,
                         trip_id: Optional[str] = None, q: Optional[str] = None,
                         limit: int = 500, u=Depends(current_user)):
-    query = {}
+    query = {"cancelled": False, "site_id": {"$exists": False}}
     for k, v in [("category", category), ("vehicle_id", vehicle_id), ("trip_id", trip_id)]:
         if v:
             query[k] = v
@@ -1069,8 +1074,13 @@ async def list_expenses(frm: Optional[str] = None, to: Optional[str] = None,
 
 @api.post("/expenses/{eid}/cancel")
 async def cancel_expense(eid: str, u=Depends(current_user)):
+    expense = await db.expenses.find_one({"_id": eid, "site_id": {"$exists": False}})
+    if not expense:
+        raise HTTPException(404, "Expense not found")
     await L.reverse("expense", eid)
-    await db.expenses.update_one({"_id": eid}, {"$set": {"cancelled": True}})
+    await db.expenses.update_one(
+        {"_id": eid, "site_id": {"$exists": False}}, {"$set": {"cancelled": True}},
+    )
     return {"ok": True}
 
 
@@ -1330,7 +1340,9 @@ async def vehicle_profile(vid: str, u=Depends(current_user)):
     if not v:
         raise HTTPException(404, "Vehicle not found")
     trips = sers(await db.trips.find({"vehicle_id": vid}).sort("created_at", -1).to_list(200))
-    exp = sers(await db.expenses.find({"vehicle_id": vid, "cancelled": False}).sort("date", -1).to_list(300))
+    exp = sers(await db.expenses.find({
+        "vehicle_id": vid, "cancelled": False, "site_id": {"$exists": False},
+    }).sort("date", -1).to_list(300))
     fuel = sers(await db.fuel.find({"vehicle_id": vid, "cancelled": False}).sort("date", -1).to_list(300))
     return {
         "vehicle": ser(v),
@@ -1410,6 +1422,8 @@ async def partner_profile(pid: str, u=Depends(current_user)):
 # ------------------------------------------------------------------ finance helpers
 async def sum_coll(coll, match):
     m = {"cancelled": False, **match}
+    if coll == "expenses":
+        m["site_id"] = {"$exists": False}
     agg = [{"$match": m}, {"$group": {"_id": None, "t": {"$sum": "$amount"}}}]
     async for r in db[coll].aggregate(agg):
         return round(r["t"], 2)
@@ -1510,7 +1524,7 @@ async def finance_payables(u=Depends(current_user)):
 @api.get("/finance/cashbook")
 async def finance_cashbook(frm: Optional[str] = None, to: Optional[str] = None,
                            account: Optional[str] = None, u=Depends(current_user)):
-    query = {"cancelled": False}
+    query = {"cancelled": False, "site_id": {"$exists": False}}
     if account:
         query["account"] = account
     if frm or to:
@@ -1532,7 +1546,9 @@ async def finance_charts(days: int = 14, u=Depends(current_user)):
     start = (t - timedelta(days=days - 1)).isoformat()
     inout = {}
     async for r in db.cashbook.aggregate([
-        {"$match": {"cancelled": False, "date": {"$gte": start}}},
+        {"$match": {
+            "cancelled": False, "site_id": {"$exists": False}, "date": {"$gte": start},
+        }},
         {"$group": {"_id": {"d": "$date", "dir": "$direction"}, "t": {"$sum": "$amount"}}}]):
         d = inout.setdefault(r["_id"]["d"], {"date": r["_id"]["d"], "in": 0, "out": 0})
         d[r["_id"]["dir"]] = round(r["t"], 2)
@@ -1543,7 +1559,9 @@ async def finance_charts(days: int = 14, u=Depends(current_user)):
         series.append({"date": dd[5:], "money_in": row.get("in", 0), "money_out": row.get("out", 0)})
     exp = []
     async for r in db.expenses.aggregate([
-        {"$match": {"cancelled": False, "date": {"$gte": start}}},
+        {"$match": {
+            "cancelled": False, "site_id": {"$exists": False}, "date": {"$gte": start},
+        }},
         {"$group": {"_id": "$category", "t": {"$sum": "$amount"}}}, {"$sort": {"t": -1}}]):
         exp.append({"name": r["_id"], "value": round(r["t"], 2)})
     fuel_total = await sum_coll("fuel", {"date": {"$gte": start}})
@@ -1965,7 +1983,9 @@ async def dashboard(u=Depends(current_user)):
             "trips_today": trips_today[:8],
             "recent_collections": sers(await db.receipts.find({"cancelled": False}).sort("created_at", -1).to_list(6)),
             "recent_payments": sers(await db.payments.find({"cancelled": False}).sort("created_at", -1).to_list(6)),
-            "recent_expenses": sers(await db.expenses.find({"cancelled": False}).sort("created_at", -1).to_list(6)),
+            "recent_expenses": sers(await db.expenses.find({
+                "cancelled": False, "site_id": {"$exists": False},
+            }).sort("created_at", -1).to_list(6)),
             "pending_receivables": al["pending_receivables"][:8],
         },
         "pending_lrs": await db.lrs.count_documents({"cancelled": False, "payment_status": {"$in": ["Pending", "Partial"]}}),

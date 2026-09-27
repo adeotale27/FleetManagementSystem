@@ -5,7 +5,6 @@ import { ToastHost, Loader } from "./components/ui";
 import Layout from "./components/Layout";
 
 const Login = lazy(() => import("./pages/Login"));
-const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Trips = lazy(() => import("./pages/Trips"));
 const TripForm = lazy(() => import("./pages/TripForm"));
 const TripDetail = lazy(() => import("./pages/TripDetail"));
@@ -27,6 +26,8 @@ const PlatformSettings = lazy(() => import("./pages/Platform").then((module) => 
 const SiteConsole = lazy(() => import("./pages/SiteConsole"));
 const SiteTrip = lazy(() => import("./pages/SiteTrip"));
 const SiteLRPage = lazy(() => import("./pages/SiteLRPage"));
+const BookingFinance = lazy(() => import("./pages/BookingFinance"));
+const BookingReports = lazy(() => import("./pages/BookingReports"));
 
 export default function App() {
   const [state, setState] = useState("checking");
@@ -75,6 +76,7 @@ export default function App() {
                   <Route path="/sites" element={<SiteConsole user={user} />} />
                   <Route path="/sites/:siteId/trips/:tripId" element={<SiteTrip user={user} />} />
                   <Route path="/sites/:siteId/trips/:tripId/lrs/:lrId" element={<SiteLRPage user={user} />} />
+                  <Route path="/booking-setup" element={<Navigate to="/sites" replace />} />
                   <Route path="*" element={<Navigate to="/sites" replace />} />
                 </>
               ) : (
@@ -82,8 +84,11 @@ export default function App() {
             <Route path="/sites" element={<SiteConsole user={user} />} />
             <Route path="/sites/:siteId/trips/:tripId" element={<SiteTrip user={user} />} />
             <Route path="/sites/:siteId/trips/:tripId/lrs/:lrId" element={<SiteLRPage user={user} />} />
+            <Route path="/booking-setup" element={<SiteConsole user={user} adminOnly />} />
+            <Route path="/booking-finance" element={user?.role === "owner" ? <BookingFinance /> : <Navigate to="/sites" replace />} />
+            <Route path="/booking-reports" element={user?.role === "owner" ? <BookingReports /> : <Navigate to="/sites" replace />} />
             <Route path="/" element={<Navigate to="/sites" replace />} />
-            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/dashboard" element={<Navigate to="/sites" replace />} />
             <Route path="/trips" element={<Trips />} />
             <Route path="/trips/new" element={<TripForm />} />
             <Route path="/trips/:id" element={<TripDetail />} />

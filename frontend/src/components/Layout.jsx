@@ -1,21 +1,23 @@
 import React, { useEffect, useState } from "react";
-import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
-  BarChart3, Banknote, Fuel, Gauge, LayoutDashboard, LogOut, Menu, Plus, Receipt,
-  Search, Settings as Cog, ShieldCheck, Truck, User, Users, UsersRound, Wallet, X, FileText, ArrowRight, Building2,
+  BarChart3, Banknote, FileText, Fuel, Gauge, LogOut, Menu, Plus, Receipt,
+  Search, Settings as Cog, ShieldCheck, Truck, User, Users, UsersRound, Wallet, X, ArrowRight, Building2,
 } from "lucide-react";
 import { api } from "../lib/api";
 import EntryModal from "./QuickForms";
 import { Badge } from "./ui";
 
 const NAV = [
-  { to: "/dashboard", label: "Office Dashboard", icon: LayoutDashboard, key: "dashboard" },
-  { to: "/trips", label: "Trips & LR", icon: Truck, key: "trips" },
+  { to: "/trips?tab=trips", label: "Industrial Trips", icon: Truck, key: "trips",
+    activeWhen: (location) => location.pathname === "/trips" && new URLSearchParams(location.search).get("tab") !== "lrs" },
+  { to: "/trips?tab=lrs", label: "Industrial LRs", icon: FileText, key: "trips",
+    activeWhen: (location) => location.pathname === "/trips" && new URLSearchParams(location.search).get("tab") === "lrs" },
   { to: "/vehicles", label: "Vehicles", icon: Gauge, key: "vehicles" },
   { to: "/parties", label: "Parties", icon: Users, key: "parties" },
   { to: "/team", label: "Team", icon: UsersRound, key: "team" },
-  { to: "/finance", label: "Finance", icon: Wallet, key: "finance" },
-  { to: "/reports", label: "Reports", icon: BarChart3, key: "reports" },
+  { to: "/finance", label: "Industrial Finance", icon: Wallet, key: "finance" },
+  { to: "/reports", label: "Industrial Reports", icon: BarChart3, key: "reports" },
   { to: "/settings", label: "Office Settings", icon: Cog, key: "settings" },
 ];
 
@@ -24,11 +26,13 @@ const PLATFORM_NAV = [
   { to: "/settings", label: "Console", icon: Cog },
 ];
 
-const SITE_NAV = [
-  { to: "/sites", label: "System Dashboard", icon: Building2 },
+const SITE_NAV = { to: "/sites", label: "Booking Dashboard", icon: Building2 };
+const SITE_MANAGER_NAV = { ...SITE_NAV, label: "Site Bookings" };
+const BOOKING_NAV = [
+  { to: "/booking-finance", label: "Booking Finance", icon: Wallet },
+  { to: "/booking-reports", label: "Booking Reports", icon: BarChart3 },
+  { to: "/booking-setup", label: "Booking Setup & Access", icon: Building2 },
 ];
-
-const MOBILE_NAV = [NAV[0], NAV[1], NAV[5], NAV[6]];
 
 const QUICK = [
   { kind: "trip", label: "Create Trip", icon: Truck },
@@ -39,6 +43,13 @@ const QUICK = [
   { kind: "fuel", label: "Diesel", icon: Fuel },
 ];
 
+const navIsActive = (item, location) => {
+  if (item.activeWhen) return item.activeWhen(location);
+  return item.to === "/sites"
+    ? location.pathname.startsWith("/sites")
+    : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+};
+
 export default function Layout({ user, children }) {
   const [menu, setMenu] = useState(false);
   const [sheet, setSheet] = useState(false);
@@ -48,7 +59,7 @@ export default function Layout({ user, children }) {
   const loc = useLocation();
   const nav = useNavigate();
 
-  useEffect(() => { setMenu(false); setSheet(false); }, [loc.pathname]);
+  useEffect(() => { setMenu(false); setSheet(false); }, [loc.pathname, loc.search]);
 
   useEffect(() => {
     if (q.length < 2) return setRes([]);
@@ -70,36 +81,43 @@ export default function Layout({ user, children }) {
   const bizLogo = user?.role === "superadmin" ? "/app-icon.png" : (user?.branding?.logo || "/app-icon.png");
   const bizName = user?.role === "superadmin" ? "ProFleet" : (user?.tenant_name || user?.branding?.name || "ProFleet");
   const photo = user?.photo;
+  const isSiteBookingRoute = loc.pathname === "/sites" || loc.pathname.startsWith("/sites/")
+    || loc.pathname === "/booking-finance" || loc.pathname === "/booking-reports"
+    || loc.pathname === "/booking-setup";
+  const showIndustrialTools = user?.role === "owner" && !isSiteBookingRoute;
   const navItems = user?.role === "superadmin" ? PLATFORM_NAV
-    : user?.role === "site_manager" ? SITE_NAV
-      : [...SITE_NAV, ...NAV.filter((n) => !n.key || user?.features?.[n.key] !== false)];
+    : user?.role === "site_manager" ? [SITE_MANAGER_NAV]
+      : [SITE_NAV, ...BOOKING_NAV, ...NAV.filter((n) => !n.key || user?.features?.[n.key] !== false)];
   const mobileNav = user?.role === "superadmin" ? PLATFORM_NAV
-    : user?.role === "site_manager" ? SITE_NAV
-      : [SITE_NAV[0], ...MOBILE_NAV];
+    : user?.role === "site_manager" ? [SITE_MANAGER_NAV]
+      : [SITE_NAV, BOOKING_NAV[0], ...NAV.filter((n) => n.key === "trips" || n.key === "finance")];
 
   const Side = (
     <>
-      <div className="flex items-center gap-2.5 px-5 py-5">
-        <img src={bizLogo} alt="" className="h-10 w-10 shrink-0 rounded-xl bg-white object-contain ring-1 ring-white/10" />
+      <div className="flex items-center gap-3 px-5 py-5">
+        <img src={bizLogo} alt="" className="app-brand-mark h-10 w-10 shrink-0 rounded-xl bg-white object-contain ring-1 ring-white/10" />
         <div className="min-w-0">
           <p className="truncate font-head text-[15.5px] font-bold leading-none text-white">{bizName}</p>
-          <p className="mt-1 text-[11.5px] text-white/40">
-            {user?.role === "superadmin" ? "Licence control" : "Transport Office"}
+          <p className="mt-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-white/45">
+            {user?.role === "superadmin" ? "Platform control" : user?.role === "site_manager" ? "Site operations" : "Fleet operations"}
           </p>
         </div>
       </div>
-      <nav className="flex-1 space-y-0.5 px-3 py-2">
+      <nav aria-label="Main navigation" className="flex-1 space-y-1 overflow-y-auto px-3 py-3">
+        <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[.16em] text-white/35">
+          {user?.role === "superadmin" ? "Administration" : "Workspace"}
+        </p>
         {navItems.map((n) => (
-          <NavLink key={n.to} to={n.to} end={n.to === "/"} data-testid={`nav-${n.label.toLowerCase().replace(/[^a-z]/g, "-")}`}
-            className={({ isActive }) =>
-              `flex items-center gap-3 rounded-lg px-3 py-2.5 text-[14.5px] font-medium transition-colors ${
-                isActive ? "bg-brand-500 text-white" : "text-white/60 hover:bg-white/5 hover:text-white"}`}>
-            <n.icon size={18} /> {n.label}
-          </NavLink>
+          <Link key={n.to} to={n.to} aria-current={navIsActive(n, loc) ? "page" : undefined}
+            data-testid={`nav-${n.label.toLowerCase().replace(/[^a-z]/g, "-")}`}
+            className={`app-nav-link flex items-center gap-3 rounded-lg px-3 py-2.5 text-[14px] font-medium transition-colors ${
+              navIsActive(n, loc) ? "is-active text-white" : "text-white/60 hover:bg-white/5 hover:text-white"}`}>
+            <n.icon size={18} strokeWidth={1.8} /> {n.label}
+          </Link>
         ))}
       </nav>
       <div className="border-t border-white/10 px-3 py-3">
-        <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-2">
+        <div className="flex items-center justify-between gap-2 rounded-xl bg-white/[.045] px-2 py-2">
           <div className="flex min-w-0 items-center gap-2">
             {photo
               ? <img src={photo} alt="" className="h-9 w-9 shrink-0 rounded-full object-cover ring-2 ring-white/20" />
@@ -121,23 +139,25 @@ export default function Layout({ user, children }) {
 
   return (
     <div className="min-h-screen bg-canvas">
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-60 flex-col bg-ink md:flex">{Side}</aside>
+      <aside className="app-sidebar fixed inset-y-0 left-0 z-40 hidden w-60 flex-col md:flex">{Side}</aside>
 
       {menu && (
-        <div className="fixed inset-0 z-50 md:hidden">
-          <div className="absolute inset-0 bg-ink/50" onClick={() => setMenu(false)} />
-          <aside className="absolute inset-y-0 left-0 flex w-64 flex-col bg-ink row-anim">{Side}</aside>
+        <div className="fixed inset-0 z-50 md:hidden" data-testid="mobile-navigation">
+          <button type="button" aria-label="Close navigation" className="absolute inset-0 bg-ink/55 backdrop-blur-[2px]"
+            onClick={() => setMenu(false)} />
+          <aside className="app-sidebar absolute inset-y-0 left-0 flex w-[min(84vw,300px)] flex-col row-anim">{Side}</aside>
         </div>
       )}
 
       <div className="md:pl-60 print:!pl-0">
-        <header className="sticky top-0 z-30 border-b border-line bg-white/95 backdrop-blur">
+        <header className="app-header sticky top-0 z-30 border-b border-line">
           <div className="flex items-center gap-2 px-4 py-3 md:px-7">
-            <button onClick={() => setMenu(true)} data-testid="menu-btn" className="rounded-lg p-2 text-ink md:hidden">
+            <button onClick={() => setMenu(true)} data-testid="menu-btn" aria-label="Open navigation"
+              aria-expanded={menu} className="rounded-lg p-2 text-ink hover:bg-brand-50 md:hidden">
               <Menu size={21} />
             </button>
             <img src={bizLogo} alt="" className="h-8 w-8 rounded-lg object-contain md:hidden" />
-            {user?.role !== "superadmin" && user?.role !== "site_manager" && (
+            {showIndustrialTools && (
             <div className="relative flex-1 md:max-w-md">
               <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
               <input data-testid="global-search" value={q} onChange={(e) => setQ(e.target.value)}
@@ -162,28 +182,30 @@ export default function Layout({ user, children }) {
             </div>
             )}
             {user?.role === "superadmin" && <div className="flex-1" />}
-            {user?.role !== "superadmin" && user?.role !== "site_manager" && (
+            {showIndustrialTools && (
               <button onClick={() => setSheet(true)} data-testid="quick-action-btn"
                 className="btn-p hidden py-2 md:inline-flex"><Plus size={17} /> New Entry</button>
             )}
           </div>
         </header>
 
-        <main className="px-4 pb-28 pt-5 md:px-7 md:pb-10">{children}</main>
+        <main className="app-main page-enter px-4 pb-28 pt-6 md:px-7 md:pb-10">{children}</main>
       </div>
 
       {/* mobile bottom bar */}
-      <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-line bg-white/97 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
-        <div className={`grid ${user?.role === "superadmin" ? "grid-cols-2" : user?.role === "site_manager" ? "grid-cols-1" : "grid-cols-5"}`}>
+      <div className="app-header fixed bottom-0 left-0 right-0 z-30 border-t border-line pb-[env(safe-area-inset-bottom)] md:hidden">
+        <div className={`grid ${user?.role === "superadmin" ? "grid-cols-2"
+          : user?.role === "site_manager" ? "grid-cols-1"
+            : showIndustrialTools ? "grid-cols-5" : "grid-cols-4"}`}>
           {user?.role === "superadmin" || user?.role === "site_manager" ? mobileNav.map((n) => <BottomLink key={n.to} n={n} />) : (
-            <>
+            showIndustrialTools ? <>
               {mobileNav.slice(0, 2).map((n) => <BottomLink key={n.to} n={n} />)}
               <button onClick={() => setSheet(true)} data-testid="mobile-quick-btn" className="flex flex-col items-center py-2">
-                <span className="grid h-11 w-11 -mt-4 place-items-center rounded-full bg-[#0B5C4E] text-white shadow-lg"><Plus size={22} /></span>
+                <span className="grid h-11 w-11 -mt-4 place-items-center rounded-full bg-brand-500 text-white shadow-lg"><Plus size={22} /></span>
                 <span className="mt-0.5 text-[10.5px] font-semibold text-brand-600">New</span>
               </button>
               {mobileNav.slice(2).map((n) => <BottomLink key={n.to} n={n} />)}
-            </>
+            </> : mobileNav.map((n) => <BottomLink key={n.to} n={n} />)
           )}
         </div>
       </div>
@@ -207,7 +229,7 @@ export default function Layout({ user, children }) {
             </div>
             <Link to="/finance" onClick={() => setSheet(false)}
               className="mt-4 flex items-center justify-between rounded-xl bg-canvas px-4 py-3 text-[14px] font-semibold text-ink">
-              Open Finance <ArrowRight size={17} />
+              Open Industrial Finance <ArrowRight size={17} />
             </Link>
           </div>
         </div>
@@ -219,10 +241,14 @@ export default function Layout({ user, children }) {
   );
 }
 
-const BottomLink = ({ n }) => (
-  <NavLink to={n.to} end={n.to === "/"} data-testid={`mnav-${n.label.toLowerCase().replace(/[^a-z]/g, "-")}`}
-    className={({ isActive }) => `flex flex-col items-center gap-1 py-2.5 text-[10.5px] font-semibold ${
-      isActive ? "text-brand-600" : "text-muted"}`}>
-    <n.icon size={20} /> {n.label}
-  </NavLink>
-);
+const BottomLink = ({ n }) => {
+  const location = useLocation();
+  return (
+    <Link to={n.to} aria-current={navIsActive(n, location) ? "page" : undefined}
+      data-testid={`mnav-${n.label.toLowerCase().replace(/[^a-z]/g, "-")}`}
+      className={`flex flex-col items-center justify-center gap-1 py-1.5 text-[10px] font-semibold ${
+        navIsActive(n, location) ? "text-brand-600" : "text-muted"}`}>
+      <n.icon size={19} strokeWidth={1.9} /> {n.label}
+    </Link>
+  );
+};
