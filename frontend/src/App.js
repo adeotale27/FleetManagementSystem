@@ -77,8 +77,6 @@ export default function App() {
                   <Route path="/sites/:siteId/trips/:tripId" element={<SiteTrip user={user} />} />
                   <Route path="/sites/:siteId/trips/:tripId/lrs/:lrId" element={<SiteLRPage user={user} />} />
                   <Route path="/booking-setup" element={<Navigate to="/sites" replace />} />
-                  <Route path="/booking-finance" element={user?.role === "owner" ? <BookingFinance /> : <Navigate to="/sites" replace />} />
-                  <Route path="/booking-reports" element={user?.role === "owner" ? <BookingReports /> : <Navigate to="/sites" replace />} />
                   <Route path="*" element={<Navigate to="/sites" replace />} />
                 </>
               ) : (
@@ -87,6 +85,8 @@ export default function App() {
             <Route path="/sites/:siteId/trips/:tripId" element={<SiteTrip user={user} />} />
             <Route path="/sites/:siteId/trips/:tripId/lrs/:lrId" element={<SiteLRPage user={user} />} />
             <Route path="/booking-setup" element={<SiteConsole user={user} adminOnly />} />
+            <Route path="/booking-finance" element={user?.role === "owner" ? <BookingFinance /> : <Navigate to="/sites" replace />} />
+            <Route path="/booking-reports" element={user?.role === "owner" ? <BookingReports /> : <Navigate to="/sites" replace />} />
             <Route path="/" element={<Navigate to="/sites" replace />} />
             <Route path="/dashboard" element={<Navigate to="/sites" replace />} />
             <Route path="/trips" element={<Trips />} />

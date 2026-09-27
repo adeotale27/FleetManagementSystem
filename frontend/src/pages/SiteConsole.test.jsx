@@ -168,7 +168,7 @@ describe("SiteConsole fetch cycles", () => {
     await setInput('input[placeholder="e.g. NGP"]', "NEW");
     await setInput('input[aria-label="Manager login ID"]', "mina.manager");
     expect(container.querySelector('input[type="password"]')).not.toBeNull();
-    await setInput('input[type="password"]', "temporary-pass-123");
+    await setInput('input[aria-label="Manager password"]', "abc");
 
     const createForm = container.querySelector('input[placeholder="Site name"]').closest("form");
     await act(async () => {
@@ -182,8 +182,25 @@ describe("SiteConsole fetch cycles", () => {
     expect(api.post).toHaveBeenCalledWith("/sites", expect.objectContaining({ name: "New Site", code: "NEW" }));
     expect(api.post).toHaveBeenCalledWith("/sites/site-new/manager", expect.objectContaining({
       name: "Mina Manager", username: "mina.manager", team_member_id: "team-manager",
-      password: "temporary-pass-123",
+      password: "abc",
     }));
-    expect(container.textContent).toContain("Temporary password: temporary-pass-123");
+    expect(container.textContent).toContain("Temporary password: abc");
+  });
+
+  it("explains manager permissions with grouped action labels", async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <SiteConsole user={{ role: "owner" }} adminOnly />
+        </MemoryRouter>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("Manager site access");
+    expect(container.textContent).toContain("Lorry receipts (LRs)");
+    expect(container.querySelector('[aria-label="Create trips"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Record payments"]')).not.toBeNull();
+    expect(container.textContent).toContain("Unticked actions are unavailable to this manager at this site.");
   });
 });

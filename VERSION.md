@@ -13,7 +13,7 @@ The version format is `MAJOR.MINOR.PATCH`:
 
 - **PATCH** (`1.1.1` → `1.1.2`): backwards-compatible bug fixes, maintenance, and documentation/governance changes that affect how the app is built or maintained.
 - **MINOR** (`1.1.2` → `1.2.0`): every new backwards-compatible user-facing feature or integration. A genuinely new feature must never be merged without a version increment and release notes.
-- **MAJOR** (`1.9.0` → `2.0.0`): incompatible API, data, security, workflow, or deployment changes that require consumers or operators to adapt.
+- **MAJOR** (`1.9.1` → `2.0.0`): incompatible API, data, security, workflow, or deployment changes that require consumers or operators to adapt.
 
 For every change set: select the increment before implementation; update this file and `frontend/package.json`; add a dated changelog entry describing user-visible changes and relevant migration/compatibility notes; validate the implementation; then commit the complete change together. Do not reuse a released version. If one change set spans categories, use the highest applicable increment. Purely local experiments that are not retained in the repository do not constitute a release.
 
@@ -21,9 +21,17 @@ New features and architecture changes also require updates to [APP_SUMMARY.md](A
 
 ## Current version
 
-**v1.9.0** — 27 September 2026
+**v1.9.1** — 27 September 2026
 
 ## Changelog
+
+### v1.9.1 — 27 September 2026
+
+- **Booking Finance and Reports routing:** Moved owner-only Booking Finance and Booking Reports routes into the business-owner route set. Owners can open both pages directly; site managers continue to be redirected to their site workspace.
+- **New-business empty states:** Confirmed zero-value Finance metrics and a zero-row Reports state are rendered when a business has no sites or booking activity.
+- **Manager access clarity:** Grouped site permission checkboxes by dashboard, trips, LRs, and finance/payments with plain-language action labels and a clear site-specific explanation.
+- **Manager passwords:** Removed the 12-character minimum and bcrypt 72-byte cutoff for new/reset manager passwords. New manager hashes use SHA-256 pre-hashing with bcrypt; existing bcrypt hashes remain verifiable. Passwords are still never stored or returned in plaintext; the newly set value is displayed once in the page for copying.
+- **Verification:** Added direct-route role tests, fresh-business zero-state tests, grouped-permission UI coverage, and long/new plus legacy password-hash tests.
 
 ### v1.9.0 — 27 September 2026
 

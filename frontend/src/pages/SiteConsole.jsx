@@ -24,10 +24,41 @@ const dateRangeForPreset = (preset) => {
   if (preset === "last30") return { from_date: isoDay(-29), to_date: isoDay() };
   return { from_date: isoDay(), to_date: isoDay() };
 };
-const allowedPermissions = [
-  "dashboard:read", "trips:read", "trips:create", "trips:update", "trips:close",
-  "lrs:read", "lrs:create", "lrs:update", "finance:read", "finance:update",
-  "payments:read", "payments:create",
+const permissionGroups = [
+  {
+    title: "Booking dashboard",
+    description: "View the selected site's booking overview.",
+    permissions: [["dashboard:read", "View dashboard"]],
+  },
+  {
+    title: "Trips",
+    description: "View trips, create trips, edit trip details, or close trips.",
+    permissions: [
+      ["trips:read", "View trips"],
+      ["trips:create", "Create trips"],
+      ["trips:update", "Edit trips"],
+      ["trips:close", "Close trips"],
+    ],
+  },
+  {
+    title: "Lorry receipts (LRs)",
+    description: "View, create, or edit LRs on the selected site.",
+    permissions: [
+      ["lrs:read", "View LRs"],
+      ["lrs:create", "Create LRs"],
+      ["lrs:update", "Edit LRs"],
+    ],
+  },
+  {
+    title: "Finance and payments",
+    description: "View site finance, update finance details, and manage payment records.",
+    permissions: [
+      ["finance:read", "View finance"],
+      ["finance:update", "Update finance"],
+      ["payments:read", "View payments"],
+      ["payments:create", "Record payments"],
+    ],
+  },
 ];
 
 function ReceivableGroups({ title, breakdown }) {
@@ -614,11 +645,17 @@ export default function SiteConsole({ user, adminOnly = false }) {
                     <input className={field} aria-label="Manager login ID" required minLength={3} value={managerForm.username}
                       onChange={(e) => setManagerForm({ ...managerForm, username: e.target.value })} />
                   </label>
-                  <label className="text-sm">Temporary password (12+ characters)
-                    <input className={field} aria-label="Temporary password (12+ characters)" type="password" required minLength={12} value={managerForm.password}
+                  <label className="text-sm">Manager password
+                    <input className={field} aria-label="Manager password" type="password" required value={managerForm.password}
                       onChange={(e) => setManagerForm({ ...managerForm, password: e.target.value })} />
                   </label>
                 </div>
+              )}
+              {(newSiteManager || (siteManagerTeamId && siteManagerTeamId !== "__new__"
+                && !managers.some((manager) => manager.team_member_id === siteManagerTeamId))) && (
+                <p className="text-xs text-muted">
+                  Any non-empty password is accepted. Short passwords are easier to guess; the password is stored as a hash and shown once after creation.
+                </p>
               )}
               <Btn type="submit">Create site</Btn>
             </form>
@@ -664,48 +701,93 @@ export default function SiteConsole({ user, adminOnly = false }) {
           {siteId && <Card className="p-4">
             <h2 className="mb-3 font-semibold">Assign or replace the site manager</h2>
             <form onSubmit={assignManager} className="grid gap-3 md:grid-cols-4">
-              <input className={field} placeholder="Manager name" required value={managerForm.name}
-                onChange={(e) => setManagerForm({ ...managerForm, name: e.target.value })} />
-              <input className={field} placeholder="Username" required value={managerForm.username}
-                onChange={(e) => setManagerForm({ ...managerForm, username: e.target.value })} />
-              <input className={field} type="password" placeholder="Temporary password (12+ chars)" minLength="12"
-                value={managerForm.password} onChange={(e) => setManagerForm({ ...managerForm, password: e.target.value })} />
+              <label className="text-sm">Manager name
+                <input className={field} placeholder="Manager name" required value={managerForm.name}
+                  onChange={(e) => setManagerForm({ ...managerForm, name: e.target.value })} />
+              </label>
+              <label className="text-sm">Manager ID
+                <input className={field} placeholder="Username" required value={managerForm.username}
+                  onChange={(e) => setManagerForm({ ...managerForm, username: e.target.value })} />
+              </label>
+              <label className="text-sm">Manager password
+                <input className={field} type="password" aria-label="Manager password for assignment"
+                  placeholder={managers.some((manager) => manager.username === managerForm.username.trim().toLowerCase())
+                    ? "Leave blank to keep current" : "Required for a new login"}
+                  required={!managers.some((manager) => manager.username === managerForm.username.trim().toLowerCase())}
+                  autoComplete="new-password" value={managerForm.password}
+                  onChange={(e) => setManagerForm({ ...managerForm, password: e.target.value })} />
+              </label>
               <Btn type="submit">Assign manager</Btn>
             </form>
-            <p className="mt-2 text-xs text-muted">For a new manager, set a temporary password and share it securely. Replacing a manager revokes that site’s access without removing historical records.</p>
+            <p className="mt-2 text-xs text-muted">
+              For a new manager, use any non-empty password and share it securely. It is stored as a hash and shown once after assignment. Replacing a manager revokes that site’s access without removing historical records.
+            </p>
           </Card>}
           <Card className="p-4">
-            <h2 className="mb-3 font-semibold">Grant explicit cross-site access</h2>
-            <form onSubmit={grantAccess} className="grid gap-3 md:grid-cols-3">
-              <select className={field} required value={grantForm.username}
-                onChange={(e) => setGrantForm({ ...grantForm, username: e.target.value })}>
-                <option value="">Select manager</option>
-                {managers.filter((manager) => manager.active).map((manager) => (
-                  <option key={manager.username} value={manager.username}>{manager.name} ({manager.username})</option>
+            <h2 className="font-semibold">Manager site access</h2>
+            <p className="mt-1 text-sm text-muted">
+              Choose a manager and site, then tick only the actions that manager needs there.
+              This changes access for that site only; it does not grant access to every site.
+            </p>
+            <form onSubmit={grantAccess} className="mt-4 space-y-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="text-sm font-medium">Manager
+                  <select className={field} aria-label="Manager for site access" required value={grantForm.username}
+                    onChange={(e) => {
+                      const permissions = managers.find((manager) => manager.username === e.target.value)
+                        ?.site_permissions?.[grantForm.site_id];
+                      setGrantForm({
+                        ...grantForm,
+                        username: e.target.value,
+                        permissions: permissions || ["dashboard:read", "trips:read", "lrs:read"],
+                      });
+                    }}>
+                    <option value="">Select a manager</option>
+                    {managers.filter((manager) => manager.active).map((manager) => (
+                      <option key={manager.username} value={manager.username}>{manager.name} ({manager.username})</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm font-medium">Site
+                  <select className={field} aria-label="Site for manager access" required value={grantForm.site_id}
+                    onChange={(e) => {
+                      const existingPermissions = managers.find((manager) => manager.username === grantForm.username)?.site_permissions?.[e.target.value];
+                      setGrantForm({ ...grantForm, site_id: e.target.value,
+                        permissions: existingPermissions || ["dashboard:read", "trips:read", "lrs:read"] });
+                    }}>
+                    <option value="">Select a site</option>
+                    {sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {permissionGroups.map((group) => (
+                  <fieldset key={group.title} className="rounded-lg border border-line bg-canvas p-3">
+                    <legend className="px-1 text-sm font-semibold">{group.title}</legend>
+                    <p className="mb-3 text-xs text-muted">{group.description}</p>
+                    <div className="space-y-2">
+                      {group.permissions.map(([permission, label]) => (
+                        <label key={permission} className="flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-sm hover:bg-white">
+                          <input type="checkbox" className="h-4 w-4 accent-brand-700"
+                            aria-label={label} disabled={!grantForm.username || !grantForm.site_id}
+                            checked={grantForm.permissions.includes(permission)}
+                            onChange={(event) => setGrantForm({ ...grantForm, permissions: event.target.checked
+                              ? [...grantForm.permissions, permission]
+                              : grantForm.permissions.filter((value) => value !== permission) })} />
+                          <span>{label}<span className="ml-2 text-xs text-muted">({permission})</span></span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
                 ))}
-              </select>
-              <select className={field} required value={grantForm.site_id}
-                onChange={(e) => {
-                  const existingPermissions = managers.find((manager) => manager.username === grantForm.username)?.site_permissions?.[e.target.value];
-                  setGrantForm({ ...grantForm, site_id: e.target.value,
-                    permissions: existingPermissions || ["dashboard:read", "trips:read", "lrs:read"] });
-                }}>
-                <option value="">Select site</option>
-                {sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}
-              </select>
-              <Btn type="submit">Save access permissions</Btn>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
+                <p className="text-xs text-muted">Unticked actions are unavailable to this manager at this site.</p>
+                <Btn type="submit">Save site access</Btn>
+              </div>
             </form>
-            <div className="my-3 grid gap-2 sm:grid-cols-3">
-              {allowedPermissions.map((permission) => <label key={permission} className="text-xs">
-                <input type="checkbox" checked={grantForm.permissions.includes(permission)}
-                  onChange={(event) => setGrantForm({ ...grantForm, permissions: event.target.checked
-                    ? [...grantForm.permissions, permission]
-                    : grantForm.permissions.filter((value) => value !== permission) })} /> {permission}
-              </label>)}
-            </div>
-            <p className="mt-2 text-xs text-muted">A manager can access only the selected site and only the checked actions.</p>
             <h3 className="mt-4 border-t pt-4 font-semibold">Manager account register</h3>
-            <p className="mt-1 text-xs text-muted">Manager IDs, status, and assigned sites stay listed here. Passwords are shown only immediately after assignment/reset and cannot be retrieved later.</p>
+            <p className="mt-1 text-xs text-muted">Manager IDs, status, and assigned sites stay listed here. A newly set password is shown only once after assignment/reset; if it is lost, reset it to create a new one.</p>
             {temporaryCredential && <div className="mt-3 rounded-lg border border-brand-200 bg-brand-50 p-3" role="status" aria-live="polite">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -742,7 +824,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
                   </span>
                   <div className="flex gap-2">
                     <button className="text-brand-700 underline" onClick={async () => {
-                      const password = window.prompt("Enter a new temporary password (12+ characters):");
+                      const password = window.prompt("Enter a new manager password:");
                       if (!password) return;
                       try {
                         await api.post(`/sites/managers/${encodeURIComponent(manager.username)}/reset-password`, { password });

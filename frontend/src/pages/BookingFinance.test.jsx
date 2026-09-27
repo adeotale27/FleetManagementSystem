@@ -61,4 +61,30 @@ describe("BookingFinance", () => {
       params: expect.objectContaining({ from_date: expect.any(String), to_date: expect.any(String) }),
     }));
   });
+
+  it("renders a complete zero-value finance view for a new business with no sites", async () => {
+    api.get.mockImplementation((path) => path === "/sites"
+      ? Promise.resolve({ data: [] })
+      : Promise.resolve({ data: {
+        from_date: "2026-09-01", to_date: "2026-09-27", sites: [],
+        totals: {
+          recorded_bhada: "0.00", recorded_hamali: "0.00",
+          collected_bhada: "0.00", outstanding_bhada: "0.00",
+          trip_expenses: "0.00", pending_reconciliation: 0,
+        },
+        receivables: {
+          by_receiver: { rows: [] }, by_goods: { rows: [] },
+        },
+      } }));
+
+    await act(async () => {
+      root.render(<MemoryRouter><BookingFinance /></MemoryRouter>);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("Booking Finance");
+    expect(container.textContent).toContain("Bhada recorded");
+    expect(container.textContent).toContain("No site data for this period.");
+    expect(container.textContent).toContain("₹0");
+  });
 });

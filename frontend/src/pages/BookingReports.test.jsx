@@ -49,4 +49,18 @@ describe("BookingReports", () => {
       params: expect.objectContaining({ limit: 50, offset: 0, from_date: expect.any(String), to_date: expect.any(String) }),
     }));
   });
+
+  it("shows an empty report with zero matching records for a new business", async () => {
+    api.get.mockImplementation((path) => path === "/sites"
+      ? Promise.resolve({ data: [] })
+      : Promise.resolve({ data: { rows: [], total: 0 } }));
+
+    await act(async () => {
+      root.render(<MemoryRouter><BookingReports /></MemoryRouter>);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("0 matching LRs");
+    expect(container.textContent).toContain("No booking LRs match these filters.");
+  });
 });

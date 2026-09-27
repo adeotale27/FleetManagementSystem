@@ -25,6 +25,16 @@ def _ledger_csv(site_id="site-1", trip_id="trip-1", business_id="business-1"):
     return output.getvalue().encode("utf-8")
 
 
+def test_manager_password_models_accept_short_and_long_nonempty_passwords():
+    short_password = site_ops.ManagerAssignment(
+        name="Manager One", username="manager-one", password="x",
+    )
+    long_password = site_ops.ManagerPasswordReset(password="x" * 500)
+
+    assert short_password.password == "x"
+    assert long_password.password == "x" * 500
+
+
 def test_ledger_parser_accepts_versioned_scope_and_quoted_newlines():
     site = {"_id": "site-1", "business_id": "business-1"}
     trip = {"_id": "trip-1"}
@@ -112,7 +122,7 @@ def test_reassigning_existing_manager_hashes_supplied_password(monkeypatch):
     monkeypatch.setattr(site_ops, "_tenant_id", lambda _user: "business-1")
     monkeypatch.setattr(site_ops, "_replace_manager_access", replace_access)
     monkeypatch.setattr(site_ops, "_audit", audit)
-    monkeypatch.setattr(site_ops, "hash_pw", lambda _password: "bcrypt-hash")
+    monkeypatch.setattr(site_ops, "hash_manager_pw", lambda _password: "bcrypt-hash")
     monkeypatch.setattr(site_ops, "platform_db", SimpleNamespace(users=Users()))
     monkeypatch.setattr(site_ops, "db", SimpleNamespace(sites=Sites(), team=Team()))
 

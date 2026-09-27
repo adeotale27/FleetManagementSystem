@@ -7,6 +7,18 @@ from fastapi import HTTPException
 import auth
 
 
+def test_password_hash_supports_long_inputs_and_legacy_bcrypt_hashes():
+    password = "long-manager-password-" * 20
+    hashed = auth.hash_manager_pw(password)
+
+    assert hashed.startswith("bcrypt-sha256$")
+    assert auth.verify_pw(password, hashed)
+    assert not auth.verify_pw(f"{password}wrong", hashed)
+
+    legacy_hash = auth.bcrypt.hashpw(b"legacy-password", auth.bcrypt.gensalt()).decode()
+    assert auth.verify_pw("legacy-password", legacy_hash)
+
+
 def test_business_api_requires_owner(monkeypatch):
     async def resolve_owner(_credentials):
         return {"role": "owner", "username": "owner"}

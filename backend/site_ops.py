@@ -20,7 +20,7 @@ from pymongo.errors import DuplicateKeyError
 
 import ledger as L
 import storage as S
-from auth import hash_pw, site_user
+from auth import hash_manager_pw, site_user
 from db import current_db_name, db, new_id, now_iso, platform_db
 
 router = APIRouter()
@@ -73,7 +73,7 @@ class SiteUpdate(StrictModel):
 class ManagerAssignment(StrictModel):
     name: str = Field(min_length=2, max_length=100)
     username: str = Field(min_length=3, max_length=60)
-    password: Optional[str] = Field(default=None, min_length=12, max_length=128)
+    password: Optional[str] = Field(default=None, min_length=1)
     team_member_id: Optional[str] = Field(default=None, min_length=1, max_length=100)
     permissions: list[str] = Field(default_factory=lambda: list(DEFAULT_MANAGER_PERMISSIONS))
 
@@ -84,7 +84,7 @@ class ManagerAccess(StrictModel):
 
 
 class ManagerPasswordReset(StrictModel):
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=1)
 
 
 class TripCreate(StrictModel):
@@ -621,9 +621,7 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
         raise HTTPException(409, "That username already belongs to another account")
     password = body.password or ""
     if not existing and not password:
-        raise HTTPException(422, "A password of at least 12 characters is required for a new manager")
-    if password and len(password.encode("utf-8")) > 72:
-        raise HTTPException(422, "Password must be no more than 72 UTF-8 bytes for bcrypt")
+        raise HTTPException(422, "A password is required for a new manager")
     if existing:
         update_fields = {
             "name": _normalize_label(body.name, "Manager name", 100),
@@ -632,7 +630,7 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
         if body.team_member_id:
             update_fields["team_member_id"] = body.team_member_id
         if password:
-            update_fields["password"] = hash_pw(password)
+            update_fields["password"] = hash_manager_pw(password)
         await platform_db.users.update_one(
             {"_id": username, "tenant_id": business_id},
             {"$set": update_fields},
@@ -640,7 +638,7 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
     else:
         await platform_db.users.insert_one({
             "_id": username, "name": _normalize_label(body.name, "Manager name", 100),
-            "password": hash_pw(password), "role": "site_manager",
+            "password": hash_manager_pw(password), "role": "site_manager",
             "tenant_id": business_id, "active": True, "site_ids": [],
             "site_permissions": {}, "created_at": now_iso(),
             **({"team_member_id": body.team_member_id} if body.team_member_id else {}),
@@ -704,11 +702,9 @@ async def reset_manager_password(
     business_id = _tenant_id(u)
     await _manager_user(username, business_id)
     password = payload.password
-    if len(password.encode("utf-8")) > 72:
-        raise HTTPException(422, "Password must be no more than 72 UTF-8 bytes for bcrypt")
     await platform_db.users.update_one(
         {"_id": username, "tenant_id": business_id, "role": "site_manager"},
-        {"$set": {"password": hash_pw(password)}},
+        {"$set": {"password": hash_manager_pw(password)}},
     )
     site = await db.sites.find_one({"business_id": business_id, "manager_username": username})
     if site:
