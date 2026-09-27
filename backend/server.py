@@ -1,46 +1,163 @@
 import os
+import re
+import traceback
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import ledger as L
 import storage as S
-from auth import current_user, hash_pw, make_token, require_super, seed_owner, verify_pw
+from auth import current_user, hash_pw, make_token, require_super, seed_owner, site_user, verify_pw
 from db import PRIMARY_TENANT, db, new_id, now_iso, platform_db, ser, sers, tenant_db, tenant_db_name, tenant_key, today
 
 app = FastAPI(title="Fleet Management System")
 api = APIRouter(prefix="/api")
+from site_ops import initialize_site_storage, router as site_router
+
+app.include_router(site_router, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
 
+_SENSITIVE_VALUE = re.compile(
+    r"(?i)([\"']?[A-Za-z0-9_.-]*(?:password|passwd|token|authorization|secret)"
+    r"[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)"
+    r"(?:(?:Bearer)\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,;}]+)"
+)
+_BEARER_TOKEN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_URI_CREDENTIALS = re.compile(r"(?i)(://[^:/@\s]+:)[^@/\s]+(@)")
+_JWT = re.compile(
+    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}(?![A-Za-z0-9_-])"
+)
+
+
+def _redact_error_text(value):
+    text = str(value)
+    text = _SENSITIVE_VALUE.sub(r"\1[REDACTED]", text)
+    text = _URI_CREDENTIALS.sub(r"\1[REDACTED]\2", text)
+    text = _JWT.sub("[REDACTED]", text)
+    return _BEARER_TOKEN.sub("Bearer [REDACTED]", text)
+
+
+async def _record_server_error(request, status, reference_id, detail, stack=""):
+    try:
+        await platform_db.error_logs.insert_one({
+            "_id": new_id(),
+            "status": status,
+            "path": request.url.path,
+            "method": request.method,
+            "detail": f"Reference {reference_id}: {_redact_error_text(detail)}",
+            "traceback": _redact_error_text(stack) if stack else "",
+            "reference_id": reference_id,
+            "created_at": now_iso(),
+        })
+    except Exception:
+        pass
+
+
+def _server_error_response(reference_id):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "The server could not complete this request. Please try again.",
+            "reference_id": reference_id,
+        },
+        headers={"X-Reference-ID": reference_id},
+    )
+
+
+def _safe_client_error_detail(response):
+    status = response.status_code
+    if status >= 500 or status < 400:
+        return ""
+    detail = ""
+    body = getattr(response, "body", b"")
+    try:
+        if body:
+            payload = json.loads(body.decode("utf-8"))
+            detail = payload.get("detail", "") if isinstance(payload, dict) else ""
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if isinstance(detail, str):
+        return _redact_error_text(detail)[:400]
+    if isinstance(detail, list):
+        messages = []
+        for item in detail:
+            if not isinstance(item, dict):
+                if isinstance(item, str):
+                    messages.append(_redact_error_text(item)[:200])
+                continue
+            # Validation input/context can contain private values; retain only
+            # the field location and standard diagnostic message.
+            location = item.get("loc")
+            message = item.get("msg")
+            if isinstance(location, (list, tuple)):
+                location = ".".join(str(part) for part in location if part not in {"body", "query", "path"})
+            else:
+                location = ""
+            safe_message = _redact_error_text(message)[:200] if isinstance(message, str) else ""
+            if location or safe_message:
+                messages.append(": ".join(part for part in (location[:160], safe_message) if part))
+        return "; ".join(messages)[:400]
+    return ""
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code < 500:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": jsonable_encoder(exc.detail)},
+            headers=exc.headers,
+        )
+    reference_id = getattr(request.state, "reference_id", new_id())
+    await _record_server_error(
+        request, exc.status_code, reference_id, exc.detail,
+        f"{type(exc).__name__}: {exc.detail}",
+    )
+    response = _server_error_response(reference_id)
+    if exc.headers:
+        response.headers.update(exc.headers)
+    return response
+
 
 @app.middleware("http")
 async def log_failures(request: Request, call_next):
+    request.state.reference_id = new_id()
     try:
         response = await call_next(request)
     except Exception as e:
-        try:
-            await platform_db.error_logs.insert_one({
-                "_id": new_id(), "status": 500, "path": request.url.path,
-                "method": request.method, "detail": str(e)[:400], "created_at": now_iso(),
-            })
-        except Exception:
-            pass
-        raise
-    if response.status_code >= 500:
-        try:
-            await platform_db.error_logs.insert_one({
-                "_id": new_id(), "status": response.status_code, "path": request.url.path,
-                "method": request.method, "detail": "", "created_at": now_iso(),
-            })
-        except Exception:
-            pass
+        reference_id = request.state.reference_id
+        await _record_server_error(
+            request, 500, reference_id, str(e),
+            "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+        )
+        return _server_error_response(reference_id)
+    if response.status_code >= 500 and not response.headers.get("X-Reference-ID"):
+        reference_id = request.state.reference_id
+        await _record_server_error(
+            request, response.status_code, reference_id,
+            f"Server returned HTTP {response.status_code} without an exception detail.",
+        )
+        response = _server_error_response(reference_id)
+    elif (
+        400 <= response.status_code < 500
+        and request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+        and not request.url.path.rstrip("/").endswith("/auth/login")
+    ):
+        await _record_server_error(
+            request, response.status_code, request.state.reference_id,
+            _safe_client_error_detail(response),
+        )
     return response
 
 DEFAULT_SETTINGS = {
@@ -103,7 +220,9 @@ async def next_number(kind):
 async def startup():
     await seed_owner()
     await get_settings()
+    await initialize_site_storage()
     for c, f in [("trips", "trip_no"), ("lrs", "lr_no"), ("ledger", "entity_id"),
+                 ("lrs", "trip_id"), ("expenses", "trip_id"), ("fuel", "trip_id"),
                  ("cashbook", "date"), ("parties", "name")]:
         try:
             await db[c].create_index(f)
@@ -122,6 +241,8 @@ async def login(body: LoginIn):
     user = await platform_db.users.find_one({"_id": body.username.strip().lower()})
     if not user or not verify_pw(body.password, user["password"]):
         raise HTTPException(status_code=401, detail="Wrong username or password")
+    if user.get("active") is False:
+        raise HTTPException(status_code=403, detail="This account has been deactivated")
     tenant = await platform_db.tenants.find_one({"_id": user.get("tenant_id")}) if user.get("tenant_id") else None
     if tenant and tenant.get("license_status") != "Active":
         raise HTTPException(status_code=403, detail="Licence is not active. Please contact the platform owner.")
@@ -132,7 +253,7 @@ async def login(body: LoginIn):
 
 
 @api.get("/auth/me")
-async def me(u=Depends(current_user)):
+async def me(u=Depends(site_user)):
     return u
 
 
@@ -296,6 +417,32 @@ async def find_or_create_party(name, mobile=None, extra=None):
 
 # ------------------------------------------------------------------ trips
 ACTIVE_TRIP = ["Assigned", "Started", "In Transit", "Delivered"]
+
+
+async def _trip_financial_totals(trip_ids):
+    """Aggregate LR and trip-cost totals only for trips on the current page."""
+    if not trip_ids:
+        return {}, {}
+
+    trip_id_filter = {"$in": trip_ids}
+    lr_counts = {}
+    async for r in db.lrs.aggregate([
+        {"$match": {"cancelled": False, "trip_id": trip_id_filter}},
+        {"$group": {"_id": "$trip_id", "n": {"$sum": 1}, "f": {"$sum": "$freight"}}},
+    ]):
+        lr_counts[r["_id"]] = (r["n"], round(r["f"], 2))
+
+    cost = {}
+    for coll in ("expenses", "fuel"):
+        async for r in db[coll].aggregate([
+            {"$match": {
+                "cancelled": False,
+                "trip_id": {"$nin": [None, ""], **trip_id_filter},
+            }},
+            {"$group": {"_id": "$trip_id", "t": {"$sum": "$amount"}}},
+        ]):
+            cost[r["_id"]] = round(cost.get(r["_id"], 0) + r["t"], 2)
+    return lr_counts, cost
 
 
 async def resolve_endpoint(payload, key):
@@ -472,7 +619,8 @@ async def list_trips(q: Optional[str] = None, status: Optional[str] = None,
                      vehicle_id: Optional[str] = None, driver_id: Optional[str] = None,
                      route_id: Optional[str] = None, mode: Optional[str] = None,
                      trip_type: Optional[str] = None, frm: Optional[str] = None,
-                     to: Optional[str] = None, limit: int = 300, u=Depends(current_user)):
+                     to: Optional[str] = None,
+                     limit: int = Query(300, ge=1, le=500), u=Depends(current_user)):
     query = {}
     for k, v in [("status", status), ("vehicle_id", vehicle_id), ("driver_id", driver_id),
                  ("route_id", route_id), ("mode", mode), ("trip_type", trip_type)]:
@@ -488,15 +636,7 @@ async def list_trips(q: Optional[str] = None, status: Optional[str] = None,
         query["$or"] = [{f: {"$regex": q, "$options": "i"}} for f in
                         ("trip_no", "vehicle_no", "driver_name", "from_name", "to_name", "party_name")]
     rows = sers(await db.trips.find(query).sort("created_at", -1).to_list(limit))
-    lr_counts = {}
-    async for r in db.lrs.aggregate([{"$match": {"cancelled": False}},
-                                     {"$group": {"_id": "$trip_id", "n": {"$sum": 1}, "f": {"$sum": "$freight"}}}]):
-        lr_counts[r["_id"]] = (r["n"], round(r["f"], 2))
-    cost = {}
-    for coll in ("expenses", "fuel"):
-        async for r in db[coll].aggregate([{"$match": {"cancelled": False, "trip_id": {"$nin": [None, ""]}}},
-                                           {"$group": {"_id": "$trip_id", "t": {"$sum": "$amount"}}}]):
-            cost[r["_id"]] = round(cost.get(r["_id"], 0) + r["t"], 2)
+    lr_counts, cost = await _trip_financial_totals([r["id"] for r in rows])
     for r in rows:
         n, freight = lr_counts.get(r["id"], (0, 0))
         r["lr_count"] = n
@@ -1535,7 +1675,7 @@ DEFAULT_FEATURES = {
 
 
 @api.get("/me")
-async def me_profile(u=Depends(current_user)):
+async def me_profile(u=Depends(site_user)):
     tenant = await platform_db.tenants.find_one({"_id": u.get("tenant_id")}) if u.get("tenant_id") else None
     feats = {**DEFAULT_FEATURES, **((tenant or {}).get("features") or {})}
     company = {}
@@ -1544,7 +1684,8 @@ async def me_profile(u=Depends(current_user)):
         company = s.get("company") or {}
     return {"user": {"username": u["username"], "name": u.get("name"), "role": u.get("role"),
                      "tenant_id": u.get("tenant_id"), "tenant_name": (tenant or {}).get("name", "") or company.get("name", ""),
-                     "photo": company.get("owner_photo", "")},
+                     "photo": company.get("owner_photo", ""), "site_ids": u.get("site_ids", []),
+                     "site_permissions": u.get("site_permissions", {})},
             "features": feats,
             "branding": {"logo": company.get("logo", ""), "name": company.get("name", "")},
             "tenant": {"plan": (tenant or {}).get("plan", ""), "license_status": (tenant or {}).get("license_status", ""),
@@ -1571,6 +1712,8 @@ async def upload_file(kind: str = "misc", file: UploadFile = File(...), u=Depend
 
 @api.get("/files/{path:path}")
 async def serve_file(path: str):
+    if "/site-ledgers/" in f"/{path.lstrip('/')}":
+        raise HTTPException(404, "File not found")
     try:
         data, ctype = await run_in_threadpool(S.get_object, path)
     except Exception:

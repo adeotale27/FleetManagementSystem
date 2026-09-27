@@ -9,6 +9,7 @@ Fleet Manager is a browser-based React single-page application, a Python FastAPI
 ```mermaid
 flowchart LR
     Owner["Business owner browser"]
+    Manager["Site manager browser"]
     Super["Platform owner browser"]
     React["React 18 SPA<br/>React Router · Tailwind · Recharts"]
     API["FastAPI application<br/>backend/server.py"]
@@ -20,10 +21,15 @@ flowchart LR
     Disk[("backend/data/uploads")]
     Maps["Google Maps JS API<br/>optional browser integration"]
     GPS["WheelsEye API<br/>optional server integration"]
+    Feedback["Global operation notices<br/>top-right toast host"]
+    ErrorLog[("platform_db.error_logs<br/>sanitized server failures + reference ID")]
 
     Owner --> React
+    Manager --> React
     Super --> React
     React -->|"HTTP /api · bearer token"| API
+    API -->|"operation result"| React
+    React --> Feedback
     API --> Auth
     API --> Tenant
     Tenant -->|"platform_db + active tenant DB"| Mongo
@@ -33,6 +39,8 @@ flowchart LR
     Files --> Disk
     React -. "optional autocomplete / map pins" .-> Maps
     API -. "per-vehicle current-location lookup" .-> GPS
+    API -. "unexpected server error" .-> ErrorLog
+    Super -. "authorized error review" .-> ErrorLog
 ```
 
 ### Repository map
@@ -40,6 +48,7 @@ flowchart LR
 | Path | Responsibility |
 |---|---|
 | `backend/server.py` | FastAPI app, `/api` routes, request middleware, settings defaults, request orchestration, reporting and aggregation. |
+| `backend/site_ops.py` | Additive multi-site API: owner/manager authorization, site/trip/LR operations, booking board data, trip expenses, payments, audit, migration, and staged ledger reconciliation. |
 | `backend/auth.py` | Password hashing/verification, JWT issue/verification, user seeding, authenticated-user lookup, platform-role dependency. |
 | `backend/db.py` | MongoDB client and platform DB, tenant database naming/context, ID/date/serialization helpers. |
 | `backend/ledger.py` | Ledger/cashbook postings, reversals, statements and derived balances. |
@@ -48,8 +57,8 @@ flowchart LR
 | `backend/tests/` | API-level multitenancy, auth, business-report and platform tests. They require a reachable configured API. |
 | `frontend/src/App.js` | Login state, role-dependent routes and app shell composition. |
 | `frontend/src/components/` | Shared layout, controls, forms, location picker and quick-entry UI. |
-| `frontend/src/pages/` | Dashboard, business modules, profiles, login and platform console screens. |
-| `frontend/src/lib/` | Axios API client, fetch/master hooks, formatting and exports. |
+| `frontend/src/pages/` | Dashboard, business modules, profiles, login, platform console, Bookings Window Board/site administration, trip/LR operations and print views. |
+| `frontend/src/lib/` | Axios API client with operation feedback, fetch/master hooks, formatting and exports. |
 | `frontend/package.json` | React toolchain/dependencies and frontend package version. |
 | `scripts/smoke.py` | Manual end-to-end smoke flow against a running backend. |
 | `memory/PRD.md` | Product requirements/history and backlog; validate it against current code before treating backlog items as current behavior. |
@@ -66,11 +75,13 @@ flowchart TD
     Me --> Valid{"Authenticated?"}
     Valid -->|"No"| Login
     Valid -->|"Yes: owner"| Shell["Business app shell"]
+    Valid -->|"Yes: site_manager"| SiteShell["Assigned-site shell"]
     Valid -->|"Yes: superadmin"| PlatformShell["Platform shell"]
     Login --> AuthPost["POST /api/auth/login"]
     AuthPost --> Store["Store returned JWT"]
     Store --> Me
-    Shell --> Dashboard["Dashboard"]
+    Shell --> SystemDashboard["Bookings Window Board · /sites"]
+    Shell --> Dashboard["Office dashboard · /dashboard"]
     Shell --> Trips["Trips & LR"]
     Shell --> Fleet["Vehicles"]
     Shell --> Parties["Parties"]
@@ -78,6 +89,9 @@ flowchart TD
     Shell --> Finance["Finance"]
     Shell --> Reports["Reports"]
     Shell --> Settings["Office settings"]
+    SiteShell --> SiteConsole["Site operations · /sites"]
+    SiteConsole --> SiteTrips["Assigned site trips"]
+    SiteTrips --> SiteLRs["Site trip LRs"]
     PlatformShell --> Licences["Licences and tenant activity"]
     PlatformShell --> PlatformSettings["Platform console"]
 ```
@@ -111,6 +125,7 @@ Authentication facts:
 
 - Password hashes use bcrypt. JWTs use HS256 and the configured `JWT_SECRET`; the current token expiry is 30 days.
 - `current_user` looks up the user and licence in the platform database and sets the tenant database for a business user.
+- `site_user` resolves the same authenticated principal for the additive site API. `current_user` rejects the `site_manager` role, which prevents site managers from using legacy owner endpoints even if they call them directly.
 - `/api/platform/...` routes use `require_super`, which rejects non-superadmin roles.
 - `/api/health` is outside the `/api` router. Login and static file retrieval do not require `current_user`; review file exposure implications before changing upload behavior.
 - The per-tenant feature map is merged in `/api/me` and used by the frontend shell; it is not a backend endpoint policy.
@@ -123,7 +138,7 @@ Authentication facts:
 | Primary tenant's business data | `<DB_NAME>` | Tenant `naidu` maps to base database |
 | Other tenants' business data | `<DB_NAME>_<tenant_id>` | Separate tenant collections; tenant IDs are generated from business/owner names with uniqueness suffixes |
 
-Operational collections referenced by the code include `settings`, `trips`, `lrs`, `vehicles`, `drivers`, `team`, `parties`, `fuel_pumps`, `partners`, `receipts`, `handovers`, `expenses`, `fuel`, `payments`, `advances`, `tpl`, `ledger`, `cashbook`, and `files`. Keep collection ownership tenant-local unless a deliberate platform-wide dataset is designed and documented.
+Operational collections referenced by the code include `settings`, `trips`, `lrs`, `vehicles`, `drivers`, `team`, `parties`, `fuel_pumps`, `partners`, `receipts`, `handovers`, `expenses`, `fuel`, `payments`, `advances`, `tpl`, `ledger`, `cashbook`, and `files`. Additive multi-site collections are `sites`, `site_trips`, `site_lrs`, `site_counters`, `site_receivers`, `site_categories`, `site_payments`, `site_financial_events`, `site_audit_events`, `site_ledger_imports`, and `site_migrations`. Site-manager identities remain in platform `users`, with a tenant ID, active flag, assigned `site_ids`, and per-site `site_permissions`. Keep collection ownership tenant-local unless a deliberate platform-wide dataset is designed and documented.
 
 ## 4. Business data and money flow
 
@@ -184,7 +199,7 @@ All business API routes are mounted under `/api`. Most business reads/writes dep
 | Tracking integration | `/tracking/live` (WheelsEye tokens are configured per vehicle) |
 | Platform owner | `/platform/{summary|tenants|errors}`, `/platform/tenants`, `/platform/tenants/{id}`, `/platform/tenants/{id}/reset-password` |
 
-`backend/server.py` currently owns route definitions and most orchestration. `auth.py`, `db.py`, `ledger.py`, and `storage.py` are the supporting modules. When extracting routes into routers or adding a new service, preserve the auth dependency, tenant context, financial posting/cancellation behavior, and tests.
+`backend/server.py` owns legacy routes and mounts the additive site router from `backend/site_ops.py`. `auth.py`, `db.py`, `ledger.py`, and `storage.py` are supporting modules. When extracting routes into routers or adding a new service, preserve the auth dependency, tenant context, financial posting/cancellation behavior, and tests.
 
 ## 6. Design and feature map
 
@@ -224,6 +239,9 @@ flowchart TB
 - `Reports.jsx`: report selection, filters and exports.
 - `Settings.jsx`: business configuration and branding.
 - `Platform.jsx`: platform licence operations and platform settings.
+- `SiteConsole.jsx`: owner system dashboard, site/manager administration, access grants, legacy migration preview and site trip list.
+- `SiteTrip.jsx`: site trip lifecycle, LR booking, per-trip CSVs and staged ledger import.
+- `SiteLRPage.jsx`: editable LR details, customer print view and authorized payment events.
 
 Shared `components/ui.jsx`, `MasterForm.jsx`, and `QuickForms.jsx` provide common controls/forms. `LocationPicker.jsx` progressively enables map lookup if the optional Google Maps key is configured.
 
@@ -254,3 +272,142 @@ For every architecture-affecting feature/change, add a dated note here stating t
 
 - Recorded the current React → FastAPI → MongoDB architecture, authentication/tenant flow, financial posting model, navigation design, integrations, and known operational boundaries.
 - This release documents the existing implementation; it does not introduce an application runtime or data-model change.
+
+## 10. Multi-site transport architecture (v1.2.0)
+
+The multi-site feature extends, rather than replaces, the existing database-per-business tenancy model. It does not introduce a second database or rewrite legacy trip/LR collections. Owner site APIs use `site_user` plus owner-role checks; manager APIs additionally verify tenant, active site assignment, and per-site action permissions on every request. Legacy business APIs continue to use `current_user`, which denies the `site_manager` role. Managers receive no site access unless assigned or explicitly granted by the owner.
+
+### Data and relationship diagram
+
+```mermaid
+flowchart TD
+    Super["Platform superadmin"] -->|"provisions tenant / owner"| Platform[("<DB_NAME>_platform<br/>users · tenants")]
+    Owner["Business owner"] -->|"JWT subject resolved"| Auth["site_user + owner check"]
+    Manager["Site manager"] -->|"JWT subject resolved"| Auth
+    Auth --> Tenant["Tenant ContextVar"]
+    Tenant --> Business[("<DB_NAME>_<tenant><br/>existing business data")]
+    Business --> Sites["sites<br/>business_id · stable site ID · unique code"]
+    Platform --> Managers["users<br/>site_manager · tenant_id<br/>site_ids · site_permissions"]
+    Managers -->|"explicit site/action grant"| Auth
+    Sites -->     Trips["site_trips<br/>timezone · operating date · atomic daily sequence<br/>optional vehicle/driver IDs + snapshots"]
+    Trips --> LRs["site_lrs<br/>stable LR ID · daily sequence<br/>receiver identity · container lines"]
+    LRs --> Payments["site_payments<br/>append-only payment / reversal events"]
+    Trips --> TripExpense["trip expenses<br/>source record + responsible user"]
+    TripExpense --> Ledger["Existing ledger + cashbook<br/>source-linked postings"]
+    LRs --> Imports["site_ledger_imports<br/>hash · preview · apply state · row progress"]
+    Trips --> Audit["site_audit_events"]
+    LRs --> Audit
+    Payments --> Audit
+    Imports --> Audit
+```
+
+### Authorization request flow
+
+```mermaid
+sequenceDiagram
+    participant U as Owner or site manager
+    participant API as FastAPI /api/sites/*
+    participant Auth as site_user
+    participant P as Platform users/tenants
+    participant T as Current business DB
+    U->>API: Bearer JWT + scoped request
+    API->>Auth: Resolve principal
+    Auth->>P: Read active user, role, tenant and current grants
+    Auth->>P: Check active business licence
+    Auth->>T: Set tenant DB ContextVar
+    API->>T: Match business_id + site_id + immutable record IDs
+    API->>API: Check owner role or assigned site/action permission
+    API-->>U: Scoped result or explicit 403/404
+```
+
+### Trip, LR, ledger and money flow
+
+```mermaid
+flowchart LR
+    Site["Owner creates/activates site<br/>code + IANA timezone"]
+    Manager["Owner assigns site manager<br/>bcrypt credential + action grants"]
+    Trip["Open trip<br/>atomic site/day sequence"]
+    LR["LR booking<br/>immutable ID + containers<br/>receiver duplicate confirmation"]
+    Print["A4 customer LR<br/>rent if entered; no hamali"]
+    CSV["Per-trip CSV set<br/>goods · receivers · summary · template"]
+    Preview["Owner preview<br/>scope, IDs, amounts and duplicates"]
+    Apply["Confirmed staged apply<br/>idempotent event IDs + row progress"]
+    Money["site_payments<br/>partial receipts + reversals"]
+    Expense["Trip expense<br/>source + responsible actor"]
+    Ledger[("Existing ledger + cashbook<br/>site/business reference metadata")]
+    Audit[("site_audit_events")]
+
+    Site --> Manager --> Trip --> LR
+    LR --> Print
+    Trip --> CSV --> Preview --> Apply
+    LR --> Money --> Ledger
+    Trip --> Expense --> Ledger
+    Expense -. "post exactly once; audit actor/source" .-> Audit
+    Apply --> Ledger
+    Site -. "material changes" .-> Audit
+    Trip -. "material changes" .-> Audit
+    LR -. "material changes" .-> Audit
+    Money -. "append-only event" .-> Audit
+    Apply -. "preview, decisions, outcome" .-> Audit
+```
+
+Trip and LR counters use atomic MongoDB increments with unique compound indexes. Trip references are `<SITE><DDMMYYYY>-<NN>`; LR references are `<SITE>LR<DDMMYYYY>-<NN>`. MongoDB IDs remain stable relationships; truck numbers and display labels are attributes, not keys.
+
+### API, money and reconciliation boundaries
+
+- The site router mounted by `server.py` exposes site/manager administration, the Bookings Window Board summaries, authorized tenant vehicle/driver choice data, trip lifecycle and expenses, categories, LR CRUD, payments/reversals, audit history, explicit legacy migration, CSV exports, and import upload/preview/edit/commit/original-download.
+- Site queries include authenticated business/site scope at the service/database layer. Manager grants default to no cross-site access. Business-wide dashboards, manager administration, ledger import/export, and legacy migration are owner-only.
+- New currency values use `Decimal` in application logic and MongoDB `Decimal128`. The existing `ledger.py` interface accepts floats for postings, so site finance calls the existing helper with optional site/business metadata; balances use Decimal-safe LR and payment records, not browser totals.
+- Site trip expenses follow the existing ledger/cashbook source-posting conventions. Preserve tenant/site/trip references and the authenticated recorder on each expense; idempotent source references prevent duplicate posting on retries. Trip liability/accountability is tied to the recorded responsible person and must not be inferred solely from an editable driver label.
+- Rent adjustments post deltas through the existing party ledger. Actual payments and owner reversals are separate immutable `site_payments` events linked to LR/trip/site/business. Hamali is a separate recorded charge and is not posted as collected bhada or classified as a cost.
+- Ledger interchange uses versioned, scoped CSV files with immutable `lr_id`, `trip_id`, and `site_id` fields. Because CSV has no worksheets, goods-wise, receiver-wise, summary, and import-template files are separate downloads. The parser validates the whole file before preview; the owner resolves row errors, acknowledges missing LRs, and confirms. Imports are file-hash idempotent. Deterministic row events and persisted progress support resuming when multi-document MongoDB transactions are unavailable.
+- Report CSVs use a header-first layout with explicit scope and units; the goods summary and per-LR/container goods-detail report serve different grains. Detailed rows do not repeat LR-level monetary totals per container. The versioned import-template alone is accepted for reconciliation; its headers, metadata, and paid-total semantics remain stable.
+- Successful/failed frontend mutations use a shared Axios feedback path and top-right toast host. Unexpected backend exceptions receive a reference ID and a sanitized platform error-log entry; do not persist bearer tokens, request bodies, passwords, or other secrets in the log.
+- Original ledger files use the private `fleet-manager/<business>/site-ledgers/` path. The unauthenticated legacy file handler rejects this path; an owner-checked API serves originals. The underlying local filesystem storage is not shared durable production storage.
+
+### Migration and indexing
+
+Legacy preview reports records lacking a site assignment in selected tenant-local collections. The owner creates a default site and explicitly confirms migration. Apply fills `site_id` and `business_id` only when `site_id` is missing/null, stores counts and audit metadata, and can repeat/resume without reassigning already-scoped records. It does not silently choose or create a site.
+
+Indexes cover unique business/site codes; unique site/day trip and LR sequences/references; receiver/date lookups; business/site/trip LR and payment access; payment idempotency and reversal keys; category uniqueness; audit/import timelines; and unique site financial posting references. `initialize_site_storage()` creates tenant-local indexes once per active database and for newly licensed tenants.
+
+Configuration change in v1.2.0: `tzdata>=2025.2,<2027` provides IANA timezone data on Windows hosts.
+
+### Known limitations
+
+- Existing businesses need an owner-created default site before previewing and explicitly applying legacy site assignment.
+- CSV is the supported interchange format; no XLSX writer or multi-sheet workbook is implemented.
+- Hamali accounting meaning is unconfirmed; it remains separate from collected bhada, profit and cash flow.
+- Original ledger files use the existing local storage provider; production needs private, durable, shared storage and backup/retention controls.
+- No live MongoDB integration suite was run for this change in this environment. Offline unit tests and frontend production build are the executed checks; production multi-worker/transaction behavior needs deployment verification.
+
+### v1.2.0 — 27 September 2026
+
+- Added the site/business data and authorization boundaries, manager grants, trip/LR lifecycle, staged ledger/payment flow, migration rules, and deployment limitations described above.
+
+### v1.2.1 — 27 September 2026
+
+- Kept `site_payment_reversal_unique` as a unique sparse index, matching existing tenant DB index metadata so startup can safely reuse it.
+- Rejected invalid payment-balance events are explicitly marked and excluded from dashboard/payment aggregates. Owners can retry pending idempotent ledger/cashbook postings; reversals also resume safely after interrupted requests.
+
+### v1.2.2 — 27 September 2026
+
+- Fixed the site document serializer to retain each top-level MongoDB `_id` as API `id`, while continuing to omit nested internal IDs. This restores site listing and dashboard responses.
+- Added tenant-scoped trip resource lookup for vehicle/driver selectors; site trip records retain optional source master IDs and immutable truck/driver snapshots, with manual entry supported.
+- Added an opt-in destructive-by-design (writes-only) API acceptance test; it is disabled unless pointed explicitly at a disposable test service.
+
+### v1.3.0 — 27 September 2026
+
+- Reframed the owner `/sites` screen as the Bookings Window Board and added site/trip/LR and receiver-/goods-wise outstanding views; added mobile-focused trip/LR screens and optional LR contact phones.
+- Added source-linked, idempotently posted site trip expenses using the existing ledger/cashbook conventions, with actor attribution, audit history, and trip/site totals.
+- Added immediate LR print navigation through the browser print flow, retaining repeat printing and PDF saving.
+- Added operation-specific mutation toasts and reference-linked platform error logging for unexpected server failures and failed writes. Error logs omit request bodies/headers/query strings and redact sensitive fields; login failures and failed reads are not persisted as write errors.
+- Reworked report CSVs to use clear headers/scope/units and provide detailed goods/container rows. The existing immutable-ID import template format remains the only accepted reconciliation input. Validation: focused offline tests and frontend build; no live API/MongoDB workflow run.
+
+### v1.3.1 — 27 September 2026
+
+- Changed the site-trip expense idempotency index declaration to match the named partial index already present in deployed tenant databases. This repairs the reported startup failure without dropping/rebuilding the index or changing records.
+- Split route page code into lazy-loaded frontend chunks; avoid duplicate Board request cycles and avoid loading legacy trip masters/settings on the LR tab. The compiled application now emits a small entry bundle plus route chunks instead of placing every page in the entry chunk.
+- Scoped legacy `/trips` LR, expense, and fuel summary aggregations to the IDs in the requested trip page. Empty pages skip all related aggregation; supporting `trip_id` indexes allow bounded matching. Existing cancellation and financial-total semantics are unchanged.
+- Offline tests cover the query filters, totals, empty-page path, index specification, and page-size limits. No live MongoDB latency benchmark was run; production p50/p95 and query plans still need measurement with representative tenant data.
+- No storage migration, database reset, or data deletion is required. The existing tenant-per-database boundary and collection schemas are retained.

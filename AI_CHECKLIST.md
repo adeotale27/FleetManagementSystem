@@ -15,10 +15,20 @@ Follow this checklist for every retained change to Fleet Manager. Do not treat t
 
 - [ ] Search existing helpers, UI patterns, endpoint conventions, schema fields, tests, and docs before adding a duplicate implementation.
 - [ ] Trace the feature end-to-end: screen/form → API client → route → auth/tenant dependency → persistence/ledger/storage → response → display/report.
+- [ ] For latency reports, inspect browser request waterfalls and server/database query scope before changing storage. Bound aggregations to requested page IDs, select only needed fields, keep list endpoints paginated, and avoid sequentially awaiting independent reads when semantics permit.
 - [ ] For tenant-scoped code, confirm every read/write is routed through the authenticated tenant database. Keep platform-wide data limited to platform records.
+- [ ] For site-scoped code, verify backend authorization on every endpoint using the authenticated tenant, active site assignment, and required action permission. Never trust client-supplied role/business/site/owner IDs. Ensure list, detail, search, export, upload and download paths all enforce scope.
+- [ ] For manager assignment/replacement, preserve creator/audit identities, revoke old access, hash credentials, and verify replacement/deactivation behavior. Default cross-site access to denied; grants must identify site and action.
+- [ ] For legacy records without a site, implement a repeatable preview/report and explicit owner confirmation. Never silently choose or assign a default site.
 - [ ] For a new API route, specify method/path, input/output shape, validation, authorization, error cases, and tenant ownership.
 - [ ] For money-related work, identify the source document and exact ledger/cashbook effects. Reuse `backend/ledger.py`; derive displayed totals; cancel by reversing/marking records, never by deleting history.
+- [ ] For trip expenses, preserve a source record linked to tenant/site/trip, record the authenticated actor and accountable party, and make ledger/cashbook postings idempotent. Test retry behavior, reversals/cancellation, and trip/dashboard totals.
+- [ ] For ledger imports, match immutable IDs; validate the entire file before changes; enforce size/type/scope limits; preview discrepancies; require owner confirmation; protect source files; test idempotency and recovery. Escape spreadsheet formula prefixes in exports.
+- [ ] For site money, use Decimal-safe values and append-only payment/reversal events. Distinguish recorded, reconciled, collected and outstanding amounts; do not treat informational hamali as collected bhada or a cost without an established accounting rule.
+- [ ] For notification/error logging changes, distinguish validation errors from unexpected server failures, show actionable user-safe feedback with a reference ID for 5xx errors, and never persist request bodies, credentials, bearer tokens or private LR data in platform logs.
+- [ ] For trips/LRs, verify timezone-based daily sequencing is atomic, unique under concurrency, and independent of mutable truck/receiver display labels.
 - [ ] Consider existing data, duplicate submissions, cancel/edit behavior, date/number formats, mobile UX, empty/loading/error states, exports, permissions, and testability.
+- [ ] Treat existing business data as valuable: never reset/drop a tenant database for a suspected performance problem. Prefer compatible indexes and additive migrations; run `explain`/latency measurements on representative data before proposing storage rewrites.
 - [ ] If behavior, scope, compatibility, data migration, or external-service behavior is materially ambiguous, ask the user before choosing between reasonable alternatives.
 
 ## 3. Select and apply the release version
@@ -37,6 +47,10 @@ Follow this checklist for every retained change to Fleet Manager. Do not treat t
 - [ ] Update its Mermaid diagrams in the same change when their depicted flow changes; add a dated architecture change note for architecture-affecting work.
 - [ ] Update [README.md](README.md) when setup, configuration, operation, test commands, or user-facing navigation changes.
 - [ ] Update tests and relevant fixtures for changed behavior. Avoid documenting credentials; use synthetic/local test identities.
+- [ ] For multi-site changes, cover business/site isolation, manager assignment and revocation, numbering, trip lifecycle, CSV scope/duplicate/idempotency/recovery, payment arithmetic, printable privacy, and migration where applicable.
+- [ ] For site/trip/LR workflows, test site serialization and dashboard selectors, vehicle/driver dropdown and manual-entry paths, manager and owner trip edits, multiple LRs, ledger posting/export/import, payment events and dashboard totals as one end-to-end flow. Run write-enabled acceptance tests only against an explicitly disposable API/tenant.
+- [ ] For CSV exports, test exact headers and grouping grain, scope and unit labels, formula-injection handling, and confirm detailed line rows do not multiply LR-level money totals. Keep report exports distinct from the stable import-template contract.
+- [ ] For LR printing, test create-to-print navigation, repeat print/save-PDF controls, readable A4 output, and mobile browser/OS print behavior. Do not promise device-specific printer pairing beyond browser support.
 - [ ] Keep older changelog entries intact; append a new release entry rather than silently rewriting release history.
 
 ## 5. Verify before declaring completion

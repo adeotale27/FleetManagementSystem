@@ -67,7 +67,7 @@ async def seed_owner():
                       os.environ["OWNER_PASSWORD"], "owner", PRIMARY_TENANT)
 
 
-async def current_user(cred: HTTPAuthorizationCredentials = Depends(bearer)):
+async def _resolve_principal(cred: HTTPAuthorizationCredentials):
     if not cred:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
@@ -77,6 +77,8 @@ async def current_user(cred: HTTPAuthorizationCredentials = Depends(bearer)):
     user = await platform_db.users.find_one({"_id": data["sub"]})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if user.get("active") is False:
+        raise HTTPException(status_code=403, detail="This account has been deactivated")
     role = user.get("role", "owner")
     tenant_id = user.get("tenant_id")
     tenant = await platform_db.tenants.find_one({"_id": tenant_id}) if tenant_id else None
@@ -84,7 +86,20 @@ async def current_user(cred: HTTPAuthorizationCredentials = Depends(bearer)):
         raise HTTPException(status_code=403, detail="Licence is not active. Please contact the platform owner.")
     set_tenant(tenant_id)
     return {"username": user["_id"], "name": user.get("name", "Owner"), "role": role,
-            "tenant_id": tenant_id, "tenant_name": (tenant or {}).get("name", "")}
+            "tenant_id": tenant_id, "tenant_name": (tenant or {}).get("name", ""),
+            "site_ids": user.get("site_ids") or [],
+            "site_permissions": user.get("site_permissions") or {}}
+
+
+async def current_user(cred: HTTPAuthorizationCredentials = Depends(bearer)):
+    user = await _resolve_principal(cred)
+    if user["role"] == "site_manager":
+        raise HTTPException(status_code=403, detail="Site manager access is limited to site operations")
+    return user
+
+
+async def site_user(cred: HTTPAuthorizationCredentials = Depends(bearer)):
+    return await _resolve_principal(cred)
 
 
 async def require_super(u=Depends(current_user)):

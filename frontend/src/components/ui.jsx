@@ -7,7 +7,43 @@ import { money, dmy } from "../lib/format";
 
 /* ------------------------------------------------------------ toast */
 let pushToast = () => {};
-export const toast = (msg, tone = "ok") => pushToast(msg, tone);
+let pendingMutationSuccesses = [];
+let expectedApiErrors = new Map();
+
+export const toast = (msg, tone = "ok", options = {}) => {
+  const text = String(msg ?? "");
+  if (tone === "err" && options.apiError) {
+    const entry = expectedApiErrors.get(text) || { count: 0, timer: null };
+    entry.count += 1;
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => expectedApiErrors.delete(text), 1200);
+    expectedApiErrors.set(text, entry);
+  } else if (tone === "err") {
+    const entry = expectedApiErrors.get(text);
+    if (entry?.count) {
+      entry.count -= 1;
+      if (!entry.count) {
+        clearTimeout(entry.timer);
+        expectedApiErrors.delete(text);
+      }
+      return;
+    }
+  } else if (!options.mutationFallback && pendingMutationSuccesses.length) {
+    const pending = pendingMutationSuccesses.shift();
+    clearTimeout(pending.timer);
+  }
+  pushToast(text, tone);
+};
+
+export const scheduleMutationSuccess = (msg = "Changes saved successfully.") => {
+  const pending = {
+    timer: setTimeout(() => {
+      pendingMutationSuccesses = pendingMutationSuccesses.filter((entry) => entry !== pending);
+      toast(msg, "ok", { mutationFallback: true });
+    }, 700),
+  };
+  pendingMutationSuccesses.push(pending);
+};
 
 export function ToastHost() {
   const [items, setItems] = useState([]);
@@ -19,7 +55,7 @@ export function ToastHost() {
     };
   }, []);
   return (
-    <div className="fixed bottom-24 left-1/2 z-[100] flex w-[min(92vw,420px)] -translate-x-1/2 flex-col gap-2 md:bottom-6 md:left-auto md:right-6 md:translate-x-0">
+    <div className="fixed right-4 top-4 z-[100] flex w-[min(92vw,420px)] flex-col gap-2 md:right-6 md:top-6">
       {items.map((i) => (
         <div
           key={i.id}

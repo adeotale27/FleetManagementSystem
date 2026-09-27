@@ -1,25 +1,32 @@
-import React, { useEffect, useState } from "react";
+import React, { lazy, Suspense, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { api } from "./lib/api";
 import { ToastHost, Loader } from "./components/ui";
 import Layout from "./components/Layout";
-import Login from "./pages/Login";
-import Dashboard from "./pages/Dashboard";
-import Trips from "./pages/Trips";
-import TripForm from "./pages/TripForm";
-import TripDetail from "./pages/TripDetail";
-import LRForm from "./pages/LRForm";
-import LRView from "./pages/LRView";
-import Vehicles from "./pages/Vehicles";
-import VehicleDetail from "./pages/VehicleDetail";
-import Parties from "./pages/Parties";
-import PartyDetail from "./pages/PartyDetail";
-import Team from "./pages/Team";
-import PersonDetail from "./pages/PersonDetail";
-import Finance from "./pages/Finance";
-import Reports from "./pages/Reports";
-import Settings from "./pages/Settings";
-import Platform, { PlatformSettings } from "./pages/Platform";
+
+const Login = lazy(() => import("./pages/Login"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Trips = lazy(() => import("./pages/Trips"));
+const TripForm = lazy(() => import("./pages/TripForm"));
+const TripDetail = lazy(() => import("./pages/TripDetail"));
+const LRForm = lazy(() => import("./pages/LRForm"));
+const LRView = lazy(() => import("./pages/LRView"));
+const Vehicles = lazy(() => import("./pages/Vehicles"));
+const VehicleDetail = lazy(() => import("./pages/VehicleDetail"));
+const Parties = lazy(() => import("./pages/Parties"));
+const PartyDetail = lazy(() => import("./pages/PartyDetail"));
+const Team = lazy(() => import("./pages/Team"));
+const PersonDetail = lazy(() => import("./pages/PersonDetail"));
+const Finance = lazy(() => import("./pages/Finance"));
+const Reports = lazy(() => import("./pages/Reports"));
+const Settings = lazy(() => import("./pages/Settings"));
+const Platform = lazy(() => import("./pages/Platform"));
+const PlatformSettings = lazy(() => import("./pages/Platform").then((module) => ({
+  default: module.PlatformSettings,
+})));
+const SiteConsole = lazy(() => import("./pages/SiteConsole"));
+const SiteTrip = lazy(() => import("./pages/SiteTrip"));
+const SiteLRPage = lazy(() => import("./pages/SiteLRPage"));
 
 export default function App() {
   const [state, setState] = useState("checking");
@@ -46,22 +53,37 @@ export default function App() {
     <BrowserRouter>
       <ToastHost />
       {state !== "in" ? (
-        <Routes>
-          <Route path="/login" element={<Login onLogin={onLogin} />} />
-          <Route path="*" element={<Navigate to="/login" replace />} />
-        </Routes>
+        <Suspense fallback={<div className="grid h-screen place-items-center"><Loader label="Loading…" /></div>}>
+          <Routes>
+            <Route path="/login" element={<Login onLogin={onLogin} />} />
+            <Route path="*" element={<Navigate to="/login" replace />} />
+          </Routes>
+        </Suspense>
       ) : (
         <Layout user={user}>
-          <Routes>
-            {user?.role === "superadmin" ? (
-              <>
-                <Route path="/platform" element={<Platform />} />
-                <Route path="/settings" element={<PlatformSettings />} />
-                <Route path="*" element={<Navigate to="/platform" replace />} />
-              </>
-            ) : (
-              <>
-            <Route path="/" element={<Dashboard />} />
+          <Suspense fallback={<div className="grid min-h-[40vh] place-items-center"><Loader label="Loading…" /></div>}>
+            <Routes>
+              {user?.role === "superadmin" ? (
+                <>
+                  <Route path="/platform" element={<Platform />} />
+                  <Route path="/settings" element={<PlatformSettings />} />
+                  <Route path="*" element={<Navigate to="/platform" replace />} />
+                </>
+              ) : user?.role === "site_manager" ? (
+                <>
+                  <Route path="/" element={<Navigate to="/sites" replace />} />
+                  <Route path="/sites" element={<SiteConsole user={user} />} />
+                  <Route path="/sites/:siteId/trips/:tripId" element={<SiteTrip user={user} />} />
+                  <Route path="/sites/:siteId/trips/:tripId/lrs/:lrId" element={<SiteLRPage user={user} />} />
+                  <Route path="*" element={<Navigate to="/sites" replace />} />
+                </>
+              ) : (
+                <>
+            <Route path="/sites" element={<SiteConsole user={user} />} />
+            <Route path="/sites/:siteId/trips/:tripId" element={<SiteTrip user={user} />} />
+            <Route path="/sites/:siteId/trips/:tripId/lrs/:lrId" element={<SiteLRPage user={user} />} />
+            <Route path="/" element={<Navigate to="/sites" replace />} />
+            <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/trips" element={<Trips />} />
             <Route path="/trips/new" element={<TripForm />} />
             <Route path="/trips/:id" element={<TripDetail />} />
@@ -79,9 +101,10 @@ export default function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
-              </>
-            )}
-          </Routes>
+                </>
+              )}
+            </Routes>
+          </Suspense>
         </Layout>
       )}
     </BrowserRouter>

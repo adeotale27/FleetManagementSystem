@@ -1,7 +1,47 @@
 import axios from "axios";
+import { scheduleMutationSuccess, toast } from "../components/ui";
 
 const BASE = process.env.REACT_APP_BACKEND_URL;
 export const api = axios.create({ baseURL: `${BASE}/api` });
+
+const isWriteRequest = (config) => {
+  const method = String(config?.method || "").toLowerCase();
+  const url = String(config?.url || "");
+  return ["post", "put", "patch", "delete"].includes(method) && !/\/auth\/login(?:[?#]|$)/i.test(url);
+};
+
+const mutationSuccessLabel = (config) => {
+  const method = String(config?.method || "").toLowerCase();
+  const segments = String(config?.url || "").split(/[?#]/, 1)[0].split("/").filter(Boolean);
+  const route = segments.filter((segment) => !/^\d+$/.test(segment));
+  const last = route[route.length - 1]?.toLowerCase();
+  const resource = ({
+    trips: "Trip",
+    lrs: "LR",
+    expenses: "Expense",
+    sites: "Site",
+    "ledger-imports": "Ledger import",
+    "ledger-import": "Ledger import",
+    settings: "Settings",
+    upload: "File",
+  })[last] || ({
+    trips: "Trip",
+    lrs: "LR",
+    expenses: "Expense",
+    sites: "Site",
+    "ledger-imports": "Ledger import",
+    "ledger-import": "Ledger import",
+  })[[...route].reverse().find((segment) => (
+    ["trips", "lrs", "expenses", "sites", "ledger-imports", "ledger-import"].includes(segment.toLowerCase())
+  ))?.toLowerCase()] || "";
+
+  if (!resource) return "Changes saved successfully.";
+  if (last === "close") return `${resource} closed`;
+  if (last === "reopen") return `${resource} reopened`;
+  const action = method === "post" ? (last === "trips" || last === "lrs" || last === "sites" ? "created" : "saved")
+    : method === "delete" ? "deleted" : "updated";
+  return `${resource} ${action}`;
+};
 
 api.interceptors.request.use((cfg) => {
   const t = localStorage.getItem("fms_token");
@@ -10,18 +50,48 @@ api.interceptors.request.use((cfg) => {
 });
 
 api.interceptors.response.use(
-  (r) => r,
+  (r) => {
+    if (isWriteRequest(r.config)) scheduleMutationSuccess(mutationSuccessLabel(r.config));
+    return r;
+  },
   (err) => {
     if (err?.response?.status === 401 && !String(err.config?.url).includes("/auth/login")) {
       localStorage.removeItem("fms_token");
       if (window.location.pathname !== "/login") window.location.href = "/login";
     }
+    if (isWriteRequest(err?.config)) toast(errMsg(err), "err", { apiError: true });
     return Promise.reject(err);
   }
 );
 
-export const errMsg = (e) =>
-  e?.response?.data?.detail || e?.message || "Something went wrong. Please try again.";
+const validationMessage = (detail) => {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => {
+      if (typeof item === "string") return item;
+      if (!item || typeof item !== "object") return "";
+      const location = Array.isArray(item.loc)
+        ? item.loc
+          .filter((part) => part !== "body" && part !== "query" && part !== "path")
+          .map(String)
+          .join(".")
+        : "";
+      return [location, item.msg].filter(Boolean).map(String).join(": ");
+    }).filter(Boolean).join("; ");
+  }
+  return "";
+};
+
+export const errMsg = (e) => {
+  const status = e?.response?.status;
+  if (status >= 500) {
+    const reference = e?.response?.data?.reference_id || e?.response?.headers?.["x-reference-id"];
+    return `The server couldn't complete this request. Please try again.${reference ? ` Reference: ${reference}` : ""}`;
+  }
+  const detail = validationMessage(e?.response?.data?.detail);
+  return detail || (e?.response ? "Request failed. Please check your entries and try again."
+    : e?.message || "Something went wrong. Please try again.");
+};
 
 export const uploadFile = async (file, kind = "misc") => {
   const fd = new FormData();

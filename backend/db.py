@@ -42,6 +42,10 @@ def set_tenant(tenant_id):
     _tenant.set(tenant_db_name(tenant_id))
 
 
+def current_db_name():
+    return _tenant.get()
+
+
 def tenant_db(tenant_id):
     return client[tenant_db_name(tenant_id)]
 

@@ -2,14 +2,14 @@ import React, { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   BarChart3, Banknote, Fuel, Gauge, LayoutDashboard, LogOut, Menu, Plus, Receipt,
-  Search, Settings as Cog, ShieldCheck, Truck, User, Users, UsersRound, Wallet, X, FileText, ArrowRight,
+  Search, Settings as Cog, ShieldCheck, Truck, User, Users, UsersRound, Wallet, X, FileText, ArrowRight, Building2,
 } from "lucide-react";
 import { api } from "../lib/api";
 import EntryModal from "./QuickForms";
 import { Badge } from "./ui";
 
 const NAV = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, key: "dashboard" },
+  { to: "/dashboard", label: "Office Dashboard", icon: LayoutDashboard, key: "dashboard" },
   { to: "/trips", label: "Trips & LR", icon: Truck, key: "trips" },
   { to: "/vehicles", label: "Vehicles", icon: Gauge, key: "vehicles" },
   { to: "/parties", label: "Parties", icon: Users, key: "parties" },
@@ -22,6 +22,10 @@ const NAV = [
 const PLATFORM_NAV = [
   { to: "/platform", label: "Licences", icon: ShieldCheck },
   { to: "/settings", label: "Console", icon: Cog },
+];
+
+const SITE_NAV = [
+  { to: "/sites", label: "System Dashboard", icon: Building2 },
 ];
 
 const MOBILE_NAV = [NAV[0], NAV[1], NAV[5], NAV[6]];
@@ -66,8 +70,12 @@ export default function Layout({ user, children }) {
   const bizLogo = user?.role === "superadmin" ? "/app-icon.png" : (user?.branding?.logo || "/app-icon.png");
   const bizName = user?.role === "superadmin" ? "ProFleet" : (user?.tenant_name || user?.branding?.name || "ProFleet");
   const photo = user?.photo;
-  const navItems = user?.role === "superadmin" ? PLATFORM_NAV : NAV.filter((n) => !n.key || user?.features?.[n.key] !== false);
-  const mobileNav = user?.role === "superadmin" ? PLATFORM_NAV : MOBILE_NAV;
+  const navItems = user?.role === "superadmin" ? PLATFORM_NAV
+    : user?.role === "site_manager" ? SITE_NAV
+      : [...SITE_NAV, ...NAV.filter((n) => !n.key || user?.features?.[n.key] !== false)];
+  const mobileNav = user?.role === "superadmin" ? PLATFORM_NAV
+    : user?.role === "site_manager" ? SITE_NAV
+      : [SITE_NAV[0], ...MOBILE_NAV];
 
   const Side = (
     <>
@@ -129,7 +137,7 @@ export default function Layout({ user, children }) {
               <Menu size={21} />
             </button>
             <img src={bizLogo} alt="" className="h-8 w-8 rounded-lg object-contain md:hidden" />
-            {user?.role !== "superadmin" && (
+            {user?.role !== "superadmin" && user?.role !== "site_manager" && (
             <div className="relative flex-1 md:max-w-md">
               <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
               <input data-testid="global-search" value={q} onChange={(e) => setQ(e.target.value)}
@@ -154,7 +162,7 @@ export default function Layout({ user, children }) {
             </div>
             )}
             {user?.role === "superadmin" && <div className="flex-1" />}
-            {user?.role !== "superadmin" && (
+            {user?.role !== "superadmin" && user?.role !== "site_manager" && (
               <button onClick={() => setSheet(true)} data-testid="quick-action-btn"
                 className="btn-p hidden py-2 md:inline-flex"><Plus size={17} /> New Entry</button>
             )}
@@ -166,8 +174,8 @@ export default function Layout({ user, children }) {
 
       {/* mobile bottom bar */}
       <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-line bg-white/97 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
-        <div className={`grid ${user?.role === "superadmin" ? "grid-cols-2" : "grid-cols-5"}`}>
-          {user?.role === "superadmin" ? mobileNav.map((n) => <BottomLink key={n.to} n={n} />) : (
+        <div className={`grid ${user?.role === "superadmin" ? "grid-cols-2" : user?.role === "site_manager" ? "grid-cols-1" : "grid-cols-5"}`}>
+          {user?.role === "superadmin" || user?.role === "site_manager" ? mobileNav.map((n) => <BottomLink key={n.to} n={n} />) : (
             <>
               {mobileNav.slice(0, 2).map((n) => <BottomLink key={n.to} n={n} />)}
               <button onClick={() => setSheet(true)} data-testid="mobile-quick-btn" className="flex flex-col items-center py-2">

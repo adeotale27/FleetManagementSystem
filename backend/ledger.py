@@ -7,7 +7,7 @@ from db import db, new_id, now_iso
 
 
 async def post(entity_type, entity_id, dt, description, debit=0.0, credit=0.0,
-               ref_type=None, ref_id=None, meta=None):
+               ref_type=None, ref_id=None, meta=None, site_id=None, business_id=None):
     if not entity_id:
         return None
     doc = {
@@ -24,12 +24,15 @@ async def post(entity_type, entity_id, dt, description, debit=0.0, credit=0.0,
         "cancelled": False,
         "created_at": now_iso(),
     }
+    if site_id:
+        doc["site_id"] = site_id
+        doc["business_id"] = business_id
     await db.ledger.insert_one(doc)
     return doc["_id"]
 
 
 async def cash(account, direction, amount, dt, description, ref_type=None,
-               ref_id=None, deewanji_id=None, mode=None):
+               ref_id=None, deewanji_id=None, mode=None, site_id=None, business_id=None):
     """account: cash | bank | deewanji ; direction: in | out"""
     doc = {
         "_id": new_id(),
@@ -45,6 +48,9 @@ async def cash(account, direction, amount, dt, description, ref_type=None,
         "cancelled": False,
         "created_at": now_iso(),
     }
+    if site_id:
+        doc["site_id"] = site_id
+        doc["business_id"] = business_id
     await db.cashbook.insert_one(doc)
     return doc["_id"]
 

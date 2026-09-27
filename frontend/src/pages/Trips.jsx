@@ -21,9 +21,9 @@ export default function Trips() {
   const [f, setF] = useState({ q: "", status: sp.get("status") || "", vehicle_id: "", driver_id: "", route_id: "", mode: "", trip_type: "", frm: "", to: "" });
   const [lf, setLf] = useState({ q: "", payment_status: "", frm: "", to: "" });
 
-  const vehicles = useMaster("vehicles");
-  const drivers = useMaster("drivers");
-  const settings = useFetch("/settings");
+  const vehicles = useMaster(tab === "trips" ? "vehicles" : null);
+  const drivers = useMaster(tab === "trips" ? "drivers" : null);
+  const settings = useFetch(tab === "trips" ? "/settings" : null);
   const trips = useFetch(tab === "trips" ? "/trips" : null, f);
   const lrs = useFetch(tab === "lrs" ? "/lrs" : null, lf);
   const lrStats = useFetch(tab === "lrs" ? "/lr-stats" : null, { days: 30 });
