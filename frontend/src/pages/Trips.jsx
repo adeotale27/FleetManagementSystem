@@ -69,7 +69,7 @@ export default function Trips() {
 
   return (
     <div>
-      <PageHead title="Trips & LR" subtitle="Every trip and lorry receipt in one place"
+      <PageHead title="Industrial Trips & LRs" subtitle="Industrial shipments and their lorry receipts"
         actions={
           <>
             <Btn variant="s" icon={Download} data-testid="export-btn"

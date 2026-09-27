@@ -254,17 +254,29 @@ export const Tabs = ({ tabs, value, onChange }) => (
   </div>
 );
 
-export const Stat = ({ label, value, sub, icon: Icon, tone = "", onClick, testid }) => (
-  <div data-testid={testid} onClick={onClick}
-    className={`card row-anim p-4 ${onClick ? "cursor-pointer transition-transform hover:-translate-y-0.5 hover:border-brand-400" : ""}`}>
-    <div className="flex items-start justify-between gap-2">
-      <p className="text-[12px] font-semibold uppercase tracking-wide text-muted">{label}</p>
+export const Stat = ({ label, value, sub, icon: Icon, tone = "", onClick, testid }) => {
+  const content = (
+    <span className="flex items-start justify-between gap-2">
+      <span className="text-[12px] font-semibold uppercase tracking-wide text-muted">{label}</span>
       {Icon && <Icon size={16} className={tone || "text-brand-400"} />}
-    </div>
-    <p className={`num mt-2 font-head text-[21px] font-bold leading-none ${tone || "text-ink"}`}>{value}</p>
-    {sub && <p className="mt-1.5 text-[12.5px] text-muted">{sub}</p>}
-  </div>
-);
+    </span>
+  );
+  const details = (
+    <>
+      {content}
+      <span className={`num mt-2 block font-head text-[21px] font-bold leading-none ${tone || "text-ink"}`}>{value}</span>
+      {sub && <span className="mt-1.5 block text-[12.5px] text-muted">{sub}</span>}
+    </>
+  );
+  const className = `card dashboard-kpi row-anim p-4 ${onClick ? "stat-button cursor-pointer" : ""}`;
+  return onClick ? (
+    <button type="button" data-testid={testid} onClick={onClick} className={className}>
+      {details}
+    </button>
+  ) : (
+    <div data-testid={testid} className={className}>{details}</div>
+  );
+};
 
 /* ------------------------------------------------------------ data table + mobile cards */
 export function DataTable({ columns, rows, onRowClick, mobile, empty, rightAlignLast, testid = "data-table" }) {

@@ -1,13 +1,13 @@
-# Fleet Manager v1.3.0
+# Fleet Manager v1.7.0
 
 Transport office software for one or many logistics businesses.
 
-- **Business owner** runs the office: trips, LR, vehicles, parties, team, money, reports.
-- **Business owner** can also administer multiple sites, assign site managers, review site operations and reconcile per-trip ledgers.
-- **Site manager** operates only assigned sites and actions.
-- **Platform owner** issues licences, suspends businesses, resets owner passwords, and turns modules on/off per business.
+- **Business owner** operates two distinct workflows: daily site bookings on the Booking Dashboard and large industrial shipments in Industrial Trips & LRs, with separate finances and reports.
+- **Business owner** can administer multiple sites, assign site managers, review site operations and reconcile per-trip ledgers.
+- **Site manager** operates only assigned site bookings and granted actions; industrial business routes are owner-only.
+- **Platform owner** issues licences, suspends businesses, resets owner passwords, and turns modules on/off per business; platform access does not grant business-owner access.
 
-Current application version: **v1.3.0**. See [VERSION.md](VERSION.md) for the release policy and changelog.
+Current application version: **v1.7.0**. See [VERSION.md](VERSION.md) for the release policy and changelog.
 
 ## Project guide
 
@@ -128,7 +128,7 @@ Sign-in page: http://localhost:3000/login
 | Who | Username | Password | After login |
 |-----|----------|----------|-------------|
 | **Platform owner** | `superadmin` | `super123` | **`/platform`** — licences for all businesses |
-| **Business owner** | `owner` | `owner123` | **`/sites`** — New Naidu Transport Bookings Window Board |
+| **Business owner** | `owner` | `owner123` | **`/sites`** — Booking Dashboard |
 | Same business (alt) | `priyanshu` | `owner123` | Same office as `owner` |
 | **Site manager** | Created by the business owner | Set during assignment/reset | Assigned-site workspace at **`/sites`** |
 
@@ -162,28 +162,32 @@ Business-owner tokens get **403** on these routes.
 
 ---
 
-## 7. Business owner — office modules
+## 7. Business owner — business modules
 
 | Path | What |
 |------|------|
-| `/sites` | Bookings Window Board, site administration and site trip access |
-| `/dashboard` | Existing office dashboard |
-| `/trips` | Trips (indoor / outdoor), status, cancel = reverse |
-| `/lrs/new`, `/lrs/:id` | Lorry Receipt create / print |
+| `/sites` | Booking Dashboard for daily site bookings, site administration and scoped booking access |
+| `/booking-finance` | Owner-only Finance for site booking charges, posted collections, expenses and collectible balances |
+| `/booking-reports` | Owner-only searchable, paginated site LR report and loaded-row CSV export |
+| `/dashboard` | Redirects to the Booking Dashboard; the retired office dashboard remains only as legacy API code |
+| `/trips?tab=trips` | Owner-only Industrial Trips (indoor / outdoor), status, cancel = reverse |
+| `/trips?tab=lrs`, `/lrs/new`, `/lrs/:id` | Owner-only Industrial LRs; create / print |
 | `/vehicles` | Fleet, documents, fuel, pumps |
 | `/parties` | Customers, outstanding, ledger, payments |
 | `/team` | Drivers and office staff, advances, salary |
-| `/finance` | Cash/bank, collections, payables, Deewanji, diesel, 3PL |
-| `/reports` | Filtered reports + CSV / Excel / PDF / print |
+| `/finance` | Industrial cash/bank, collections, payables, Deewanji, diesel, 3PL |
+| `/reports` | Industrial reports + CSV / Excel / PDF / print |
 | `/settings` | Company, routes, numbering, opening cash/bank |
 
-Money is derived from `ledger` + `cashbook`. Cancel reverses entries; rows are not deleted.
+Industrial money is derived from unscoped (`site_id` absent) `ledger`, `cashbook` and `expenses` records. Site booking entries use separate trip/LR/payment collections and tag shared expense/ledger/cashbook rows with `site_id`; they are visible through the Booking Dashboard/site views, not industrial Finance or Reports. Cancellation reverses entries; rows are not deleted.
 
 ---
 
 ## 8. Data layout (MongoDB)
 
 `DB_NAME` default `fleet_db`.
+
+Booking and industrial workflows are distinct record families within each tenant database; they are not separate MongoDB databases. Industrial operations use `trips`/`lrs`; site bookings use `site_trips`/`site_lrs` and site payment/reconciliation records. Vehicles, drivers and selected party/master records are shared. No data migration or collection replacement is introduced by this separation.
 
 | Database | Contents |
 |----------|----------|
@@ -199,11 +203,12 @@ Users collection id = username. Roles include `superadmin` (no tenant), `owner` 
 
 ### Owner: create sites and assign access
 
-1. Sign in as the business owner. The Bookings Window Board is at **`/sites`**; the prior office dashboard remains at **`/dashboard`**.
+1. Sign in as the business owner. Booking Dashboard is the default page at **`/sites`**. The old `/dashboard` browser route redirects here.
 2. Create a site with a unique short code and an IANA timezone such as `Asia/Kolkata`. Codes are unique within the business.
 3. Assign a site manager with a unique username and a strong initial password. The password is bcrypt-hashed; managers access only explicitly assigned sites and permitted actions.
 4. Use manager access controls to grant/revoke per-site actions, reset credentials, replace a manager, or deactivate access. Deactivation preserves audit history and does not rewrite historical trip/LR creators.
 5. Use the board's site/trip filters to inspect business-wide or site-level bookings, LRs and financial summaries.
+6. Use **Booking Finance** for site booking charges, collections, trip expenses and collectible outstanding. Use **Booking Reports** to filter canonical LRs by date/site/search and export the rows currently loaded.
 
 ### Site manager: trips, LRs and collections
 
@@ -216,6 +221,8 @@ Create/update actions show a top-right success or failure notice. Unexpected ser
 ### Trip ledger export and reconciliation
 
 Owners can download separate versioned CSV files for goods-wise and receiver-wise ledgers, a summary, and an import template for a selected trip. CSV has no worksheet concept, so these are separate files. The template includes immutable LR/trip/site IDs; receiver names and row order are never matching keys.
+
+On an open site booking, the owner can use its **LR charge sheet** to edit bhada and hamali per LR. Each row saves via the existing audited site-LR update route, so the canonical booking LR and subsequent Booking Finance/Reports reads use the same values. Reconciled LRs remain locked; the booking must be reopened before editing closed-trip charges, and bhada cannot be reduced below payments already recorded.
 
 1. Select the site and trip, then upload the completed CSV template.
 2. Review the entire staged preview: matched records, changes, missing/unknown IDs, duplicates, invalid values and scope conflicts.
@@ -237,8 +244,9 @@ All paths below are under `/api` and use the normal bearer token. Owner-only act
 |---|---|---|
 | Sites/managers | `/sites`, `/sites/{site_id}`, `/sites/{site_id}/manager`, `/sites/managers/...` | Site lifecycle, assignment, grants and credential operations |
 | Bookings board | `/sites/system-dashboard`, `/sites/{site_id}/dashboard` | Business-wide and authorized site summaries and outstanding breakdowns |
+| Booking LR report | `/sites/system-reports/lrs` | Owner-only date/site/search filtered and paginated report from canonical `site_lrs` |
 | Trips | `/sites/{site_id}/trips...`, `/sites/{site_id}/trip-resources`, `/sites/{site_id}/trips/{trip_id}/expenses` | Scoped trip lifecycle, fleet/driver dropdown choices, and ledger-posted trip expenses |
-| LRs/categories | `/sites/{site_id}/trips/{trip_id}/lrs...`, `/sites/{site_id}/categories` | Booking, paging, edits, categories and details |
+| LRs/categories | `/sites/{site_id}/trips/{trip_id}/lrs...`, `/sites/{site_id}/categories` | Booking, paging, audited edits including charge sheet updates, categories and details |
 | Payments/audit | LR `/payments` routes including `/retry`, `/sites/{site_id}/audit` | Payment/reversal events, interrupted posting retry and audit history |
 | Ledger | `/sites/{site_id}/trips/{trip_id}/ledger/{section}`, `ledger-imports/...` | CSV export, staged preview/edit/commit and private original download |
 | Legacy migration | `/sites/migration/legacy` | Owner preview and explicit assignment of unscoped legacy records |
@@ -311,6 +319,7 @@ Run the focused offline multi-site unit tests with the configured backend pytest
 ```bash
 cd backend
 pytest -q tests/test_site_ops_units.py
+pytest -q tests/test_authorization.py tests/test_financial_separation_units.py
 ```
 
 An opt-in end-to-end acceptance test is available at `backend/tests/test_site_ops_workflow.py`. It creates a site, manager, trip, two LRs, edits trip/LR values, records payments and trip expenses, exports/imports/reconciles the ledger, and checks the owner booking board. It creates persistent records and deactivates the test site/manager afterward; run it only against a disposable test tenant/API. Set `FMS_SITE_OPS_E2E_ALLOW_WRITES=1`, `FMS_SITE_OPS_E2E_BASE_URL`, `FMS_SITE_OPS_E2E_OWNER_USERNAME`, and `FMS_SITE_OPS_E2E_OWNER_PASSWORD` in the test process. It skips by default.
@@ -318,5 +327,15 @@ An opt-in end-to-end acceptance test is available at `backend/tests/test_site_op
 Build the frontend with `cd frontend && npm run build`. Existing API integration tests require a running, explicitly configured API and may create tenants or mutate trip data; inspect their fixtures and target before invoking. Never point them at production.
 
 ---
+
+**v1.7.0** — added separate owner Booking Finance and paginated Booking Reports, reduced Booking Dashboard financial clutter, and added an audited per-LR bhada/hamali charge sheet using the canonical site LR update API. No new collection or migration. See [VERSION.md](VERSION.md).
+
+**v1.6.0** — clearly separated daily site bookings from owner-only industrial Trips/LRs and Finance/Reports, hid industrial search/Quick Add on booking routes, and scoped site-tagged financial rows out of industrial balances, expenses and cashbook views. No migration or new booking collection. See [VERSION.md](VERSION.md).
+
+**v1.5.0** — shared brand-derived presentation tokens, responsive navigation refinements, page-level refinements across business modules, and Booking Dashboard charts with backend-sourced daily/site data. An additive read-only dashboard response field supports the daily counts; office and site trip/LR storage remain distinct. See [VERSION.md](VERSION.md).
+
+**v1.4.0** — owner Trips & LR visibility for site trips/LRs, a clearer Bookings Window Board, and on-demand site data loading without copying or duplicating financial records. See [VERSION.md](VERSION.md).
+
+**v1.3.1** — startup compatibility for the deployed trip-expense index, bounded trip-list aggregation, and lazy-loaded route pages. See [VERSION.md](VERSION.md).
 
 **v1.3.0** — operation notifications/error logging, Bookings Window Board, trip expenses, structured ledger exports, mobile trip/LR forms, and quicker LR printing. See [VERSION.md](VERSION.md).

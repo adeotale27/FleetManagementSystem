@@ -67,7 +67,11 @@ async def reverse(ref_type, ref_id):
 async def balances(entity_type):
     """{entity_id: {debit, credit, balance}} — balance>0 means entity owes us."""
     pipeline = [
-        {"$match": {"entity_type": entity_type, "cancelled": False}},
+        {"$match": {
+            "entity_type": entity_type,
+            "cancelled": False,
+            "site_id": {"$exists": False},
+        }},
         {"$group": {"_id": "$entity_id", "debit": {"$sum": "$debit"},
                     "credit": {"$sum": "$credit"},
                     "last_date": {"$max": "$date"}}},
@@ -89,7 +93,11 @@ async def balance_of(entity_type, entity_id):
 
 
 async def statement(entity_type, entity_id, frm=None, to=None):
-    q = {"entity_type": entity_type, "entity_id": entity_id}
+    q = {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "site_id": {"$exists": False},
+    }
     rows = await db.ledger.find(q).sort("date", 1).to_list(5000)
     rows = sorted(rows, key=lambda r: (r["date"], r["created_at"]))
     running = 0.0
@@ -112,7 +120,7 @@ async def statement(entity_type, entity_id, frm=None, to=None):
 
 async def cash_position():
     pipeline = [
-        {"$match": {"cancelled": False}},
+        {"$match": {"cancelled": False, "site_id": {"$exists": False}}},
         {"$group": {"_id": {"a": "$account", "d": "$direction"},
                     "t": {"$sum": "$amount"}}},
     ]
@@ -127,7 +135,11 @@ async def cash_position():
 
 async def deewanji_cash():
     pipeline = [
-        {"$match": {"cancelled": False, "account": "deewanji"}},
+        {"$match": {
+            "cancelled": False,
+            "account": "deewanji",
+            "site_id": {"$exists": False},
+        }},
         {"$group": {"_id": {"d": "$deewanji_id", "dir": "$direction"},
                     "t": {"$sum": "$amount"}}},
     ]

@@ -65,7 +65,7 @@ flowchart LR
 
 ## 2. Browser navigation and role design
 
-`frontend/src/App.js` loads `/api/me` when a stored `fms_token` exists, then selects the route set by role. `Layout` provides the shared navigation, quick-entry actions, global search, branding, and logout. Business feature flags currently filter the visible navigation; platform users receive only the platform routes.
+`frontend/src/App.js` loads `/api/me` when a stored `fms_token` exists, then selects the route set by role. `Layout` provides the shared navigation, quick-entry actions, global search, branding, and logout. Business feature flags currently filter the visible navigation; platform users receive only the platform routes. The owner has separate Booking Dashboard, Booking Setup & Access, Booking Finance/Reports, and Industrial Trips/LRs/Finance/Reports entry points. The operational Booking Dashboard no longer contains site setup, manager administration, or category editing. Site managers receive only their assigned site booking workspace; booking setup, financial/report views, and industrial routes are owner-only. Trips and LRs share `/trips` with a `tab` query parameter.
 
 ```mermaid
 flowchart TD
@@ -80,14 +80,21 @@ flowchart TD
     Login --> AuthPost["POST /api/auth/login"]
     AuthPost --> Store["Store returned JWT"]
     Store --> Me
-    Shell --> SystemDashboard["Bookings Window Board · /sites"]
-    Shell --> Dashboard["Office dashboard · /dashboard"]
-    Shell --> Trips["Trips & LR"]
+    Shell --> BookingDashboard["Booking Dashboard · /sites"]
+    Shell --> BookingSetup["Booking Setup & Access · /booking-setup"]
+    Shell --> BookingFinance["Booking Finance · /booking-finance"]
+    Shell --> BookingReports["Booking Reports · /booking-reports"]
+    Shell --> Trips["Industrial Trips · /trips?tab=trips"]
+    Shell --> LRs["Industrial LRs · /trips?tab=lrs"]
+    Trips --> IndustrialDetail["Industrial trip and LR detail"]
+    BookingDashboard --> SiteTripDetail["Canonical site booking trip and LR detail / print"]
+    SiteTripDetail --> ChargeSheet["Owner LR charge sheet"]
+    ChargeSheet --> CanonicalLRUpdate["PATCH site LR · audit + MongoDB"]
     Shell --> Fleet["Vehicles"]
     Shell --> Parties["Parties"]
     Shell --> Team["Team"]
-    Shell --> Finance["Finance"]
-    Shell --> Reports["Reports"]
+    Shell --> Finance["Industrial Finance"]
+    Shell --> Reports["Industrial Reports"]
     Shell --> Settings["Office settings"]
     SiteShell --> SiteConsole["Site operations · /sites"]
     SiteConsole --> SiteTrips["Assigned site trips"]
@@ -97,6 +104,46 @@ flowchart TD
 ```
 
 The frontend API client in `frontend/src/lib/api.js` uses `REACT_APP_BACKEND_URL` with `/api` appended, sends the stored token as a bearer credential, and clears it on a non-login 401 response. `useFetch` and `useMaster` in `frontend/src/lib/hooks.js` provide page-level read/reload behavior; pages call the API client for mutations.
+
+Booking Dashboard and site trip/LR pages call site-scoped endpoints and display only canonical booking records. Industrial Trips, LRs, Finance and Reports use the owner-only business APIs and do not request site booking records. The former on-demand site panel and global industrial search/Quick Add controls are hidden on site booking routes to keep the operational domains distinct; this changes navigation only and does not migrate or duplicate records.
+
+### Presentation architecture and design view (27 September 2026)
+
+The visual foundation is shared across routes and uses the existing light palette. `frontend/src/index.css` defines CSS design tokens and common component/accessibility behavior; `frontend/tailwind.config.js` maps Tailwind theme colors and elevation to those tokens; `Layout.jsx` composes role-aware desktop/mobile navigation; shared controls live in `components/ui.jsx`. Page-specific layouts and their existing API clients remain responsible for workflows and data. `SiteConsole.jsx` serves the role-guarded operational dashboard at `/sites` and the owner-only setup/access view at `/booking-setup`; the latter handles site creation/editing, Team-profile selection/linkage, manager permissions and booking categories. The selected-site editor labels optional city and location values directly. The owner dashboard response includes a bounded, read-only daily trip/LR count series derived from the same site/date/trip filters as its totals.
+
+```mermaid
+flowchart TD
+    Tokens["Brand-derived CSS tokens<br/>index.css"] --> TW["Tailwind theme mappings<br/>tailwind.config.js"]
+    Tokens --> Shared["Shared controls and surfaces<br/>components/ui.jsx"]
+    TW --> Pages["Route page layouts"]
+    Shared --> Pages
+    Auth["Authenticated user and features"] --> Shell["Responsive app shell<br/>components/Layout.jsx"]
+    Shell --> Pages
+    Pages --> API["Existing API client<br/>frontend/src/lib/api.js"]
+    API --> Backend["Existing FastAPI routes"]
+    Backend --> TenantData[("Tenant/site records")]
+    TenantData --> DashboardAPI["/sites/system-dashboard response"]
+    DashboardAPI --> SiteConsole["Booking Dashboard<br/>operational KPIs + activity"]
+    DashboardAPI --> BookingFinance["Booking Finance<br/>site-scoped totals and breakdowns"]
+    TenantData --> BookingReportAPI["/sites/system-reports/lrs<br/>owner-only, scoped and paginated"]
+    BookingReportAPI --> BookingReports["Booking Reports<br/>LR table + loaded-row CSV"]
+    SiteConsole --> Charts["Operational site/date charts<br/>Recharts"]
+    SiteConsole --> SiteCards["Site overview and activity"]
+    SiteTrip["SiteTrip.jsx"] -->|"PATCH /sites/{site}/trips/{trip}/lrs/{lr}"| CanonicalLRUpdate["Existing LRUpdate validation and audit"]
+    CanonicalLRUpdate --> TenantData
+    CanonicalLRUpdate -->|"rent delta: idempotent site financial event"| SiteMoney["Site-scoped booking finance"]
+    Shared --> Accessibility["Focus-visible and reduced-motion support"]
+```
+
+Design implementation notes:
+
+- The existing forest-green, amber and neutral colors are retained as CSS variables; this adds no dark theme or new palette.
+- Depth is provided by restrained CSS elevation and layered surfaces. No WebGL/3D renderer or new runtime dependency is introduced.
+- Booking Dashboard charts use site dashboard response values. Daily trip/LR counts and site totals follow the selected filters; financial summaries and collection/outstanding charts live on the separate Booking Finance page. `activity_by_date` is grouped by operating date and fills empty dates with zero counts for chart continuity.
+- Booking Finance reads `/sites/system-dashboard`; Booking Reports reads the paginated, owner-only `/sites/system-reports/lrs` endpoint. Both remain within the existing site booking data family and never call industrial Finance/Reports endpoints.
+- The owner LR charge sheet calls the existing `PATCH /sites/{site_id}/trips/{trip_id}/lrs/{lr_id}` update route. Amount validation, open-trip/reconciliation/payment guards, rent idempotency, audit history and Mongo persistence remain server-owned.
+- The additive dashboard response field does not change authorization, stored data, financial calculations, or the separate canonical office and site trip/LR collections.
+- Global reduced-motion styles honor `prefers-reduced-motion`; mobile layout and navigation are implemented in the shared shell.
 
 ## 3. Authentication and tenant request flow
 
@@ -124,9 +171,10 @@ sequenceDiagram
 Authentication facts:
 
 - Password hashes use bcrypt. JWTs use HS256 and the configured `JWT_SECRET`; the current token expiry is 30 days.
-- `current_user` looks up the user and licence in the platform database and sets the tenant database for a business user.
-- `site_user` resolves the same authenticated principal for the additive site API. `current_user` rejects the `site_manager` role, which prevents site managers from using legacy owner endpoints even if they call them directly.
-- `/api/platform/...` routes use `require_super`, which rejects non-superadmin roles.
+- Site-manager passwords are never recoverable from storage: owner assignment/reset requests store bcrypt hashes, and `/sites/managers` returns manager IDs, status and access grants without password fields. The owner UI holds a just-entered temporary password in component memory only long enough to copy it after assignment/reset; it does not persist that value, and the owner must reset the credential if it is lost.
+- `current_user` looks up the principal and permits only the `owner` role for industrial business endpoints, then uses its tenant context.
+- `site_user` resolves the principal for identity and site APIs; site routes enforce owner/site-manager role, tenant, site assignment and action scope. `/api/me` identity resolution remains available to site managers.
+- `/api/platform/...` routes use `require_super`, which independently resolves and permits only `superadmin`; platform users do not receive tenant business API access.
 - `/api/health` is outside the `/api` router. Login and static file retrieval do not require `current_user`; review file exposure implications before changing upload behavior.
 - The per-tenant feature map is merged in `/api/me` and used by the frontend shell; it is not a backend endpoint policy.
 
@@ -140,36 +188,52 @@ Authentication facts:
 
 Operational collections referenced by the code include `settings`, `trips`, `lrs`, `vehicles`, `drivers`, `team`, `parties`, `fuel_pumps`, `partners`, `receipts`, `handovers`, `expenses`, `fuel`, `payments`, `advances`, `tpl`, `ledger`, `cashbook`, and `files`. Additive multi-site collections are `sites`, `site_trips`, `site_lrs`, `site_counters`, `site_receivers`, `site_categories`, `site_payments`, `site_financial_events`, `site_audit_events`, `site_ledger_imports`, and `site_migrations`. Site-manager identities remain in platform `users`, with a tenant ID, active flag, assigned `site_ids`, and per-site `site_permissions`. Keep collection ownership tenant-local unless a deliberate platform-wide dataset is designed and documented.
 
+### Current data-flow audit (verified in routes and frontend callers)
+
+- **Bookings / site operations:** `SiteConsole.jsx` calls `/sites/{site_id}/trips` and `/sites/{site_id}/trips/{trip_id}/lrs`. `site_ops.py` stores these in tenant-local `site_trips` and `site_lrs`; their identities, references and site authorization are distinct from legacy records.
+- **Office Trips and LRs:** `TripForm.jsx`, `LRForm.jsx`, `TripDetail.jsx`, `LRView.jsx` and `Trips.jsx` call `/trips` and `/lrs`. `server.py` reads and writes tenant-local `trips` and `lrs`, and their legacy ledger/receipt behavior.
+- **Finance and reports:** `/finance/*`, `/reports/*`, search and industrial profiles use legacy/industrial source collections. The shared `expenses`, `ledger` and `cashbook` collections can also contain site-tagged booking postings; industrial balances, statements, cash positions, expenses, trip costs, cashbook views and charts explicitly exclude records with `site_id`. Site dashboard/report paths use site-scoped booking records and tagged expense/posting data; there is no combined company-wide financial read model.
+- **Shared masters:** Legacy and site trip resource selectors use the same tenant `vehicles` and `drivers` collections. Site trips retain the selected master IDs plus truck/driver snapshots. Site receiver identity is tracked in `site_receivers`; a related party may be created in shared `parties` with `site_receiver_id`, while legacy sender parties use the same collection without this site identity.
+- **People and access:** Office staff/drivers use tenant `team`/`drivers`; site-manager login identities and grants live in platform `users`, scoped by tenant and explicit site permissions. A manager login may reference an Office Team document through `team_member_id`; this does not merge the authentication identity with the Team employee profile or copy credentials into the tenant database. The owner-only Booking Setup & Access register displays manager IDs/status/site assignments; only bcrypt hashes are stored, and temporary passwords are displayed in the browser only immediately after assignment/reset. Replacing a manager does not replace operational actor history.
+- **Existing legacy-site migration:** `/sites/migration/legacy` only previews records missing `site_id`; its confirmed operation adds `site_id` and `business_id` to the legacy documents. It does not copy or transform `trips`/`lrs` into `site_trips`/`site_lrs`, build ID mappings, or migrate financial events.
+
+Therefore each tenant database contains two active operational trip/LR models with deliberately separate UI and read paths. They are not separate MongoDB databases: operational records use distinct collections, while vehicles/drivers and selected masters are shared. Site financial postings in shared collections are tagged with `site_id`; industrial readers filter them out. No canonical-storage transition or migration is part of this release.
+
 ## 4. Business data and money flow
 
 The backend records source documents (trip, LR, receipt, payment, expense, fuel, advance, handover, and 3PL entry) in their domain collections. Financial effects are posted through `backend/ledger.py`. Finance and dashboard endpoints aggregate those records to derive balances and totals.
 
 ```mermaid
 flowchart LR
-    Trip["Trip / completed freight"]
-    LR["LR freight"]
-    Receipt["Party receipt"]
-    Expense["Expense / fuel / payment"]
-    Advance["Driver or employee advance"]
-    Handover["Deewanji handover"]
-    Source[("Tenant source documents")]
-    Ledger[("ledger<br/>entity debit / credit")]
-    Cashbook[("cashbook<br/>cash / bank / Deewanji in / out")]
-    Finance["Finance summaries, profiles,<br/>dashboard, reports"]
+    Industrial["Industrial trips / LRs / receipts / expenses"]
+    Booking["Site bookings / site LRs / site payments"]
+    OfficeExpense["expenses rows without site_id"]
+    TaggedExpense["expenses rows with site_id"]
+    Ledger[("Shared tenant ledger<br/>entity debit / credit")]
+    Cashbook[("Shared tenant cashbook<br/>cash / bank / Deewanji")]
+    OfficeScope["Industrial owner reads<br/>site_id absent"]
+    SiteScope["Booking reads<br/>tenant + business_id + site_id"]
+    IndustrialFinance["Industrial Finance / Reports<br/>profiles / trip costs"]
+    BookingFinance["Booking Dashboard / site trip expenses"]
     Cancel["Cancel source entry"]
     Reversal["Mark linked postings cancelled"]
 
-    Trip --> Source
-    LR --> Source
-    Receipt --> Source
-    Expense --> Source
-    Advance --> Source
-    Handover --> Source
-    Source -->|"receivables / payables / advances"| Ledger
-    Source -->|"cash movement when applicable"| Cashbook
-    Ledger --> Finance
-    Cashbook --> Finance
-    Source --> Cancel --> Reversal
+    Industrial --> OfficeExpense
+    Industrial -->|"receivables / payables"| Ledger
+    Industrial -->|"cash movement"| Cashbook
+    Booking --> TaggedExpense
+    Booking -->|"site-scoped effects"| Ledger
+    Booking -->|"site-scoped cash movement"| Cashbook
+    OfficeExpense --> OfficeScope
+    Ledger --> OfficeScope
+    Cashbook --> OfficeScope
+    OfficeScope --> IndustrialFinance
+    TaggedExpense --> SiteScope
+    Ledger --> SiteScope
+    Cashbook --> SiteScope
+    SiteScope --> BookingFinance
+    Industrial --> Cancel --> Reversal
+    Booking --> Cancel
     Reversal --> Ledger
     Reversal --> Cashbook
 ```
@@ -191,10 +255,14 @@ All business API routes are mounted under `/api`. Most business reads/writes dep
 |---|---|
 | Auth and profile | `POST /auth/login`, `GET /auth/me`, `GET /me` |
 | Settings and masters | `/settings`, `/masters/{res}`, `/parties/suggest` |
-| Trips and LRs | `/trips`, `/trips/{id}`, `/lrs`, `/lrs/{id}`, `/lr-stats` |
+| Industrial Trips and LRs (owner-only) | `/trips`, `/trips/{id}`, `/lrs`, `/lrs/{id}`, `/lr-stats` |
+| Site booking operations (owner/site-scoped) | `/sites`, `/sites/{site_id}/trips`, `/sites/{site_id}/trips/{trip_id}/lrs`, and canonical site trip/LR detail routes |
 | Transactions | `/receipts`, `/handovers`, `/expenses`, `/fuel`, `/payments`, `/advances`, `/tpl`; cancel operations use `/{id}/cancel` |
 | Ledger and entity profiles | `/ledger/{etype}/{eid}`, `/profile/{vehicle|driver|party|employee|fuel_pump|partner}/{id}` |
-| Finance and dashboard | `/finance/{summary|receivables|payables|cashbook|charts}`, `/dashboard`, `/dashboard/monthly`, `/alerts` |
+| Industrial Finance and reports (owner-only) | `/finance/{summary|receivables|payables|cashbook|charts}`, `/reports/{name}`; shared financial reads exclude site-tagged rows |
+| Booking dashboard (owner/site-scoped) | `/sites/system-dashboard`, `/sites/{site_id}/dashboard`; site-specific dates, payments and expenses |
+| Booking reports (owner-only) | `/sites/system-reports/lrs`; tenant/site-scoped LR search, date filters and pagination |
+| Booking LR charge edits (owner/site-scoped) | `PATCH /sites/{site_id}/trips/{trip_id}/lrs/{lr_id}`; audited canonical LR update |
 | Search, reports, documents | `/search`, `/reports/{name}`, `/upload`, `/files/{path}` |
 | Tracking integration | `/tracking/live` (WheelsEye tokens are configured per vehicle) |
 | Platform owner | `/platform/{summary|tenants|errors}`, `/platform/tenants`, `/platform/tenants/{id}`, `/platform/tenants/{id}/reset-password` |
@@ -207,39 +275,43 @@ The intended interaction is an office workflow centered on a business owner: cre
 
 ```mermaid
 flowchart TB
-    Office["Transport office"]
+    Business["Transport business"]
     Setup["Settings<br/>company · routes · numbering"]
-    Fleet["Masters<br/>vehicles · drivers · parties · team"]
-    Run["Operations<br/>trips · LRs"]
-    Money["Transactions<br/>collections · expenses · fuel · payments"]
-    Accounts["Derived accounts<br/>ledger · cashbook · balances"]
-    Insight["Insights<br/>dashboard · profiles · finance · reports"]
+    Masters["Shared masters<br/>vehicles · drivers · selected parties"]
+    Booking["Daily site bookings<br/>site trips · site LRs"]
+    Industrial["Industrial shipments<br/>trips · LRs"]
+    SiteMoney["Booking money<br/>site payments · tagged expenses/postings"]
+    OfficeMoney["Industrial transactions<br/>receipts · expenses · fuel · payments"]
+    SiteInsight["Booking Dashboard<br/>site-scoped summaries"]
+    OfficeInsight["Industrial Finance / Reports<br/>owner-only, untagged records"]
     Platform["Platform operator<br/>licences · tenants · feature visibility"]
 
-    Office --> Setup
-    Office --> Fleet
-    Setup --> Run
-    Fleet --> Run
-    Run --> Money
-    Money --> Accounts
-    Run --> Insight
-    Accounts --> Insight
-    Platform -. "provisions / governs tenant access" .-> Office
+    Business --> Setup
+    Business --> Masters
+    Setup --> Booking
+    Setup --> Industrial
+    Masters --> Booking
+    Masters --> Industrial
+    Booking --> SiteMoney --> SiteInsight
+    Industrial --> OfficeMoney --> OfficeInsight
+    Platform -. "provisions / governs tenant access" .-> Business
 ```
 
 ### Frontend screens
 
-- `Dashboard.jsx`: operating summary, alerts, collections/cash, and monthly charts.
-- `Trips.jsx`, `TripForm.jsx`, `TripDetail.jsx`: trip list, entry, detail, cost/profit and status.
-- `LRForm.jsx`, `LRView.jsx`: create/print/share freight documents.
+- `SiteConsole.jsx`: focused Booking Dashboard, site administration and operational booking context.
+- `BookingFinance.jsx`: owner-only booking financial summary from site dashboard aggregations; no industrial ledger data.
+- `BookingReports.jsx`: owner-only paginated site-LR report with bounded filters and loaded-row CSV export.
+- `SiteTrip.jsx`: canonical site-trip detail and owner LR charge sheet using the existing site-LR update API.
+- `Trips.jsx`, `TripForm.jsx`, `TripDetail.jsx`: owner-only industrial trip list, entry, detail, cost/profit and status.
+- `LRForm.jsx`, `LRView.jsx`: owner-only industrial LR create/print/share workflows.
 - `Vehicles.jsx`, `VehicleDetail.jsx`: fleet list, records and profiles.
 - `Parties.jsx`, `PartyDetail.jsx`: customer records, outstanding and ledger.
 - `Team.jsx`, `PersonDetail.jsx`: driver/team workflows and balances.
-- `Finance.jsx`: financial categories and entry flows.
-- `Reports.jsx`: report selection, filters and exports.
+- `Finance.jsx`: owner-only industrial financial categories and entry flows; excludes site-tagged shared ledger/cashbook/expense records.
+- `Reports.jsx`: owner-only industrial report selection, filters and exports; does not aggregate site bookings.
 - `Settings.jsx`: business configuration and branding.
 - `Platform.jsx`: platform licence operations and platform settings.
-- `SiteConsole.jsx`: owner system dashboard, site/manager administration, access grants, legacy migration preview and site trip list.
 - `SiteTrip.jsx`: site trip lifecycle, LR booking, per-trip CSVs and staged ledger import.
 - `SiteLRPage.jsx`: editable LR details, customer print view and authorized payment events.
 
@@ -411,3 +483,26 @@ Configuration change in v1.2.0: `tzdata>=2025.2,<2027` provides IANA timezone da
 - Scoped legacy `/trips` LR, expense, and fuel summary aggregations to the IDs in the requested trip page. Empty pages skip all related aggregation; supporting `trip_id` indexes allow bounded matching. Existing cancellation and financial-total semantics are unchanged.
 - Offline tests cover the query filters, totals, empty-page path, index specification, and page-size limits. No live MongoDB latency benchmark was run; production p50/p95 and query plans still need measurement with representative tenant data.
 - No storage migration, database reset, or data deletion is required. The existing tenant-per-database boundary and collection schemas are retained.
+
+### v1.4.0 — 27 September 2026
+
+- Added an owner-only, collapsed Site bookings panel to Trips & LR. It loads site lists, paginated trips and trip-scoped LRs on demand through the existing site APIs, and links to their canonical detail/print routes.
+- Kept site and office records in their original tenant collections and financial workflows. The owner view does not copy records, mirror mutations, or create duplicate ledger/payment effects; site authorization remains enforced by the existing API.
+- Made Booking Dashboard the owner landing/sidebar entry. Its compact KPI row includes filtered trip/LR and financial totals plus active trips and pending reconciliation; quick actions lead into the booking, LR, finance and report workflows. The former `/dashboard` browser route redirects to `/sites`.
+- Added a `total_trips` field to the existing filtered site-dashboard aggregation; it is computed from the same matched site trips as the selected date/site/trip/status/receiver filters.
+- Grouped detailed dashboard analytics and site/manager/category administration into collapsed sections. Existing site/office collections and financial flows are not unified by this view redesign.
+- No API schema or data migration is required. Frontend tests cover lazy loading and canonical trip/LR navigation; live database latency is deployment-specific and was not benchmarked.
+
+### v1.7.0 — 27 September 2026
+
+- Added separate owner-only Booking Finance and Booking Reports screens and a tenant/site-scoped paginated LR report API. The dashboard is now operationally focused; detailed financial breakdowns are available in Booking Finance.
+- Added the owner LR charge sheet on site-trip detail. Bhada/hamali edits call the existing canonical LR update route, preserving server validation, audit and financial idempotency.
+- No booking records were moved, mirrored or newly stored. Site and industrial finance/report sources remain separate.
+
+### v1.6.0 — 27 September 2026
+
+- Removed the site-bookings panel and cross-workflow quick links from industrial Trips/LRs; hid global industrial search and Quick Add controls while on site booking routes. Booking Dashboard/site trip/LR screens and owner-only industrial Trips/LRs/Finance/Reports now have separate navigation and data paths.
+- Tightened `current_user` to business owners only; `site_user` continues resolving owner/site-manager identity for `/api/me` and site-scoped routes, while `require_super` independently enforces platform access.
+- Site booking expenses and ledger/cashbook postings remain in their existing tenant collections with `site_id`. Industrial read models explicitly match rows where `site_id` is absent; industrial expense cancellation also verifies the source row is unscoped before reversing postings.
+- No database, collection, API schema or record migration is introduced. Shared vehicle/driver/master data and existing canonical trip/LR collections remain unchanged.
+- Verification: focused offline backend authorization, financial-scope and site-operations tests passed (51); frontend tests passed (15 across 6 suites); production build completed. No live/write-enabled workflow was run because the available local API was not confirmed to belong to this project or a disposable tenant.

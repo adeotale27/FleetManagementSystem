@@ -93,8 +93,8 @@ async def _resolve_principal(cred: HTTPAuthorizationCredentials):
 
 async def current_user(cred: HTTPAuthorizationCredentials = Depends(bearer)):
     user = await _resolve_principal(cred)
-    if user["role"] == "site_manager":
-        raise HTTPException(status_code=403, detail="Site manager access is limited to site operations")
+    if user["role"] != "owner":
+        raise HTTPException(status_code=403, detail="Business owner access only")
     return user
 
 
@@ -102,7 +102,8 @@ async def site_user(cred: HTTPAuthorizationCredentials = Depends(bearer)):
     return await _resolve_principal(cred)
 
 
-async def require_super(u=Depends(current_user)):
+async def require_super(cred: HTTPAuthorizationCredentials = Depends(bearer)):
+    u = await _resolve_principal(cred)
     if u["role"] != "superadmin":
         raise HTTPException(status_code=403, detail="Platform owner access only")
     return u

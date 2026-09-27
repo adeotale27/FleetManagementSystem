@@ -29,14 +29,21 @@ export default function Parties() {
           </>
         } />
 
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat label="Total Parties" value={rows.length} />
-        <Stat label="Outstanding" value={money(totalOut)} tone="text-brand-600" />
-        <Stat label="With Balance" value={rows.filter((r) => (r.balance || 0) > 0.5).length} />
-        <Stat label="Settled" value={rows.filter((r) => Math.abs(r.balance || 0) <= 0.5).length} />
+      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat label="Total Parties" value={rows.length} sub="In this view" />
+        <Stat label="Outstanding" value={money(totalOut)} tone="text-brand-600" sub="Receivables due" />
+        <Stat label="With Balance" value={rows.filter((r) => (r.balance || 0) > 0.5).length} sub="Open balances" />
+        <Stat label="Settled" value={rows.filter((r) => Math.abs(r.balance || 0) <= 0.5).length} sub="No balance due" />
       </div>
 
-      <Card className="mb-4 p-3.5"><SearchBox value={q} onChange={setQ} placeholder="Party name, mobile, city…" /></Card>
+      <Card className="mb-4 p-3.5">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <SearchBox value={q} onChange={setQ} placeholder="Party name, mobile, city…" />
+          <span className="px-1 text-[12px] font-medium text-muted sm:whitespace-nowrap">
+            {rows.length} {rows.length === 1 ? "party" : "parties"} shown
+          </span>
+        </div>
+      </Card>
 
       <Card className="overflow-hidden">
         {parties.loading && !parties.data ? <Loader /> : parties.error ? <ErrorState text={parties.error} onRetry={parties.reload} /> : (
@@ -50,17 +57,25 @@ export default function Parties() {
               { key: "status", label: "Status", type: "badge" },
             ]}
             rows={rows} onRowClick={(r) => nav(`/parties/${r.id}`)}
-            empty={<EmptyState title="No parties yet"
-              text="Parties are saved automatically when you create an LR — or add one now."
-              action={<Btn onClick={() => setForm({})}>Add Party</Btn>} />}
+            empty={<EmptyState
+              title={q.trim() ? "No matching parties" : "No parties yet"}
+              text={q.trim()
+                ? "Try another name, mobile number or city, or clear your search."
+                : "Parties are saved automatically when you create an LR — or add one now."}
+              action={q.trim()
+                ? <Btn variant="s" onClick={() => setQ("")}>Clear Search</Btn>
+                : <Btn onClick={() => setForm({})}>Add Party</Btn>} />}
             mobile={(r) => (
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-semibold">{r.name}</p>
-                  <p className="text-[12.5px] text-muted">{r.mobile || "no mobile"} · {r.city || "—"}</p>
-                  <p className="text-[12px] text-muted">Last: {dmy(r.last_txn_date)}</p>
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-ink">{r.name}</p>
+                  <p className="mt-0.5 text-[12.5px] text-muted">{r.mobile || "No mobile"} · {r.city || "Location not set"}</p>
+                  <p className="mt-1 text-[12px] text-muted">Last activity: {dmy(r.last_txn_date)}</p>
+                  <p className="mt-1 text-[12px] font-medium text-muted">{r.status || "Status unavailable"}</p>
                 </div>
-                <p className="num font-semibold text-brand-600">{money(r.balance)}</p>
+                <p className={`num shrink-0 font-semibold ${(r.balance || 0) > 0.5 ? "text-brand-600" : "text-muted"}`}>
+                  {money(r.balance)}
+                </p>
               </div>
             )} />
         )}

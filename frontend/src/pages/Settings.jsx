@@ -28,7 +28,6 @@ export default function Settings() {
         expense_categories: s.expense_categories, payment_modes: s.payment_modes,
         lr: s.lr, trip: s.trip, receivable_due_days: Number(s.receivable_due_days || 30),
         opening_cash: Number(s.opening_cash || 0), opening_bank: Number(s.opening_bank || 0),
-        opening_cash: Number(s.opening_cash || 0), opening_bank: Number(s.opening_bank || 0),
       };
       await api.put("/settings", body);
       toast("Settings saved");
@@ -69,14 +68,16 @@ export default function Settings() {
   };
 
   const SaveBar = (
-    <div className="sticky bottom-20 z-20 mt-4 flex justify-end md:bottom-4">
-      <Btn icon={Save} data-testid="settings-save" disabled={busy} onClick={() => save()}>{busy ? "Saving…" : "Save Settings"}</Btn>
+    <div className="sticky bottom-20 z-20 mt-4 flex justify-end border-t border-line/80 bg-canvas/90 py-3 backdrop-blur md:bottom-4 md:border-0 md:bg-transparent md:py-0">
+      <Btn icon={Save} data-testid="settings-save" disabled={busy} onClick={() => save()}>
+        {busy ? "Saving…" : "Save Settings"}
+      </Btn>
     </div>
   );
 
   return (
     <div>
-      <PageHead title="Settings" subtitle="Company details, locations, routes and LR setup" />
+      <PageHead title="Settings" subtitle="Configure company identity, operating locations, routes and document numbering" />
       <Tabs value={tab} onChange={setTab} tabs={[
         { value: "company", label: "Company & LR" },
         { value: "locations", label: "Base Locations" },
@@ -87,9 +88,14 @@ export default function Settings() {
 
       {tab === "company" && (
         <>
-          <Card className="mb-4 p-4">
-            <div className="mb-4 flex items-center gap-2 text-brand-600"><Building2 size={18} />
-              <h3 className="font-head text-[16px] font-bold text-ink">Company Details (printed on every LR)</h3></div>
+          <Card className="mb-4 p-4 md:p-5">
+            <div className="mb-5 flex items-start gap-3 border-b border-line pb-4">
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600"><Building2 size={19} /></span>
+              <div>
+                <h3 className="font-head text-[16px] font-bold text-ink">Company Details</h3>
+                <p className="mt-0.5 text-[13px] text-muted">Business identity and contact details printed on every LR.</p>
+              </div>
+            </div>
             <div className="grid gap-3.5 md:grid-cols-2">
               <Input label="Company Name" value={s.company.name || ""} onChange={setC("name")} data-testid="set-company-name" />
               <Input label="Owner Name" value={s.company.owner_name || ""} onChange={setC("owner_name")} data-testid="set-owner-name" />
@@ -109,13 +115,13 @@ export default function Settings() {
                 <p className="lbl">Business Logo (prints on every LR)</p>
                 <div className="flex items-center gap-4">
                   {s.company.logo
-                    ? <img src={s.company.logo} alt="logo" className="h-16 w-16 rounded-lg border border-line object-contain" />
+                    ? <img src={s.company.logo} alt="Business logo preview" className="h-16 w-16 rounded-lg border border-line bg-white object-contain p-1" />
                     : <div className="grid h-16 w-16 place-items-center rounded-lg bg-brand-500 text-white"><Truck size={26} /></div>}
                   <div>
-                    <input type="file" accept="image/*" onChange={logoUpload} data-testid="set-logo"
+                    <input type="file" accept="image/*" aria-label="Upload business logo" onChange={logoUpload} data-testid="set-logo"
                       className="text-[13px] file:mr-3 file:rounded-2xl file:border-0 file:bg-brand-500 file:px-3 file:py-2 file:font-semibold file:text-white" />
                     {s.company.logo && (
-                      <button onClick={() => setS({ ...s, company: { ...s.company, logo: "" } })}
+                      <button type="button" aria-label="Remove business logo" onClick={() => setS({ ...s, company: { ...s.company, logo: "" } })}
                         className="mt-2 block text-[12.5px] font-semibold text-red-600">Remove logo</button>
                     )}
                   </div>
@@ -125,14 +131,14 @@ export default function Settings() {
                 <p className="lbl">Owner Photo</p>
                 <div className="flex items-center gap-4">
                   {s.company.owner_photo
-                    ? <img src={s.company.owner_photo} alt="owner" className="h-16 w-16 rounded-full border border-line object-cover" />
+                    ? <img src={s.company.owner_photo} alt="Owner photo preview" className="h-16 w-16 rounded-full border border-line object-cover" />
                     : <div className="grid h-16 w-16 place-items-center rounded-full bg-brand-50 text-brand-600">
                         <User size={26} /></div>}
                   <div>
-                    <input type="file" accept="image/*" capture="environment" onChange={photoUpload} data-testid="set-owner-photo"
+                    <input type="file" accept="image/*" capture="environment" aria-label="Upload owner photo" onChange={photoUpload} data-testid="set-owner-photo"
                       className="text-[13px] file:mr-3 file:rounded-2xl file:border-0 file:bg-brand-500 file:px-3 file:py-2 file:font-semibold file:text-white" />
                     {s.company.owner_photo && (
-                      <button onClick={() => setS({ ...s, company: { ...s.company, owner_photo: "" } })}
+                      <button type="button" aria-label="Remove owner photo" onClick={() => setS({ ...s, company: { ...s.company, owner_photo: "" } })}
                         className="mt-2 block text-[12.5px] font-semibold text-red-600">Remove photo</button>
                     )}
                   </div>
@@ -143,8 +149,11 @@ export default function Settings() {
 
           
 
-          <Card className="mt-4 p-4">
-            <h3 className="mb-4 font-head text-[16px] font-bold">Numbering & Due Days</h3>
+          <Card className="mt-4 p-4 md:p-5">
+            <div className="mb-5 border-b border-line pb-4">
+              <h3 className="font-head text-[16px] font-bold">Numbering & Due Days</h3>
+              <p className="mt-0.5 text-[13px] text-muted">Set the next document references and default receivable timing.</p>
+            </div>
             <div className="grid gap-3.5 md:grid-cols-4">
               <Input label="LR Prefix" value={s.lr.prefix} onChange={(e) => setS({ ...s, lr: { ...s.lr, prefix: e.target.value.toUpperCase() } })} data-testid="set-lr-prefix" />
               <Input label="Next LR Number" type="number" value={s.lr.next} onChange={(e) => setS({ ...s, lr: { ...s.lr, next: Number(e.target.value) } })} />
@@ -152,14 +161,6 @@ export default function Settings() {
               <Input label="Payment Due Days" type="number" value={s.receivable_due_days}
                 onChange={(e) => setS({ ...s, receivable_due_days: e.target.value })}
                 hint="Used for overdue and aging" />
-            </div>
-            <h3 className="mb-3 mt-6 font-head text-[16px] font-bold">Opening Balances</h3>
-            <div className="grid gap-3.5 md:grid-cols-2">
-              <Money label="Opening Cash in Hand" value={s.opening_cash ?? ""} data-testid="set-opening-cash"
-                onChange={(e) => setS({ ...s, opening_cash: e.target.value })}
-                hint="Cash you already had before using this app" />
-              <Money label="Opening Bank Balance" value={s.opening_bank ?? ""} data-testid="set-opening-bank"
-                onChange={(e) => setS({ ...s, opening_bank: e.target.value })} />
             </div>
             <h3 className="mb-3 mt-6 font-head text-[16px] font-bold">Opening Balances</h3>
             <div className="grid gap-3.5 md:grid-cols-2">
@@ -180,10 +181,11 @@ export default function Settings() {
 
       {tab === "locations" && (
         <>
-          <Card className="p-4">
-            <div className="mb-4 flex items-center justify-between">
+          <Card className="p-4 md:p-5">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2 text-brand-600"><MapPin size={18} />
-                <h3 className="font-head text-[16px] font-bold text-ink">Base Locations</h3></div>
+                <div><h3 className="font-head text-[16px] font-bold text-ink">Base Locations</h3>
+                  <p className="mt-0.5 text-[13px] text-muted">{s.base_locations.length} configured</p></div></div>
               <Btn icon={Plus} data-testid="add-location"
                 onClick={() => setS({ ...s, base_locations: [...s.base_locations, { id: `loc_${rid()}`, name: "", address: "", city: "", state: "", active: true }] })}>
                 Add Location
@@ -192,14 +194,14 @@ export default function Settings() {
             <p className="mb-3 text-[13px] text-muted">Used for indoor trips. Changing an address here updates future trips.</p>
             <div className="space-y-3">
               {s.base_locations.map((l, i) => (
-                <div key={l.id} className="grid gap-2.5 rounded-xl border border-line p-3 md:grid-cols-[1fr_2fr_1fr_auto]">
+                <div key={l.id} className="grid gap-2.5 rounded-xl border border-line bg-canvas/30 p-3 md:grid-cols-[1fr_2fr_1fr_auto] md:p-4">
                   <Input label="Name" value={l.name} data-testid={`loc-name-${i}`}
                     onChange={(e) => { const n = [...s.base_locations]; n[i] = { ...l, name: e.target.value }; setS({ ...s, base_locations: n }); }} />
                   <Input label="Address" value={l.address || ""}
                     onChange={(e) => { const n = [...s.base_locations]; n[i] = { ...l, address: e.target.value }; setS({ ...s, base_locations: n }); }} />
                   <Input label="City" value={l.city || ""}
                     onChange={(e) => { const n = [...s.base_locations]; n[i] = { ...l, city: e.target.value }; setS({ ...s, base_locations: n }); }} />
-                  <button className="mb-1 self-end rounded-lg p-2.5 text-muted hover:bg-red-50 hover:text-red-600"
+                  <button type="button" aria-label={`Remove location ${l.name || i + 1}`} className="mb-1 self-end rounded-lg p-2.5 text-muted hover:bg-red-50 hover:text-red-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500"
                     onClick={() => setS({ ...s, base_locations: s.base_locations.filter((x) => x.id !== l.id) })}>
                     <Trash2 size={17} />
                   </button>
@@ -214,10 +216,11 @@ export default function Settings() {
 
       {tab === "routes" && (
         <>
-          <Card className="p-4">
-            <div className="mb-4 flex items-center justify-between">
+          <Card className="p-4 md:p-5">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2 text-brand-600"><Route size={18} />
-                <h3 className="font-head text-[16px] font-bold text-ink">Indoor Routes</h3></div>
+                <div><h3 className="font-head text-[16px] font-bold text-ink">Indoor Routes</h3>
+                  <p className="mt-0.5 text-[13px] text-muted">{s.routes.length} configured</p></div></div>
               <Btn icon={Plus} data-testid="add-route"
                 onClick={() => setS({ ...s, routes: [...s.routes, { id: `rt_${rid()}`, from_id: "", to_id: "", name: "", default_amount: 0, active: true }] })}>
                 Add Route
@@ -233,7 +236,7 @@ export default function Settings() {
                   setS({ ...s, routes: n });
                 };
                 return (
-                  <div key={r.id} className="grid gap-2.5 rounded-xl border border-line p-3 md:grid-cols-[1fr_1fr_1fr_auto]">
+                  <div key={r.id} className="grid gap-2.5 rounded-xl border border-line bg-canvas/30 p-3 md:grid-cols-[1fr_1fr_1fr_auto] md:p-4">
                     <Select label="From" value={r.from_id} data-testid={`route-from-${i}`}
                       options={s.base_locations.map((l) => ({ value: l.id, label: l.name }))}
                       onChange={(e) => upd({ from_id: e.target.value })} />
@@ -242,7 +245,8 @@ export default function Settings() {
                       onChange={(e) => upd({ to_id: e.target.value })} />
                     <Money label="Default Amount (optional)" value={r.default_amount || ""}
                       onChange={(e) => upd({ default_amount: Number(e.target.value || 0) })} />
-                    <button className="mb-1 self-end rounded-lg p-2.5 text-muted hover:bg-red-50 hover:text-red-600"
+                    <button type="button" aria-label={`Remove route ${locName(r.from_id) || "origin"} to ${locName(r.to_id) || "destination"}`}
+                      className="mb-1 self-end rounded-lg p-2.5 text-muted hover:bg-red-50 hover:text-red-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500"
                       onClick={() => setS({ ...s, routes: s.routes.filter((x) => x.id !== r.id) })}>
                       <Trash2 size={17} />
                     </button>
@@ -258,7 +262,7 @@ export default function Settings() {
 
       {tab === "lists" && (
         <>
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="mb-3 grid gap-4 md:grid-cols-2">
             <ChipCard title="Expense Categories" items={s.expense_categories} testid="cat"
               onChange={(v) => setS({ ...s, expense_categories: v })} />
             <ChipCard title="Payment Modes" items={s.payment_modes} testid="mode"
@@ -270,8 +274,9 @@ export default function Settings() {
 
       {tab === "partners" && (
         <Card className="overflow-hidden">
-          <div className="flex items-center justify-between border-b border-line px-4 py-3">
-            <h3 className="font-head text-[16px] font-bold">3PL Partners</h3>
+          <div className="flex flex-col gap-3 border-b border-line px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div><h3 className="font-head text-[16px] font-bold">3PL Partners</h3>
+              <p className="mt-0.5 text-[13px] text-muted">Companies you assign trips to and settle balances with.</p></div>
             <Btn icon={Plus} data-testid="add-partner" onClick={() => setForm({ res: "partners" })}>Add Partner</Btn>
           </div>
           <DataTable testid="partners-table"
@@ -303,7 +308,10 @@ function ChipCard({ title, items, onChange, testid }) {
         {items.map((it) => (
           <span key={it} className="inline-flex items-center gap-1.5 rounded-full bg-canvas px-3 py-1.5 text-[13px] font-medium">
             {it}
-            <button onClick={() => onChange(items.filter((x) => x !== it))} className="text-muted hover:text-red-600"><X size={13} /></button>
+            <button type="button" aria-label={`Remove ${it}`} onClick={() => onChange(items.filter((x) => x !== it))}
+              className="rounded-full p-1 text-muted hover:bg-red-50 hover:text-red-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500">
+              <X size={13} />
+            </button>
           </span>
         ))}
         {items.length === 0 && <span className="text-[13px] text-muted">None yet</span>}

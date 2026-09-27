@@ -46,6 +46,10 @@ export default function SiteTrip({ user }) {
   const [expenseError, setExpenseError] = useState("");
   const [expenseMessage, setExpenseMessage] = useState("");
   const [lrs, setLrs] = useState([]);
+  const [chargeDrafts, setChargeDrafts] = useState({});
+  const [savingChargeIds, setSavingChargeIds] = useState([]);
+  const [chargeErrors, setChargeErrors] = useState({});
+  const [chargeMessages, setChargeMessages] = useState({});
   const [lrTotal, setLrTotal] = useState(0);
   const [lrOffset, setLrOffset] = useState(0);
   const [categories, setCategories] = useState({ goods: [], containers: [] });
@@ -91,6 +95,10 @@ export default function SiteTrip({ user }) {
         vehicle_id: tripResponse.data.vehicle_id || "", driver_id: tripResponse.data.driver_id || "",
       });
       setLrs(lrResponse.data.rows);
+      setChargeDrafts(Object.fromEntries(lrResponse.data.rows.map((lr) => [lr.id, {
+        rent: lr.rent ?? "",
+        hamali: lr.hamali ?? "",
+      }])));
       setLrTotal(lrResponse.data.total);
       setLrOffset(lrResponse.data.rows.length);
       setCategories(categoryResponse.data);
@@ -137,8 +145,61 @@ export default function SiteTrip({ user }) {
         params: { limit: 100, offset: lrOffset },
       });
       setLrs((current) => [...current, ...response.data.rows]);
+      setChargeDrafts((current) => ({
+        ...current,
+        ...Object.fromEntries(response.data.rows.map((lr) => [lr.id, {
+          rent: lr.rent ?? "",
+          hamali: lr.hamali ?? "",
+        }])),
+      }));
       setLrOffset(lrOffset + response.data.rows.length);
     } catch (e) { setError(errMsg(e)); }
+  };
+
+  const saveLRCharges = async (lr) => {
+    const draft = chargeDrafts[lr.id] || { rent: lr.rent ?? "", hamali: lr.hamali ?? "" };
+    const amountKey = (value) => value === "" || value == null ? "" : Number(value).toFixed(2);
+    const body = {};
+    if (amountKey(draft.rent) !== amountKey(lr.rent)) body.rent = draft.rent === "" ? null : draft.rent;
+    if (amountKey(draft.hamali) !== amountKey(lr.hamali)) body.hamali = draft.hamali === "" ? null : draft.hamali;
+    if (!Object.keys(body).length) return;
+    if ("rent" in body) body.idempotency_key = draft.idempotency_key || makeIdempotencyKey();
+    setSavingChargeIds((current) => [...current, lr.id]);
+    setError("");
+    setMessage("");
+    setChargeErrors((current) => ({ ...current, [lr.id]: "" }));
+    setChargeMessages((current) => ({ ...current, [lr.id]: "" }));
+    try {
+      const response = await api.patch(
+        `/sites/${siteId}/trips/${tripId}/lrs/${lr.id}`, body,
+      );
+      const saved = response.data;
+      setLrs((current) => current.map((item) => item.id === saved.id ? saved : item));
+      setChargeDrafts((current) => ({
+        ...current,
+        [saved.id]: { rent: saved.rent ?? "", hamali: saved.hamali ?? "" },
+      }));
+      setChargeMessages((current) => ({ ...current, [saved.id]: "Saved" }));
+      setMessage(`${lr.lr_ref} charges saved. Booking finance and reports use the updated LR.`);
+    } catch (e) {
+      setChargeErrors((current) => ({ ...current, [lr.id]: errMsg(e) }));
+      setError(errMsg(e));
+    } finally {
+      setSavingChargeIds((current) => current.filter((id) => id !== lr.id));
+    }
+  };
+
+  const updateChargeDraft = (lrId, key, value) => {
+    setChargeDrafts((current) => ({
+      ...current,
+      [lrId]: {
+        ...(current[lrId] || {}),
+        [key]: value,
+        ...(key === "rent" ? { idempotency_key: makeIdempotencyKey() } : {}),
+      },
+    }));
+    setChargeErrors((current) => ({ ...current, [lrId]: "" }));
+    setChargeMessages((current) => ({ ...current, [lrId]: "" }));
   };
 
   const createLR = async (event, matchAction, identityId) => {
@@ -263,22 +324,22 @@ export default function SiteTrip({ user }) {
       row === index ? { ...line, [key]: key === "quantity" ? Number(value) : value } : line),
   }));
 
-  if (loading && !trip) return <Loader label="Loading trip…" />;
+  if (loading && !trip) return <Loader label="Loading booking…" />;
   if (error && !trip) return <ErrorState text={error} onRetry={refresh} />;
   if (!trip) return null;
 
   return (
     <div className="space-y-5">
-      <PageHead title={trip.trip_ref} subtitle={`${trip.operating_date} · Truck ${trip.truck_no} · Driver ${trip.driver_name}`} />
+      <PageHead title={`Booking ${trip.trip_ref}`} subtitle={`${trip.operating_date} · Truck ${trip.truck_no} · Driver ${trip.driver_name}`} />
       {error && <div role="alert" className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
       {message && <div role="status" className="rounded-lg bg-brand-50 px-4 py-3 text-sm text-brand-700">{message}</div>}
       <div className="flex flex-wrap items-center gap-3">
-        <Link className="text-sm text-brand-700 underline" to="/sites">Back to sites</Link>
-        <span className="rounded-full bg-canvas px-3 py-1 text-sm font-medium">Trip {trip.status}</span>
-        {(trip.status === "open" || owner) && <Btn onClick={closeTrip}>{trip.status === "open" ? "Close trip" : "Reopen trip"}</Btn>}
+        <Link className="text-sm text-brand-700 underline" to="/sites">Back to bookings</Link>
+        <span className="rounded-full bg-canvas px-3 py-1 text-sm font-medium">Booking {trip.status}</span>
+        {(trip.status === "open" || owner) && <Btn onClick={closeTrip}>{trip.status === "open" ? "Close booking" : "Reopen booking"}</Btn>}
       </div>
       {trip.status === "open" && <Card className="p-4">
-        <h2 className="mb-3 font-semibold">Trip vehicle and driver</h2>
+        <h2 className="mb-3 font-semibold">Booking truck and driver</h2>
         <form onSubmit={updateTrip} className="grid gap-3 md:grid-cols-2">
           <label className="text-sm">Vehicle
             <select className={field} aria-label="Select a vehicle or enter manually" value={tripEdit.vehicle_id}
@@ -312,7 +373,7 @@ export default function SiteTrip({ user }) {
               onChange={(e) => setTripEdit({ ...tripEdit, driver_name: e.target.value })} />}
             {tripEdit.driver_id && <p className="mt-1 text-xs text-muted">Selected: {tripEdit.driver_name}</p>}
           </label>
-          <Btn type="submit">Save trip details</Btn>
+          <Btn type="submit">Save booking details</Btn>
         </form>
       </Card>}
 
@@ -437,7 +498,7 @@ export default function SiteTrip({ user }) {
           </div>}
       </Card>}
 
-      <Card className="p-4">
+      {!owner && <Card className="p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-semibold">Lorry receipts ({lrs.length} of {lrTotal})</h2>
         </div>
@@ -458,7 +519,70 @@ export default function SiteTrip({ user }) {
             </article>)}
           </div>}
         {lrs.length < lrTotal && <Btn variant="s" className="mt-3" onClick={loadMoreLRs}>Load more LRs</Btn>}
-      </Card>
+      </Card>}
+
+      {owner && <Card className="p-4">
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h2 className="font-semibold">LR charge sheet</h2>
+            <p className="mt-1 text-sm text-muted">
+              Edit bhada and hamali by LR. Each row saves to the booking record and is audited.
+            </p>
+          </div>
+          <span className="text-xs text-muted">{lrs.length} of {lrTotal} LRs loaded</span>
+        </div>
+        {trip.status !== "open" && <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          Reopen this booking before correcting LR charges.
+        </p>}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[850px] text-left text-sm">
+            <thead className="border-b border-line bg-canvas text-xs text-muted">
+              <tr>
+                {["LR", "Receiver", "Goods", "Qty", "Bhada (₹)", "Hamali (₹)", "Action"].map((label) =>
+                  <th key={label} className="px-3 py-2 font-medium">{label}</th>)}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {lrs.map((lr) => {
+                const draft = chargeDrafts[lr.id] || { rent: lr.rent ?? "", hamali: lr.hamali ?? "" };
+                const editable = trip.status === "open" && !lr.reconciled;
+                const saving = savingChargeIds.includes(lr.id);
+                return <tr key={lr.id}>
+                  <th scope="row" className="px-3 py-2 font-medium">
+                    <Link className="text-brand-700 underline" to={`/sites/${siteId}/trips/${tripId}/lrs/${lr.id}`}>{lr.lr_ref}</Link>
+                  </th>
+                  <td className="max-w-48 truncate px-3 py-2" title={lr.receiver_label || lr.receiver_name}>
+                    {lr.receiver_label || lr.receiver_name}
+                  </td>
+                  <td className="max-w-40 truncate px-3 py-2" title={lr.goods_type}>{lr.goods_type}</td>
+                  <td className="num px-3 py-2">{lr.total_quantity}</td>
+                  {["rent", "hamali"].map((key) => <td key={key} className="px-3 py-2">
+                    <input aria-label={`${lr.lr_ref} ${key === "rent" ? "bhada" : "hamali"}`}
+                      className="fld w-32" type="number" min="0" step="0.01"
+                      value={draft[key]} disabled={!editable || saving}
+                      onChange={(event) => updateChargeDraft(lr.id, key, event.target.value)} />
+                  </td>)}
+                  <td className="px-3 py-2">
+                    {editable ? <Btn variant="s" disabled={saving} onClick={() => saveLRCharges(lr)}>
+                      {saving ? "Saving…" : "Save row"}
+                    </Btn> : <span className="text-xs text-muted">{lr.reconciled ? "Reconciled" : "Closed"}</span>}
+                    {chargeErrors[lr.id] && <p role="alert" className="mt-1 max-w-48 text-xs text-red-700">{chargeErrors[lr.id]}</p>}
+                    {chargeMessages[lr.id] && <p role="status" className="mt-1 text-xs text-brand-700">{chargeMessages[lr.id]}</p>}
+                  </td>
+                </tr>;
+              })}
+              {lrs.length === 0 && <tr><td colSpan={7} className="px-3 py-8 text-center text-muted">
+                Create an LR to start the charge sheet.
+              </td></tr>}
+            </tbody>
+          </table>
+        </div>
+        {lrs.length < lrTotal && <Btn variant="s" className="mt-3" onClick={loadMoreLRs}>Load more rows</Btn>}
+        <p className="mt-2 text-xs text-muted">
+          Amounts must be non-negative and valid to two decimal places. Bhada cannot be reduced below posted payments.
+          Reconciled LRs stay locked; closed bookings must be reopened first.
+        </p>
+      </Card>}
 
       {owner && <Card className="space-y-3 p-4">
         <h2 className="font-semibold">Trip ledger</h2>

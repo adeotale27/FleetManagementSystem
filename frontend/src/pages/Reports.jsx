@@ -43,7 +43,7 @@ export default function Reports() {
 
   return (
     <div>
-      <PageHead title="Reports" subtitle="Filter, view and export any part of your business"
+      <PageHead title="Industrial Reports" subtitle="Filter and export industrial trips, LRs and office-ledger reports"
         actions={
           <div className="flex flex-wrap gap-2">
             <Btn variant="s" icon={Download} data-testid="rep-csv" onClick={() => exportCSV(name, cols, flat)}>CSV</Btn>
@@ -55,7 +55,8 @@ export default function Reports() {
 
       <div className="mb-4 -mx-4 flex gap-2 overflow-x-auto px-4 pb-2 md:mx-0 md:flex-wrap md:px-0">
         {REPORTS.map((r) => (
-          <button key={r.v} data-testid={`report-${r.v}`} onClick={() => setName(r.v)}
+          <button type="button" key={r.v} data-testid={`report-${r.v}`} onClick={() => setName(r.v)}
+            aria-pressed={name === r.v}
             className={`whitespace-nowrap rounded-full border px-3.5 py-2 text-[13.5px] font-semibold transition-colors ${
               name === r.v ? "border-brand-500 bg-brand-500 text-white" : "border-line bg-white text-muted hover:text-ink"}`}>
             {r.l}
@@ -63,8 +64,15 @@ export default function Reports() {
         ))}
       </div>
 
-      <Card className="mb-4 p-3.5">
-        <div className="grid gap-3 md:grid-cols-4">
+      <Card className="mb-4 p-3.5 sm:p-4">
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <div>
+            <h2 className="font-head text-[15px] font-bold">Report filters</h2>
+            <p className="text-[12.5px] text-muted">Choose a date range and optionally narrow the results</p>
+          </div>
+          <span className="num text-[12px] text-muted">{dmy(f.frm)} – {dmy(f.to)}</span>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
           <Input label="From" type="date" value={f.frm} onChange={(e) => setF({ ...f, frm: e.target.value })} data-testid="rep-from" />
           <Input label="To" type="date" value={f.to} onChange={(e) => setF({ ...f, to: e.target.value })} data-testid="rep-to" />
           {name === "party_ledger" && (
@@ -75,9 +83,9 @@ export default function Reports() {
         </div>
       </Card>
 
-      <Card className="overflow-hidden">
+      <Card className="min-w-0 overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
-          <div><h3 className="font-head text-[16px] font-bold">{label}</h3><p className="text-[12.5px] text-muted">{meta}</p></div>
+          <div><h2 className="font-head text-[16px] font-bold">{label}</h2><p className="text-[12.5px] text-muted">{meta}</p></div>
           {data?.totals && (
             <div className="flex flex-wrap gap-4">
               {Object.entries(data.totals).map(([k, v]) => (

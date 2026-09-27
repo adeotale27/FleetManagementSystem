@@ -76,6 +76,10 @@ export default function LRForm() {
         subtitle="Pick the trip and the details fill in automatically" />
 
       <Card className="mb-4 space-y-4 p-4">
+        <div className="border-b border-line pb-3">
+          <h2 className="font-head text-[16px] font-bold">Trip &amp; transport</h2>
+          <p className="text-[13px] text-muted">Link this receipt to a trip to prefill its route and vehicle.</p>
+        </div>
         <Select label="From Trip (recommended)" value={f.trip_id} data-testid="lr-trip"
           onChange={(e) => setF((s) => ({ ...s, trip_id: e.target.value }))}
           options={(trips.data || []).map((t) => ({
@@ -92,7 +96,10 @@ export default function LRForm() {
       </Card>
 
       <Card className="mb-4 space-y-4 p-4">
-        <p className="lbl">Sender (party sending the goods)</p>
+        <div className="border-b border-line pb-3">
+          <h2 className="font-head text-[16px] font-bold">Sender</h2>
+          <p className="text-[13px] text-muted">Party sending the goods; existing parties can be selected by name.</p>
+        </div>
         <Autocomplete label="Sender Name" required value={sender.name} testid="lr-sender"
           onChange={(v) => setSender((s) => ({ ...s, name: v, party_id: null }))}
           onPick={(p) => setSender({ name: p.name, mobile: p.mobile || "", city: p.city || "", party_id: p.id })}
@@ -114,7 +121,10 @@ export default function LRForm() {
       </Card>
 
       <Card className="mb-4 space-y-4 p-4">
-        <p className="lbl">Receiver (who will take delivery)</p>
+        <div className="border-b border-line pb-3">
+          <h2 className="font-head text-[16px] font-bold">Receiver</h2>
+          <p className="text-[13px] text-muted">Enter the delivery contact and destination details.</p>
+        </div>
         <div className="grid gap-3 md:grid-cols-2">
           <Input label="Receiver Name" value={receiver.name} data-testid="lr-receiver"
             onChange={(e) => setReceiver({ ...receiver, name: e.target.value })} />
@@ -130,7 +140,10 @@ export default function LRForm() {
       </Card>
 
       <Card className="mb-4 space-y-4 p-4">
-        <p className="lbl">Goods</p>
+        <div className="border-b border-line pb-3">
+          <h2 className="font-head text-[16px] font-bold">Goods &amp; freight</h2>
+          <p className="text-[13px] text-muted">Add goods lines and set the freight amount and payment status.</p>
+        </div>
         <div className="grid gap-3 md:grid-cols-2">
           <Input label="Goods Description" value={f.goods_description} data-testid="lr-goods"
             onChange={set("goods_description")} placeholder="Rice bags, cement…" />

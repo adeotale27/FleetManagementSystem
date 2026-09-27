@@ -63,25 +63,34 @@ export default function Finance() {
 
   const s = sum.data;
   const DateBar = (
-    <Card className="mb-4 flex flex-wrap items-end gap-3 p-3.5">
-      <Input label="From" type="date" value={range.frm} onChange={(e) => setRange({ ...range, frm: e.target.value })} data-testid="fin-from" />
-      <Input label="To" type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} data-testid="fin-to" />
-      <Btn variant="s" onClick={() => setRange({ frm: todayISO(), to: todayISO() })}>Today</Btn>
-      <Btn variant="s" onClick={() => setRange({ frm: monthStart(), to: todayISO() })}>This Month</Btn>
+    <Card className="mb-4 p-3.5 sm:p-4">
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <div>
+          <h2 className="font-head text-[15px] font-bold">Date range</h2>
+          <p className="text-[12.5px] text-muted">Showing ledger entries between the selected dates</p>
+        </div>
+        <span className="num text-[12px] text-muted">{dmy(range.frm)} – {dmy(range.to)}</span>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto] lg:items-end">
+        <Input label="From" type="date" value={range.frm} onChange={(e) => setRange({ ...range, frm: e.target.value })} data-testid="fin-from" />
+        <Input label="To" type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} data-testid="fin-to" />
+        <Btn variant="s" className="w-full sm:w-auto" onClick={() => setRange({ frm: todayISO(), to: todayISO() })}>Today</Btn>
+        <Btn variant="s" className="w-full sm:w-auto" onClick={() => setRange({ frm: monthStart(), to: todayISO() })}>This Month</Btn>
+      </div>
     </Card>
   );
 
   return (
     <div>
-      <PageHead title="Finance" subtitle="Every rupee, calculated from your entries — nothing typed by hand"
+      <PageHead title="Industrial Finance" subtitle="Industrial transport balances and postings from the office ledger"
         actions={
-          <>
+          <div className="flex flex-wrap justify-end gap-2" aria-label="Industrial finance actions">
             <Btn variant="s" icon={Banknote} data-testid="fin-collection" onClick={() => setEntry("collection")}>Collection</Btn>
             <Btn variant="s" icon={Wallet} data-testid="fin-payment" onClick={() => setEntry("payment")}>Payment</Btn>
             <Btn variant="s" icon={Receipt} data-testid="fin-expense" onClick={() => setEntry("expense")}>Expense</Btn>
             <Btn variant="s" icon={Fuel} data-testid="fin-fuel" onClick={() => setEntry("fuel")}>Diesel</Btn>
             <Btn icon={HandCoins} data-testid="fin-handover" onClick={() => setEntry("handover")}>Handover</Btn>
-          </>
+          </div>
         } />
 
       <Tabs value={tab} onChange={(v) => setSp({ tab: v })} tabs={TABS} />
@@ -106,38 +115,43 @@ export default function Finance() {
               </div>
 
               {charts.loading && !charts.data ? <Loader label="Building charts…" /> : charts.data && (
-                <div className="grid gap-4 lg:grid-cols-2">
-                  <ChartCard title="Money In vs Money Out" sub="Last 14 days">
-                    <ResponsiveContainer width="100%" height={240}>
+                <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+                  <ChartCard title="Money In vs Money Out" sub="Last 14 days · source: finance ledger" ariaLabel="Bar chart comparing money in and money out for the last 14 days">
+                    <div className="h-[240px]" role="img" aria-label="Money in and money out chart, values in Indian rupees">
+                    <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={charts.data.money_flow}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#E3E7EB" vertical={false} />
                         <XAxis dataKey="date" fontSize={11} stroke="#69747F" />
-                        <YAxis fontSize={11} stroke="#69747F" tickFormatter={(v) => v >= 1000 ? `${v / 1000}k` : v} />
+                        <YAxis fontSize={11} stroke="#69747F" tickFormatter={(v) => v >= 1000 ? `₹${v / 1000}k` : `₹${v}`} />
                         <Tooltip formatter={(v) => money(v)} />
                         <Legend iconSize={9} />
                         <Bar dataKey="money_in" name="Money In" fill="#0B5C4E" radius={[3, 3, 0, 0]} />
                         <Bar dataKey="money_out" name="Money Out" fill="#E0A33E" radius={[3, 3, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
+                    </div>
                   </ChartCard>
 
-                  <ChartCard title="Collection Trend" sub="Money received per day">
+                  <ChartCard title="Collection Trend" sub="Last 14 days · source: receipts ledger">
                     {charts.data.collection_trend.length ? (
-                      <ResponsiveContainer width="100%" height={240}>
+                      <div className="h-[240px]" role="img" aria-label="Line chart showing daily collections in Indian rupees">
+                      <ResponsiveContainer width="100%" height="100%">
                         <LineChart data={charts.data.collection_trend}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#E3E7EB" vertical={false} />
                           <XAxis dataKey="date" fontSize={11} stroke="#69747F" />
-                          <YAxis fontSize={11} stroke="#69747F" tickFormatter={(v) => v >= 1000 ? `${v / 1000}k` : v} />
+                          <YAxis fontSize={11} stroke="#69747F" tickFormatter={(v) => v >= 1000 ? `₹${v / 1000}k` : `₹${v}`} />
                           <Tooltip formatter={(v) => money(v)} />
                           <Line type="monotone" dataKey="amount" stroke="#0B5C4E" strokeWidth={2.5} dot={{ r: 3 }} />
                         </LineChart>
                       </ResponsiveContainer>
+                      </div>
                     ) : <EmptyState title="No collections yet" text="Record a collection to see the trend." />}
                   </ChartCard>
 
-                  <ChartCard title="Expense Breakdown" sub="Last 14 days">
+                  <ChartCard title="Expense Breakdown" sub="Last 14 days · source: expense ledger">
                     {charts.data.expense_breakdown.length ? (
-                      <ResponsiveContainer width="100%" height={240}>
+                      <div className="h-[240px]" role="img" aria-label="Pie chart breaking down expenses in Indian rupees">
+                      <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                           <Pie data={charts.data.expense_breakdown} dataKey="value" nameKey="name"
                             innerRadius={50} outerRadius={85} paddingAngle={2}>
@@ -147,20 +161,23 @@ export default function Finance() {
                           <Legend iconSize={9} />
                         </PieChart>
                       </ResponsiveContainer>
+                      </div>
                     ) : <EmptyState title="No expenses yet" />}
                   </ChartCard>
 
-                  <ChartCard title="Receivable Aging" sub="How old is the pending money">
+                  <ChartCard title="Receivable Aging" sub="Current snapshot · source: receivables ledger">
                     {charts.data.receivable_aging.length ? (
-                      <ResponsiveContainer width="100%" height={240}>
+                      <div className="h-[240px]" role="img" aria-label="Horizontal bar chart showing receivable aging in Indian rupees">
+                      <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={charts.data.receivable_aging} layout="vertical">
                           <CartesianGrid strokeDasharray="3 3" stroke="#E3E7EB" horizontal={false} />
-                          <XAxis type="number" fontSize={11} tickFormatter={(v) => v >= 1000 ? `${v / 1000}k` : v} />
+                          <XAxis type="number" fontSize={11} tickFormatter={(v) => v >= 1000 ? `₹${v / 1000}k` : `₹${v}`} />
                           <YAxis type="category" dataKey="name" fontSize={11} width={62} />
                           <Tooltip formatter={(v) => money(v)} />
                           <Bar dataKey="value" name="Outstanding" fill="#2C8474" radius={[0, 3, 3, 0]} />
                         </BarChart>
                       </ResponsiveContainer>
+                      </div>
                     ) : <EmptyState title="Nothing pending" />}
                   </ChartCard>
                 </div>
@@ -178,6 +195,7 @@ export default function Finance() {
                   ))}
                 </div>
                 <Card className="overflow-hidden">
+                  <div className="min-w-0">
                   <DataTable testid="receivables-table"
                     columns={[
                       { key: "party", label: "Party", strong: true },
@@ -199,6 +217,7 @@ export default function Finance() {
                         <div className="text-right"><p className="num font-semibold">{money(r.outstanding)}</p><Badge>{r.status}</Badge></div>
                       </div>
                     )} />
+                  </div>
                 </Card>
                 <ExportBar name="receivables" rows={recv.data?.rows} cols={[
                   { key: "party", label: "Party" }, { key: "mobile", label: "Mobile" },
@@ -216,6 +235,7 @@ export default function Finance() {
                   <Stat label="3PL Partners" value={money0((pay.data?.rows || []).filter((r) => r.entity_type === "partner").reduce((a, b) => a + b.outstanding, 0))} />
                 </div>
                 <Card className="overflow-hidden">
+                  <div className="min-w-0">
                   <DataTable testid="payables-table"
                     columns={[
                       { key: "name", label: "Name", strong: true },
@@ -228,6 +248,7 @@ export default function Finance() {
                     ]}
                     rows={pay.data?.rows || []}
                     empty={<EmptyState title="Nothing to pay" text="No pending fuel pump or partner bills." />} />
+                  </div>
                 </Card>
               </>
             ))}
@@ -252,7 +273,7 @@ export default function Finance() {
                         onClick={(e) => e.stopPropagation()} className="font-semibold text-brand-600">View</a>) : "—" },
                     { key: "amount", label: "Amount", type: "money", right: true },
                     { key: "act", label: "", render: (r) => !r.cancelled && (
-                      <button onClick={(e) => { e.stopPropagation(); cancelEntry("/receipts", r.id); }}
+                      <button type="button" aria-label="Cancel and reverse collection" onClick={(e) => { e.stopPropagation(); cancelEntry("/receipts", r.id); }}
                         className="text-muted hover:text-red-600" title="Cancel & reverse"><Ban size={15} /></button>) },
                   ]}
                   rows={colls.data || []}
@@ -350,7 +371,7 @@ export default function Finance() {
                     { key: "mode", label: "Mode" },
                     { key: "amount", label: "Amount", type: "money", right: true },
                     { key: "act", label: "", render: (r) => !r.cancelled && (
-                      <button onClick={() => cancelEntry("/payments", r.id)} className="text-muted hover:text-red-600"><Ban size={15} /></button>) },
+                      <button type="button" aria-label="Cancel and reverse payment" onClick={() => cancelEntry("/payments", r.id)} className="text-muted hover:text-red-600"><Ban size={15} /></button>) },
                   ]}
                   rows={pays.data || []}
                   empty={<EmptyState title="No payments in this period" action={<Btn onClick={() => setEntry("payment")}>Record Payment</Btn>} />} />
@@ -372,7 +393,7 @@ export default function Finance() {
                     { key: "remarks", label: "Remarks" },
                     { key: "amount", label: "Amount", type: "money", right: true },
                     { key: "act", label: "", render: (r) => !r.cancelled && (
-                      <button onClick={() => cancelEntry("/expenses", r.id)} className="text-muted hover:text-red-600"><Ban size={15} /></button>) },
+                      <button type="button" aria-label="Cancel and reverse expense" onClick={() => cancelEntry("/expenses", r.id)} className="text-muted hover:text-red-600"><Ban size={15} /></button>) },
                   ]}
                   rows={exps.data || []}
                   empty={<EmptyState title="No expenses in this period" action={<Btn onClick={() => setEntry("expense")}>Record Expense</Btn>} />}
@@ -401,7 +422,7 @@ export default function Finance() {
                     { key: "amount", label: "Amount", type: "money", right: true },
                     { key: "mode", label: "Payment" },
                     { key: "act", label: "", render: (r) => !r.cancelled && (
-                      <button onClick={() => cancelEntry("/fuel", r.id)} className="text-muted hover:text-red-600"><Ban size={15} /></button>) },
+                      <button type="button" aria-label="Cancel and reverse diesel entry" onClick={() => cancelEntry("/fuel", r.id)} className="text-muted hover:text-red-600"><Ban size={15} /></button>) },
                   ]}
                   rows={fuel.data || []}
                   empty={<EmptyState title="No diesel entries" action={<Btn onClick={() => setEntry("fuel")}>Record Diesel</Btn>} />} />
@@ -430,7 +451,7 @@ export default function Finance() {
                       { key: "partner_amount", label: "Payable", type: "money", right: true },
                       { key: "margin", label: "Margin", type: "money", right: true },
                       { key: "act", label: "", render: (r) => !r.cancelled && (
-                        <button onClick={() => cancelEntry("/tpl", r.id)} className="text-muted hover:text-red-600"><Ban size={15} /></button>) },
+                        <button type="button" aria-label="Cancel and reverse 3PL trip" onClick={() => cancelEntry("/tpl", r.id)} className="text-muted hover:text-red-600"><Ban size={15} /></button>) },
                     ]}
                     rows={tpl.data || []}
                     empty={<EmptyState title="No 3PL trips" text="Add a trip done through a partner company."
@@ -489,8 +510,8 @@ const SectionHead = ({ title, action }) => (
   </div>
 );
 
-const ChartCard = ({ title, sub, children }) => (
-  <Card className="p-4">
+const ChartCard = ({ title, sub, ariaLabel, children }) => (
+  <Card className="min-w-0 p-4" aria-label={ariaLabel}>
     <div className="mb-3"><h3 className="font-head text-[15.5px] font-bold">{title}</h3>
       <p className="text-[12.5px] text-muted">{sub}</p></div>
     {children}

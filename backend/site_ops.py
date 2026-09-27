@@ -74,6 +74,7 @@ class ManagerAssignment(StrictModel):
     name: str = Field(min_length=2, max_length=100)
     username: str = Field(min_length=3, max_length=60)
     password: Optional[str] = Field(default=None, min_length=12, max_length=128)
+    team_member_id: Optional[str] = Field(default=None, min_length=1, max_length=100)
     permissions: list[str] = Field(default_factory=lambda: list(DEFAULT_MANAGER_PERMISSIONS))
 
 
@@ -601,6 +602,19 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
     permissions = sorted(set(body.permissions))
     if not permissions or set(permissions) - MANAGER_PERMISSIONS:
         raise HTTPException(422, "One or more requested manager permissions are not allowed")
+    team_member = None
+    if body.team_member_id:
+        team_member = await db.team.find_one({
+            "_id": body.team_member_id, "archived": {"$ne": True},
+        })
+        if not team_member:
+            raise HTTPException(422, "Selected team member is unavailable")
+        linked_manager = await platform_db.users.find_one({
+            "tenant_id": business_id, "role": "site_manager",
+            "team_member_id": body.team_member_id, "active": {"$ne": False},
+        })
+        if linked_manager and linked_manager.get("_id") != username:
+            raise HTTPException(409, "That team member is already linked to another manager login")
     old_username = site.get("manager_username")
     existing = await platform_db.users.find_one({"_id": username})
     if existing and (existing.get("tenant_id") != business_id or existing.get("role") != "site_manager"):
@@ -611,9 +625,17 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
     if password and len(password.encode("utf-8")) > 72:
         raise HTTPException(422, "Password must be no more than 72 UTF-8 bytes for bcrypt")
     if existing:
+        update_fields = {
+            "name": _normalize_label(body.name, "Manager name", 100),
+            "active": True,
+        }
+        if body.team_member_id:
+            update_fields["team_member_id"] = body.team_member_id
+        if password:
+            update_fields["password"] = hash_pw(password)
         await platform_db.users.update_one(
             {"_id": username, "tenant_id": business_id},
-            {"$set": {"name": _normalize_label(body.name, "Manager name", 100), "active": True}},
+            {"$set": update_fields},
         )
     else:
         await platform_db.users.insert_one({
@@ -621,17 +643,22 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
             "password": hash_pw(password), "role": "site_manager",
             "tenant_id": business_id, "active": True, "site_ids": [],
             "site_permissions": {}, "created_at": now_iso(),
+            **({"team_member_id": body.team_member_id} if body.team_member_id else {}),
         })
     await _replace_manager_access(username, business_id, site_id, permissions)
-    await db.sites.update_one(
-        {"_id": site_id, "business_id": business_id},
-        {"$set": {"manager_username": username, "updated_at": now_iso()}},
-    )
+    site_update = {"$set": {"manager_username": username, "updated_at": now_iso()}}
+    if body.team_member_id:
+        site_update["$set"]["manager_team_member_id"] = body.team_member_id
+    else:
+        site_update["$unset"] = {"manager_team_member_id": ""}
+    await db.sites.update_one({"_id": site_id, "business_id": business_id}, site_update)
     if old_username and old_username != username:
         await _replace_manager_access(old_username, business_id, site_id, [])
     await _audit(site, u, "site.manager_assigned", "manager", username,
                  old={"username": old_username},
                  new={"username": username, "permissions": permissions})
+    if existing and password:
+        await _audit(site, u, "manager.password_reset", "manager", username)
     return {"site_id": site_id, "username": username, "name": body.name, "permissions": permissions}
 
 
@@ -644,6 +671,7 @@ async def list_site_managers(u=Depends(site_user)):
     ).sort("name", 1).to_list(500)
     return [{
         "username": m["_id"], "name": m.get("name", ""), "active": m.get("active") is not False,
+        "team_member_id": m.get("team_member_id"),
         "site_ids": m.get("site_ids") or [], "site_permissions": m.get("site_permissions") or {},
     } for m in managers]
 
@@ -1123,6 +1151,45 @@ def _payment_status(rent: Any, paid: Decimal) -> str:
     return "partial" if paid > 0 else "unpaid"
 
 
+def _system_lr_report_query(
+    business_id: str, site_ids: list[str], start: str, end: str, search: Optional[str],
+) -> dict[str, Any]:
+    query = {
+        "business_id": business_id,
+        "site_id": {"$in": site_ids},
+        "operating_date": {"$gte": start, "$lte": end},
+    }
+    term = (search or "").strip()
+    if term:
+        escaped = re.escape(term)
+        query["$or"] = [
+            {"lr_ref": {"$regex": escaped, "$options": "i"}},
+            {"receiver_name": {"$regex": escaped, "$options": "i"}},
+            {"receiver_label": {"$regex": escaped, "$options": "i"}},
+            {"goods_type": {"$regex": escaped, "$options": "i"}},
+            {"trip_ref": {"$regex": escaped, "$options": "i"}},
+        ]
+    return query
+
+
+def _activity_by_date(start: str, end: str, trip_rows: list[dict], lr_rows: list[dict]) -> list[dict]:
+    activity = {}
+    for field, rows in (("total_trips", trip_rows), ("total_lrs", lr_rows)):
+        for row in rows:
+            day = row["_id"]
+            activity.setdefault(day, {"date": day, "total_trips": 0, "total_lrs": 0})
+            activity[day][field] = row["count"]
+
+    current = date.fromisoformat(start)
+    last = date.fromisoformat(end)
+    result = []
+    while current <= last:
+        day = current.isoformat()
+        result.append(activity.get(day, {"date": day, "total_trips": 0, "total_lrs": 0}))
+        current += timedelta(days=1)
+    return result
+
+
 async def _lr_rows(
     site: dict[str, Any], trip_id: str, rows: list[dict[str, Any]],
     user: Optional[dict[str, Any]] = None,
@@ -1398,6 +1465,7 @@ async def system_dashboard(
     if not sites:
         zero = {
             "active_sites": 0, "active_managers": 0, "trips_today": 0,
+            "total_trips": 0,
             "open_trips": 0, "closed_trips": 0, "pending_reconciliation": 0,
             "total_lrs": 0, "total_parcels": 0, "recorded_bhada": "0.00",
             "reconciled_bhada": "0.00", "collected_bhada": "0.00",
@@ -1418,6 +1486,7 @@ async def system_dashboard(
                 "by_goods": {"rows": [], "group_count": 0, "truncated": False},
             },
             "recent_activity": [],
+            "activity_by_date": [],
             "alerts": {"trips_awaiting_closure": 0, "ledgers_awaiting_upload": 0,
                        "ledger_imports_needing_review": 0, "unpaid_lrs": 0,
                        "outstanding_bhada": "0.00"},
@@ -1457,16 +1526,25 @@ async def system_dashboard(
         {"site_id": current_site["_id"], "operating_date": _now_at_site(current_site)[0]}
         for current_site in sites
     ]
-    trip_stats = await db.site_trips.aggregate([
+    trip_aggregates = await db.site_trips.aggregate([
         {"$match": trip_query},
-        {"$group": {"_id": "$site_id", "count": {"$sum": 1},
-            "open": {"$sum": {"$cond": [{"$eq": ["$status", "open"]}, 1, 0]}},
-            "closed": {"$sum": {"$cond": [{"$eq": ["$status", "closed"]}, 1, 0]}},
-            "pending_reconciliation": {"$sum": {"$cond": [
-                {"$and": [{"$eq": ["$status", "closed"]}, {"$ne": ["$reconciled", True]}]}, 1, 0]}},
+        {"$facet": {
+            "by_site": [
+                {"$group": {"_id": "$site_id", "count": {"$sum": 1},
+                    "open": {"$sum": {"$cond": [{"$eq": ["$status", "open"]}, 1, 0]}},
+                    "closed": {"$sum": {"$cond": [{"$eq": ["$status", "closed"]}, 1, 0]}},
+                    "pending_reconciliation": {"$sum": {"$cond": [
+                        {"$and": [{"$eq": ["$status", "closed"]}, {"$ne": ["$reconciled", True]}]}, 1, 0]}},
+                }},
+            ],
+            "by_date": [
+                {"$group": {"_id": "$operating_date", "count": {"$sum": 1}}},
+                {"$sort": {"_id": 1}},
+            ],
         }},
-    ]).to_list(500)
-    trip_by_site = {x["_id"]: x for x in trip_stats}
+    ]).to_list(1)
+    trip_aggregates = trip_aggregates[0] if trip_aggregates else {"by_site": [], "by_date": []}
+    trip_by_site = {row["_id"]: row for row in trip_aggregates["by_site"]}
     today_query = {"business_id": business_id, "$or": today_pairs}
     today_filters = []
     if trip_status in ("open", "closed"):
@@ -1507,16 +1585,28 @@ async def system_dashboard(
     site_names = {site["_id"]: site.get("name", "") for site in sites}
     for row in receivables["by_receiver"]["rows"]:
         row["site_name"] = site_names.get(row.get("site_id"), "")
-    lr_stats = await db.site_lrs.aggregate([
+    lr_aggregates = await db.site_lrs.aggregate([
         {"$match": lr_query},
-        {"$group": {"_id": "$site_id", "total": {"$sum": 1},
+        {"$facet": {
+            "by_site": [
+                {"$group": {"_id": "$site_id", "total": {"$sum": 1},
                     "parcels": {"$sum": "$total_quantity"},
                     "rent": {"$sum": {"$ifNull": ["$rent", Decimal128(Decimal("0"))]}},
                     "reconciled_rent": {"$sum": {"$cond": [
                         "$reconciled", "$rent", Decimal128(Decimal("0"))]}},
                     "hamali": {"$sum": {"$ifNull": ["$hamali", Decimal128(Decimal("0"))]}}}},
-    ]).to_list(500)
-    lr_by_site = {x["_id"]: x for x in lr_stats}
+            ],
+            "by_date": [
+                {"$group": {"_id": "$operating_date", "count": {"$sum": 1}}},
+                {"$sort": {"_id": 1}},
+            ],
+        }},
+    ]).to_list(1)
+    lr_aggregates = lr_aggregates[0] if lr_aggregates else {"by_site": [], "by_date": []}
+    lr_by_site = {row["_id"]: row for row in lr_aggregates["by_site"]}
+    activity_by_date = _activity_by_date(
+        start, end, trip_aggregates["by_date"], lr_aggregates["by_date"],
+    )
     active_managers = await platform_db.users.find(
         {"tenant_id": business_id, "role": "site_manager", "active": {"$ne": False}},
         {"_id": 1},
@@ -1554,6 +1644,7 @@ async def system_dashboard(
         expenses = expense_by_site.get(site["_id"], {})
         rows.append({
             "site": _doc(site), "trips_today": today_by_site.get(site["_id"], 0),
+            "total_trips": trips.get("count", 0),
             "open_trips": trips.get("open", 0), "closed_trips": trips.get("closed", 0),
             "pending_reconciliation": trips.get("pending_reconciliation", 0),
             "total_lrs": freight.get("total", 0), "total_parcels": freight.get("parcels", 0),
@@ -1589,6 +1680,7 @@ async def system_dashboard(
             "active_sites": sum(1 for s in sites if s.get("status") == "Active"),
             "active_managers": active_manager_count,
             "trips_today": sum(r["trips_today"] for r in rows),
+            "total_trips": sum(r["total_trips"] for r in rows),
             "open_trips": sum(r["open_trips"] for r in rows),
             "closed_trips": sum(r["closed_trips"] for r in rows),
             "pending_reconciliation": sum(r["pending_reconciliation"] for r in rows),
@@ -1607,6 +1699,7 @@ async def system_dashboard(
             "trip_expense_count": sum(r["trip_expense_count"] for r in rows),
         },
         "recent_activity": [_doc(row) for row in audit],
+        "activity_by_date": activity_by_date,
         "alerts": {
             "trips_awaiting_closure": sum(r["open_trips"] for r in rows),
             "ledgers_awaiting_upload": sum(r["pending_reconciliation"] for r in rows),
@@ -1614,6 +1707,73 @@ async def system_dashboard(
             "unpaid_lrs": sum(r["unpaid_lrs"] for r in rows),
             "outstanding_bhada": format(max(total_reconciled - total_collected, Decimal("0.00")), ".2f"),
         },
+    }
+
+
+@router.get("/sites/system-reports/lrs")
+async def system_lr_report(
+    from_date: Optional[str] = None, to_date: Optional[str] = None,
+    site_id: Optional[str] = None, search: Optional[str] = Query(default=None, max_length=120),
+    limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0),
+    u=Depends(site_user),
+):
+    _owner(u)
+    await initialize_site_storage()
+    business_id = _tenant_id(u)
+    start = _validate_iso_date(from_date).isoformat() if from_date else date.today().isoformat()
+    end = _validate_iso_date(to_date).isoformat() if to_date else start
+    if start > end or (date.fromisoformat(end) - date.fromisoformat(start)).days > 366:
+        raise HTTPException(422, "Date range must be ordered and no longer than 366 days")
+    if site_id:
+        sites = [await _site_for_user(site_id, u)]
+    else:
+        sites = await db.sites.find({"business_id": business_id}).sort("name", 1).to_list(500)
+    site_ids = [site["_id"] for site in sites]
+    if not site_ids:
+        return {"rows": [], "total": 0, "limit": limit, "offset": offset,
+                "from_date": start, "to_date": end}
+
+    query = _system_lr_report_query(business_id, site_ids, start, end, search)
+    total = await db.site_lrs.count_documents(query)
+    lrs = await db.site_lrs.find(query).sort(
+        [("operating_date", -1), ("sequence", -1)]
+    ).skip(offset).limit(limit).to_list(limit)
+    site_by_id = {site["_id"]: site for site in sites}
+    rows = []
+    if lrs:
+        lr_ids = [lr["_id"] for lr in lrs]
+        trip_ids = list({lr["trip_id"] for lr in lrs})
+        payments = await db.site_payments.aggregate([
+            {"$match": {
+                "business_id": business_id,
+                "site_id": {"$in": list({lr["site_id"] for lr in lrs})},
+                "trip_id": {"$in": trip_ids}, "lr_id": {"$in": lr_ids},
+                "posting_status": {"$ne": "rejected"},
+            }},
+            {"$group": {
+                "_id": "$lr_id",
+                "net": {"$sum": {"$cond": [
+                    {"$eq": ["$kind", "reversal"]},
+                    {"$multiply": ["$amount", -1]}, "$amount",
+                ]}},
+            }},
+        ]).to_list(limit)
+        paid_by_lr = {row["_id"]: _decimal_value(row["net"]) for row in payments}
+        for lr in lrs:
+            item = _doc(lr)
+            paid = paid_by_lr.get(lr["_id"], Decimal("0.00"))
+            item["paid_total"] = format(paid, ".2f")
+            item["outstanding"] = format(
+                max(_decimal_value(lr.get("rent")) - paid, Decimal("0.00"))
+                if lr.get("rent") is not None else Decimal("0.00"), ".2f",
+            )
+            item["payment_status"] = _payment_status(lr.get("rent"), paid)
+            item["site_name"] = site_by_id[lr["site_id"]].get("name", "")
+            item["trip_ref"] = lr.get("trip_ref", "")
+            rows.append(item)
+    return {
+        "rows": rows, "total": total, "limit": limit, "offset": offset,
+        "from_date": start, "to_date": end,
     }
 
 

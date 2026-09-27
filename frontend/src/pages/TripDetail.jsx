@@ -58,6 +58,7 @@ export default function TripDetail() {
   };
 
   const next = FLOW[FLOW.indexOf(t.status) + 1];
+  const currentStep = FLOW.indexOf(t.status);
 
   return (
     <div>
@@ -73,6 +74,36 @@ export default function TripDetail() {
             {t.status !== "Cancelled" && <Btn variant="d" icon={Ban} onClick={cancel} data-testid="cancel-trip">Cancel Trip</Btn>}
           </>
         } />
+
+      <Card className="mb-4 p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="font-head text-[16px] font-bold">Trip progress</h2>
+            <p className="text-[13px] text-muted">Current operating status</p>
+          </div>
+          <Badge>{t.status}</Badge>
+        </div>
+        {t.status === "Cancelled" ? (
+          <p className="rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-700" role="status">
+            This trip was cancelled; its financial history is retained.
+          </p>
+        ) : (
+          <ol aria-label="Trip status progress" className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+            {FLOW.map((step, index) => (
+              <li key={step} aria-current={index === currentStep ? "step" : undefined}
+                className="flex items-center gap-2 text-[12px] font-medium text-muted">
+                <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-full border text-[11px] font-bold ${
+                  index < currentStep ? "border-brand-500 bg-brand-500 text-white"
+                    : index === currentStep ? "border-brand-500 bg-brand-50 text-brand-700"
+                      : "border-line bg-white text-muted"}`}>
+                  {index + 1}
+                </span>
+                <span className={index === currentStep ? "font-semibold text-brand-700" : ""}>{step}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="p-4 lg:col-span-2">
