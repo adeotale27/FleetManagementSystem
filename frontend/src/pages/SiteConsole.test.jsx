@@ -78,6 +78,75 @@ describe("SiteConsole fetch cycles", () => {
     expect(api.get.mock.calls.filter(([path]) => path === "/sites/site-b/trip-resources")).toHaveLength(1);
   });
 
+  it("shows shared vehicle and driver choices to a manager creating a booking", async () => {
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [sites[0]] });
+      if (path === "/sites/site-a/trips") return Promise.reject(new Error("No trip read access"));
+      if (path === "/sites/site-a/dashboard") return Promise.reject(new Error("No dashboard read access"));
+      if (path === "/sites/site-a/trip-resources") return Promise.resolve({ data: {
+        vehicles: [{ id: "vehicle-1", vehicle_no: "MH31AB1234", vehicle_type: "Truck", status: "Active" }],
+        drivers: [{ id: "driver-1", name: "Driver One" }],
+      } });
+      return Promise.resolve({ data: {} });
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <SiteConsole user={{
+            role: "site_manager",
+            site_permissions: { "site-a": ["trips:create"] },
+          }} />
+        </MemoryRouter>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const selects = Array.from(container.querySelectorAll("#site-trip-create-form select"));
+    expect(selects[0].textContent).toContain("MH31AB1234");
+    expect(selects[1].textContent).toContain("Driver One");
+    expect(container.textContent).toContain("Booking records: Request failed");
+    expect(container.textContent).not.toContain("Vehicle and driver options: Request failed");
+  });
+
+  it("lets a site manager with daily-ledger permission download the selected site's ledger", async () => {
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    URL.createObjectURL = jest.fn(() => "blob:daily-ledger");
+    URL.revokeObjectURL = jest.fn();
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <SiteConsole user={{
+            role: "site_manager",
+            site_permissions: { "site-a": ["ledger:export"] },
+          }} />
+        </MemoryRouter>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const downloadButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent.includes("Download daily ledger"));
+    expect(downloadButton).not.toBeUndefined();
+    await act(async () => {
+      downloadButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.get).toHaveBeenCalledWith("/sites/site-a/ledger/daily", expect.objectContaining({
+      params: { operating_date: expect.any(String) },
+      responseType: "blob",
+    }));
+
+    URL.createObjectURL = originalCreateObjectURL;
+    URL.revokeObjectURL = originalRevokeObjectURL;
+  });
+
   it("shows the owner-only access register and reveals a reset password only once", async () => {
     api.get.mockImplementation((path) => {
       if (path === "/sites") return Promise.resolve({ data: sites });
@@ -201,6 +270,7 @@ describe("SiteConsole fetch cycles", () => {
     expect(container.textContent).toContain("Lorry receipts (LRs)");
     expect(container.querySelector('[aria-label="Create trips"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Record payments"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Download daily ledger"]')).not.toBeNull();
     expect(container.textContent).toContain("Unticked actions are unavailable to this manager at this site.");
   });
 });

@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Bar, BarChart, CartesianGrid, Legend, Line, LineChart,
@@ -16,12 +16,6 @@ export default function Dashboard() {
   const { data: d, loading, error, reload } = useFetch("/dashboard");
   const mon = useFetch("/dashboard/monthly", { months: 6 });
   const nav = useNavigate();
-
-  useEffect(() => {
-    const h = () => { reload(); mon.reload(); };
-    window.addEventListener("fms:refresh", h);
-    return () => window.removeEventListener("fms:refresh", h);
-  }, [reload, mon.reload]);
 
   if (loading && !d) return <Loader label="Loading your business…" />;
   if (error) return <ErrorState text={error} onRetry={reload} />;
