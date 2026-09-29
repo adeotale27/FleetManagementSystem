@@ -82,5 +82,16 @@ describe("API mutation notices", () => {
     expect(errMsg({
       response: { status: 500, data: { detail: "database secret", reference_id: "abc123" } },
     })).toBe("The server couldn't complete this request. Please try again. Reference: abc123");
+    expect(errMsg({
+      response: {
+        status: 409,
+        data: { detail: {
+          code: "receiver_match_confirmation_required",
+          message: "A receiver with a similar name already exists.",
+          matches: [{ id: "receiver-1", label: "Suresh" }],
+        } },
+      },
+    })).toBe("A receiver with a similar name already exists.");
+    expect(errMsg({ response: { status: 409, data: {} } })).toContain("HTTP 409");
   });
 });

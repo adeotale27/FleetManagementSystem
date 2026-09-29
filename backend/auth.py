@@ -50,6 +50,11 @@ async def upsert_user(username, name, password, role, tenant_id):
         return
     await platform_db.users.insert_one({
         "_id": username, "password": hash_pw(password), **fields,
+        "created_by_id": "system:bootstrap",
+        "created_by_login": "system:bootstrap",
+        "created_by_name": "System bootstrap",
+        "created_by_role": "system",
+        "created_at": datetime.now(timezone.utc).isoformat(),
     })
 
 

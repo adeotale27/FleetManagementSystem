@@ -9,3 +9,4 @@ bcrypt==4.2.1
 python-multipart==0.0.20
 requests==2.32.3
 tzdata>=2025.2,<2027
+openpyxl==3.1.5

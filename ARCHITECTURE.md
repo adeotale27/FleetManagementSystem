@@ -71,7 +71,7 @@ flowchart LR
 
 ## 2. Browser navigation and role design
 
-`frontend/src/App.js` loads `/api/me` when a stored `fms_token` exists, then selects the route set by role. `Layout` provides the shared navigation, quick-entry actions, global search, branding, and logout. Business feature flags currently filter the visible navigation; platform users receive only the platform routes. The owner has separate Booking Dashboard, Booking Setup & Access, Booking Finance/Reports, and Industrial Trips/LRs/Finance/Reports entry points. The operational Booking Dashboard no longer contains site setup, manager administration, or category editing. Site managers receive only their assigned site booking workspace; booking setup, financial/report views, and industrial routes are owner-only. Trips and LRs share `/trips` with a `tab` query parameter.
+`frontend/src/App.js` loads `/api/me` when a stored `fms_token` exists, then selects the route set by role. `Layout` provides the shared navigation, quick-entry actions, global search, branding, and logout. Business feature flags filter visible navigation; platform users receive only platform routes. The owner retains site setup/access and the separate industrial Trips/LRs/Finance/Reports modules. The booking workspace has only Dashboard, Receipts and Ledger. Site managers see these booking functions only for assigned sites and retain no implicit access to industrial modules. Trips and LRs share `/trips` with a `tab` query parameter.
 
 ```mermaid
 flowchart TD
@@ -86,38 +86,43 @@ flowchart TD
     Login --> AuthPost["POST /api/auth/login"]
     AuthPost --> Store["Store returned JWT"]
     Store --> Me
-    Shell --> BookingDashboard["Booking Dashboard · /sites"]
+    Shell --> BookingDashboard["Booking Dashboard · /booking/dashboard"]
+    Shell --> BookingReceipts["Booking Receipts · /booking/receipts"]
+    Shell --> BookingLedger["Booking Ledger · /booking/ledger"]
+    Shell --> BookingFinance["Booking Finance · owner only"]
+    Shell --> BookingAudit["Booking Audit · owner only"]
     Shell --> BookingSetup["Booking Setup & Access · /booking-setup"]
-    Shell --> BookingFinance["Booking Finance · /booking-finance"]
-    Shell --> BookingReports["Booking Reports · /booking-reports"]
     Shell --> Trips["Industrial Trips · /trips?tab=trips"]
     Shell --> LRs["Industrial LRs · /trips?tab=lrs"]
     Trips --> IndustrialDetail["Industrial trip and LR detail"]
-    BookingDashboard --> SiteTripDetail["Canonical site booking trip and LR detail / print"]
-    SiteTripDetail --> TripLedger["Expandable trip ledger editor · owner / lrs:update"]
-    TripLedger --> CanonicalLRUpdate["PATCH site LR · permission checks · audit + MongoDB"]
-    BookingReports --> ReportLedger["Select booking → paginated trip LR ledger"]
-    ReportLedger --> CanonicalLRUpdate
+    BookingDashboard --> TripCreate["Create/select date-scoped trip"]
+    TripCreate --> BookingReceipts
+    BookingReceipts --> CanonicalLRUpdate["Site-scoped receipt API · permission checks · audit + MongoDB"]
+    BookingLedger --> CanonicalLRUpdate
+    BookingFinance --> SiteFinanceAPI["Owner-only site finance summary / follow-up"]
+    BookingAudit --> SiteAuditAPI["Owner-only site audit / pending receipts"]
+    SiteFinanceAPI --> CanonicalLRUpdate
+    SiteAuditAPI --> CanonicalLRUpdate
     Shell --> Fleet["Vehicles"]
     Shell --> Parties["Parties"]
     Shell --> Team["Team"]
     Shell --> Finance["Industrial Finance"]
     Shell --> Reports["Industrial Reports"]
     Shell --> Settings["Office settings"]
-    SiteShell --> SiteConsole["Site operations · /sites"]
-    SiteConsole --> SiteTrips["Assigned site trips"]
-    SiteTrips --> SiteLRs["Site trip LRs"]
+    SiteShell --> BookingDashboard
+    SiteShell --> BookingReceipts
+    SiteShell --> BookingLedger
     PlatformShell --> Licences["Licences and tenant activity"]
     PlatformShell --> PlatformSettings["Platform console"]
 ```
 
 The frontend API client in `frontend/src/lib/api.js` uses `REACT_APP_BACKEND_URL` with `/api` appended, sends the stored token as a bearer credential, and clears it on a non-login 401 response. `useFetch` and `useMaster` in `frontend/src/lib/hooks.js` provide page-level read/reload behavior; pages call the API client for mutations.
 
-Booking Dashboard and site trip/LR pages call site-scoped endpoints and display only canonical booking records. Industrial Trips, LRs, Finance and Reports use the owner-only business APIs and do not request site booking records. The former on-demand site panel and global industrial search/Quick Add controls are hidden on site booking routes to keep the operational domains distinct; this changes navigation only and does not migrate or duplicate records.
+Booking Dashboard, Receipts and Ledger call site-scoped endpoints and display only canonical booking records. Industrial Trips, LRs, Finance and Reports use owner-only business APIs and do not request site booking records. Legacy booking URLs redirect into the new workspace; no historical site-trip or site-LR records are moved or duplicated.
 
 ### Presentation architecture and design view (27 September 2026)
 
-The visual foundation is shared across routes and uses the existing light palette. `frontend/src/index.css` defines CSS design tokens and common component/accessibility behavior; `frontend/tailwind.config.js` maps Tailwind theme colors and elevation to those tokens; `Layout.jsx` composes role-aware desktop/mobile navigation; shared controls live in `components/ui.jsx`. Page-specific layouts and their existing API clients remain responsible for workflows and data. `SiteConsole.jsx` serves the role-guarded operational dashboard at `/sites` and the owner-only setup/access view at `/booking-setup`; the latter handles site creation/editing, Team-profile selection/linkage, manager permissions and booking categories. The selected-site editor labels optional city and location values directly. The owner dashboard response includes a bounded, read-only daily trip/LR count series derived from the same site/date/trip filters as its totals.
+The visual foundation is shared across routes and uses the existing light palette. `frontend/src/index.css` defines CSS design tokens and common component/accessibility behavior; `frontend/tailwind.config.js` maps Tailwind theme colors and elevation to those tokens; `Layout.jsx` composes role-aware desktop/mobile navigation; shared controls live in `components/ui.jsx`. `Booking.jsx` owns the compact booking workspace. `SiteConsole.jsx` continues to provide site operations and owner-only setup/access at `/booking-setup`, including site creation, manager permissions and booking categories. The owner dashboard response includes a bounded, read-only daily trip/LR count series derived from its site/date/trip filters.
 
 ```mermaid
 flowchart TD
@@ -131,15 +136,15 @@ flowchart TD
     API --> Backend["Existing FastAPI routes"]
     Backend --> TenantData[("Tenant/site records")]
     TenantData --> DashboardAPI["/sites/system-dashboard response"]
-    DashboardAPI --> SiteConsole["Booking Dashboard<br/>operational KPIs + activity"]
-    DashboardAPI --> BookingFinance["Booking Finance<br/>site-scoped totals and breakdowns"]
-    TenantData --> BookingReportAPI["/sites/system-reports/lrs<br/>owner-only, scoped and paginated"]
-    BookingReportAPI --> BookingReports["Booking Reports<br/>LR table + trip ledger + CSV"]
-    SiteConsole --> Charts["Operational site/date charts<br/>Recharts"]
-    SiteConsole --> SiteCards["Site overview and activity"]
-    SiteTrip["SiteTrip.jsx"] -->|"PATCH /sites/{site}/trips/{trip}/lrs/{lr}"| CanonicalLRUpdate["Existing LRUpdate validation and audit"]
+    DashboardAPI --> Booking["Booking.jsx<br/>Dashboard · Receipts · Ledger"]
+    Booking --> TripAPI["Site trip API<br/>atomic server-side numbering"]
+    Booking --> ReceiptAPI["Site receipt API<br/>site scope · validation · audit"]
+    ReceiptAPI --> CanonicalLRUpdate["Canonical site-LR records<br/>Decimal-derived total rent"]
+    Booking --> LedgerAPI["Site ledger JSON / CSV APIs<br/>authorized site scope"]
+    LedgerAPI --> CanonicalLRUpdate
+    Booking --> Print["Hindi A4 receipt / ledger print"]
     CanonicalLRUpdate --> TenantData
-    CanonicalLRUpdate -->|"rent delta: idempotent site financial event"| SiteMoney["Site-scoped booking finance"]
+    CanonicalLRUpdate -->|"audited changes; payment history preserved"| SiteMoney["Site-scoped booking finance"]
     Shared --> Accessibility["Focus-visible and reduced-motion support"]
 ```
 
@@ -147,13 +152,18 @@ Design implementation notes:
 
 - The existing forest-green, amber and neutral colors are retained as CSS variables; this adds no dark theme or new palette.
 - Depth is provided by restrained CSS elevation and layered surfaces. No WebGL/3D renderer or new runtime dependency is introduced.
-- Booking Dashboard charts use site dashboard response values. Daily trip/LR counts and site totals follow the selected filters; financial summaries and collection/outstanding charts live on the separate Booking Finance page. `activity_by_date` is grouped by operating date and fills empty dates with zero counts for chart continuity.
-- Booking Finance reads `/sites/system-dashboard`; Booking Reports reads the paginated, owner-only `/sites/system-reports/lrs` endpoint. Both remain within the existing site booking data family and never call industrial Finance/Reports endpoints.
-- Selecting a trip in Booking Reports loads its trip header and the first 100 LRs through the existing site trip/LR read APIs; the owner can page through remaining LRs with “Load more.” Ledger edits call the canonical `PATCH /sites/{site_id}/trips/{trip_id}/lrs/{lr_id}` API. Saved canonical LR fields are returned to both the trip ledger and report row; bhada outstanding/payment status are recalculated from the LR and append-only posted payment/reversal events. Collections and payment events are not directly editable. The update route resolves an allowed receiver change before posting any concurrent first-rent correction, so the financial event targets the resolved party.
-- The expandable site-booking trip ledger editor calls the existing `PATCH /sites/{site_id}/trips/{trip_id}/lrs/{lr_id}` route for changed LR details. Owners and managers with `lrs:update` can edit sender/receiver, goods and containers; managers need both `lrs:update` and `finance:update` to edit charges. Tenant/site authorization, open-trip/reconciliation/payment guards, amount validation, rent idempotency, audit history and Mongo persistence remain server-owned. Payment events are append-only and are not editable through the row editor.
+- Booking screens use canonical site trips/LRs. The shared authenticated shell shows a live Asia/Kolkata clock. Hindi input support is offline and stores source text separately from editable Hindi values. Each goods row stores independent Bhada/Hamali amounts, and receipt-level totals are derived server-side from those row amounts. Blank per-good charge input is normalized to zero; UI fields start at whole rupees but accept up to two fractional digits. Branded Hindi LR prints show each row's Bhada, Hamali and total plus receipt totals and the receipt's persisted creation timestamp rendered in IST. Owners and managers with `lrs:update` can edit ledger charges; a final A/M marker identifies the role of the last charge editor, while the owner-only audit record retains their login ID and timestamp. Booking receipt phone values must be exactly ten ASCII digits when present.
+- Same-day similar-receiver conflicts return a structured `409` message and candidate identities. The receipt form lets the manager confirm an existing receiver or explicitly create a different identity, then retries with the selected identity; API errors with structured messages are surfaced rather than replaced with a generic request failure.
+- Legacy dashboard analytics and report APIs remain available to their existing consumers. The owner-only Booking Finance and Audit pages use site-scoped summary and audit APIs; they do not call industrial Finance/Reports endpoints. Booking Finance sums active LR Bhada + Hamali for grand total and separates Bhada collections/outstanding from informational Hamali.
+- The new ledger edits canonical `site_lrs` records through the scoped LR update API. Owners can correct posted/closed receipts with an audit reason; receiver corrections transfer remaining Bhada balances, and void corrections reverse posted payments and charge postings. Owners can restore mistakenly voided receipts with a reason using compensating postings, retaining original void/payment history. The owner ledger settlement checkbox records remaining Bhada as a Cash payment and reverses only settlements made through that checkbox; Finance can settle grouped receiver balances. These payment events remain append-only and audited.
+- Booking `.xlsx` exports write financial amounts as numeric cells with currency formatting, preserving spreadsheet sort and calculation behavior; export formula-like text remains escaped.
 - Successful authenticated API writes increment an atomic per-tenant revision in `platform_db.data_revisions`; revision documents contain only a counter and timestamp, never booking or industrial business data. The authenticated, uncached `GET /api/sync/revision` returns only the caller's tenant counter. The response includes `X-Data-Revision`, exposed by CORS, so the writer's browser can notify other same-business tabs immediately. Other devices poll the counter every two seconds while the page is visible; a changed revision dispatches `fms:refresh`, which reloads active `useFetch` queries and direct-fetch operational pages. Tabs use tenant-named `BroadcastChannel` with a storage-event fallback. Existing app modules remain the source of canonical data; updates do not reload the document or create data copies.
 - The additive dashboard response field does not change authorization, stored data, financial calculations, or the separate canonical office and site trip/LR collections.
 - Global reduced-motion styles honor `prefers-reduced-motion`; mobile layout and navigation are implemented in the shared shell.
+
+### Booking workflow replacement (29 September 2026)
+
+The former booking dashboard, trip/LR detail pages and Booking Reports navigation are replaced for managers by a three-screen workspace: date-scoped Dashboard, trip-context Receipts, and an inline-edit Ledger. Business owners additionally have owner-only Booking Finance and Booking Audit pages. The site-LR schema additively accepts optional sender/city and per-goods descriptions; historical sender-phone and goods/container values remain intact. Receipt printing is an isolated branded A4 Hindi layout. Ledger export is a server-generated OpenXML `.xlsx` workbook using `openpyxl`, with separate receipt and goods-row sheets; CSV APIs remain for compatibility. This is not a historical-data migration: records remain in `site_trips` and `site_lrs`. Trip and receipt sequence generation, idempotency, site authorization, charge permissions, lifecycle guards and audit events remain server-enforced. Total rent is recalculated server-side as Bhada + Hamali. No industrial module, collection or route is removed.
 
 ## 3. Authentication and tenant request flow
 
@@ -200,7 +210,7 @@ Operational collections referenced by the code include `settings`, `trips`, `lrs
 
 ### Current data-flow audit (verified in routes and frontend callers)
 
-- **Bookings / site operations:** `SiteConsole.jsx` calls `/sites/{site_id}/trips` and `/sites/{site_id}/trips/{trip_id}/lrs`. `site_ops.py` stores these in tenant-local `site_trips` and `site_lrs`; their identities, references and site authorization are distinct from legacy records.
+- **Bookings / site operations:** `Booking.jsx` calls site-scoped trip/LR and ledger endpoints. `site_ops.py` stores receipts in tenant-local `site_trips` and `site_lrs`; identities, references and site authorization remain distinct from industrial records. The XLSX export returns an OpenXML workbook with a receipt-level Ledger sheet and a goods-row Details sheet.
 - **Office Trips and LRs:** `TripForm.jsx`, `LRForm.jsx`, `TripDetail.jsx`, `LRView.jsx` and `Trips.jsx` call `/trips` and `/lrs`. `server.py` reads and writes tenant-local `trips` and `lrs`, and their legacy ledger/receipt behavior.
 - **Finance and reports:** `/finance/*`, `/reports/*`, search and industrial profiles use legacy/industrial source collections. The shared `expenses`, `ledger` and `cashbook` collections can also contain site-tagged booking postings; industrial balances, statements, cash positions, expenses, trip costs, cashbook views and charts explicitly exclude records with `site_id`. Site dashboard/report paths use site-scoped booking records and tagged expense/posting data; there is no combined company-wide financial read model.
 - **Shared masters:** Legacy and site trip resource selectors use the same tenant `vehicles` and `drivers` collections. The site trip-resource endpoint returns the assignable master fields to an owner or to a site manager with `trips:read` or `trips:create`, after verifying assigned-site scope. Vehicle/driver option loading is independent from trip-list/dashboard reads so create-only managers can still assign masters when allowed to create bookings. Site trips retain the selected master IDs plus truck/driver snapshots. Site receiver identity is tracked in `site_receivers`; a related party may be created in shared `parties` with `site_receiver_id`, while legacy sender parties use the same collection without this site identity.
@@ -271,9 +281,9 @@ All business API routes are mounted under `/api`. Most business reads/writes dep
 | Transactions | `/receipts`, `/handovers`, `/expenses`, `/fuel`, `/payments`, `/advances`, `/tpl`; cancel operations use `/{id}/cancel` |
 | Ledger and entity profiles | `/ledger/{etype}/{eid}`, `/profile/{vehicle|driver|party|employee|fuel_pump|partner}/{id}` |
 | Industrial Finance and reports (owner-only) | `/finance/{summary|receivables|payables|cashbook|charts}`, `/reports/{name}`; shared financial reads exclude site-tagged rows |
-| Booking dashboard (owner/site-scoped) | `/sites/system-dashboard`, `/sites/{site_id}/dashboard`; site-specific dates, payments and expenses |
-| Booking reports (owner-only) | `/sites/system-reports/lrs`; tenant/site-scoped LR search, date filters and pagination |
-| Booking LR charge edits (owner/site-scoped) | `PATCH /sites/{site_id}/trips/{trip_id}/lrs/{lr_id}`; audited canonical LR update |
+| Booking dashboard (owner/site-scoped) | `/sites`, `/sites/{site_id}/trips`; selected-date trips and counts |
+| Booking receipts and ledger (owner/site-scoped) | `/sites/{site_id}/trips/{trip_id}/lrs`, `/sites/{site_id}/ledger/entries`, `/sites/{site_id}/ledger/export.xlsx` |
+| Booking LR updates (owner/site-scoped) | `PATCH /sites/{site_id}/trips/{trip_id}/lrs/{lr_id}`; audited canonical LR update, charge permissions and stale-edit guard |
 | Search, reports, documents | `/search`, `/reports/{name}`, `/upload`, `/files/{path}` |
 | Tracking integration | `/tracking/live` (WheelsEye tokens are configured per vehicle) |
 | Platform owner | `/platform/{summary|tenants|errors}`, `/platform/tenants`, `/platform/tenants/{id}`, `/platform/tenants/{id}/reset-password` |
@@ -282,7 +292,7 @@ All business API routes are mounted under `/api`. Most business reads/writes dep
 
 ## 6. Design and feature map
 
-The intended interaction is an office workflow centered on a business owner: create or review a trip, create its LR, register financial events as they happen, then use the dashboard, profiles and reports to follow the resulting operational and financial state. The responsive shell supports desktop navigation and compact mobile navigation/quick actions.
+The daily site-booking interaction is a short Dashboard → Receipts → Ledger flow: select a date and trip, create Hindi-printable receipts under it, then review/edit/print/export the ledger. This remains separate from industrial trip, LR, finance and report workflows. The responsive shell supports desktop navigation and compact mobile navigation/quick actions.
 
 ```mermaid
 flowchart TB
@@ -310,10 +320,8 @@ flowchart TB
 
 ### Frontend screens
 
-- `SiteConsole.jsx`: focused Booking Dashboard, site administration and operational booking context.
-- `BookingFinance.jsx`: owner-only booking financial summary from site dashboard aggregations; no industrial ledger data.
-- `BookingReports.jsx`: owner-only paginated site-LR report with bounded filters and loaded-row CSV export. Selecting a booking loads the full paginated trip LR ledger inline; edits persist through the canonical site-LR API and returned collection/outstanding/status values are calculated server-side.
-- `SiteTrip.jsx`: canonical site-trip detail and expandable trip ledger editor using the existing site-LR update API; owner and authorized-manager access follows the site's `lrs:update` grant.
+- `Booking.jsx`: role-aware Dashboard, Receipts and Ledger workspace; includes optional sender, per-good description, editable Hindi, branded A4 receipt printing, inline autosave with stale-version protection, mobile receipt cards, closed-trip locking and XLSX export.
+- `SiteConsole.jsx`: owner-only site setup/access and manager administration; its legacy operational route redirects to the new booking workspace.
 - `Trips.jsx`, `TripForm.jsx`, `TripDetail.jsx`: owner-only industrial trip list, entry, detail, cost/profit and status.
 - `LRForm.jsx`, `LRView.jsx`: owner-only industrial LR create/print/share workflows.
 - `Vehicles.jsx`, `VehicleDetail.jsx`: fleet list, records and profiles.
@@ -323,8 +331,6 @@ flowchart TB
 - `Reports.jsx`: owner-only industrial report selection, filters and exports; does not aggregate site bookings.
 - `Settings.jsx`: business configuration and branding.
 - `Platform.jsx`: platform licence operations and platform settings.
-- `SiteTrip.jsx`: site trip lifecycle, LR booking, per-trip CSVs and staged ledger import.
-- `SiteLRPage.jsx`: editable LR details, customer print view and authorized payment events.
 
 Shared `components/ui.jsx`, `MasterForm.jsx`, and `QuickForms.jsx` provide common controls/forms. `LocationPicker.jsx` progressively enables map lookup if the optional Google Maps key is configured.
 
@@ -443,6 +449,7 @@ Trip and LR counters use atomic MongoDB increments with unique compound indexes.
 - New currency values use `Decimal` in application logic and MongoDB `Decimal128`. The existing `ledger.py` interface accepts floats for postings, so site finance calls the existing helper with optional site/business metadata; balances use Decimal-safe LR and payment records, not browser totals.
 - Site trip expenses follow the existing ledger/cashbook source-posting conventions. Preserve tenant/site/trip references and the authenticated recorder on each expense; idempotent source references prevent duplicate posting on retries. Trip liability/accountability is tied to the recorded responsible person and must not be inferred solely from an editable driver label.
 - Rent adjustments post deltas through the existing party ledger. Actual payments and owner reversals are separate immutable `site_payments` events linked to LR/trip/site/business. Hamali is a separate recorded charge and is not posted as collected bhada or classified as a cost.
+- Site trips, LRs, expenses, payments, manager logins and tenant provisioning retain the creator login ID, name/role snapshot and timestamp. Site audit events retain actor ID/login/role and timestamp; audit history is owner-only, and booking creator metadata is removed from manager-facing responses.
 - Ledger interchange uses versioned, scoped CSV files with immutable `lr_id`, `trip_id`, and `site_id` fields. Because CSV has no worksheets, goods-wise, receiver-wise, summary, and import-template files are separate downloads. The parser validates the whole file before preview; the owner resolves row errors, acknowledges missing LRs, and confirms. Imports are file-hash idempotent. Deterministic row events and persisted progress support resuming when multi-document MongoDB transactions are unavailable.
 - Report CSVs use a header-first layout with explicit scope and units; the goods summary and per-LR/container goods-detail report serve different grains. Detailed rows do not repeat LR-level monetary totals per container. The versioned import-template alone is accepted for reconciliation; its headers, metadata, and paid-total semantics remain stable.
 - Successful/failed frontend mutations use a shared Axios feedback path and top-right toast host. Unexpected backend exceptions receive a reference ID and a sanitized platform error-log entry; do not persist bearer tokens, request bodies, passwords, or other secrets in the log.
@@ -459,7 +466,7 @@ Configuration change in v1.2.0: `tzdata>=2025.2,<2027` provides IANA timezone da
 ### Known limitations
 
 - Existing businesses need an owner-created default site before previewing and explicitly applying legacy site assignment.
-- CSV is the supported interchange format; no XLSX writer or multi-sheet workbook is implemented.
+- Scoped CSV remains the interchange/import format; the user-facing booking ledger also exports a formatted multi-sheet XLSX workbook.
 - Hamali accounting meaning is unconfirmed; it remains separate from collected bhada, profit and cash flow.
 - Original ledger files use the existing local storage provider; production needs private, durable, shared storage and backup/retention controls.
 - No live MongoDB integration suite was run for this change in this environment. Offline unit tests and frontend production build are the executed checks; production multi-worker/transaction behavior needs deployment verification.

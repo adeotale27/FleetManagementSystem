@@ -26,12 +26,14 @@ const PLATFORM_NAV = [
   { to: "/settings", label: "Console", icon: Cog },
 ];
 
-const SITE_NAV = { to: "/sites", label: "Booking Dashboard", icon: Building2 };
-const SITE_MANAGER_NAV = { ...SITE_NAV, label: "Site Bookings" };
+const SITE_NAV = { to: "/booking/dashboard", label: "Dashboard", icon: Building2 };
 const BOOKING_NAV = [
-  { to: "/booking-finance", label: "Booking Finance", icon: Wallet },
-  { to: "/booking-reports", label: "Booking Reports", icon: BarChart3 },
-  { to: "/booking-setup", label: "Booking Setup & Access", icon: Building2 },
+  { to: "/booking/receipts", label: "Receipts", icon: FileText },
+  { to: "/booking/ledger", label: "Ledger", icon: Banknote },
+];
+const OWNER_BOOKING_NAV = [
+  { to: "/booking/finance", label: "Booking Finance", icon: Wallet },
+  { to: "/booking/audit", label: "Booking Audit", icon: ShieldCheck },
 ];
 
 const QUICK = [
@@ -45,19 +47,25 @@ const QUICK = [
 
 const navIsActive = (item, location) => {
   if (item.activeWhen) return item.activeWhen(location);
-  return item.to === "/sites"
-    ? location.pathname.startsWith("/sites")
+  return item.to === "/booking/dashboard"
+    ? location.pathname === "/booking" || location.pathname === "/booking/dashboard"
     : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
 };
 
 export default function Layout({ user, children }) {
   const [menu, setMenu] = useState(false);
+  const [clockNow, setClockNow] = useState(() => new Date());
   const [sheet, setSheet] = useState(false);
   const [entry, setEntry] = useState(null);
   const [q, setQ] = useState("");
   const [res, setRes] = useState([]);
   const loc = useLocation();
   const nav = useNavigate();
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => { setMenu(false); setSheet(false); }, [loc.pathname, loc.search]);
 
@@ -81,16 +89,17 @@ export default function Layout({ user, children }) {
   const bizLogo = user?.role === "superadmin" ? "/app-icon.png" : (user?.branding?.logo || "/app-icon.png");
   const bizName = user?.role === "superadmin" ? "ProFleet" : (user?.tenant_name || user?.branding?.name || "ProFleet");
   const photo = user?.photo;
-  const isSiteBookingRoute = loc.pathname === "/sites" || loc.pathname.startsWith("/sites/")
+  const isSiteBookingRoute = loc.pathname === "/booking" || loc.pathname.startsWith("/booking/")
+    || loc.pathname === "/sites" || loc.pathname.startsWith("/sites/")
     || loc.pathname === "/booking-finance" || loc.pathname === "/booking-reports"
     || loc.pathname === "/booking-setup";
   const showIndustrialTools = user?.role === "owner" && !isSiteBookingRoute;
   const navItems = user?.role === "superadmin" ? PLATFORM_NAV
-    : user?.role === "site_manager" ? [SITE_MANAGER_NAV]
-      : [SITE_NAV, ...BOOKING_NAV, ...NAV.filter((n) => !n.key || user?.features?.[n.key] !== false)];
+    : user?.role === "site_manager" ? [SITE_NAV, ...BOOKING_NAV]
+      : [SITE_NAV, ...BOOKING_NAV, ...OWNER_BOOKING_NAV, ...NAV.filter((n) => !n.key || user?.features?.[n.key] !== false)];
   const mobileNav = user?.role === "superadmin" ? PLATFORM_NAV
-    : user?.role === "site_manager" ? [SITE_MANAGER_NAV]
-      : [SITE_NAV, BOOKING_NAV[0], ...NAV.filter((n) => n.key === "trips" || n.key === "finance")];
+    : user?.role === "site_manager" ? [SITE_NAV, ...BOOKING_NAV]
+      : [SITE_NAV, ...BOOKING_NAV, ...OWNER_BOOKING_NAV, ...NAV.filter((n) => n.key === "trips" || n.key === "finance")];
 
   const Side = (
     <>
@@ -186,6 +195,14 @@ export default function Layout({ user, children }) {
               <button onClick={() => setSheet(true)} data-testid="quick-action-btn"
                 className="btn-p hidden py-2 md:inline-flex"><Plus size={17} /> New Entry</button>
             )}
+            <time className="ml-auto shrink-0 text-right text-xs font-semibold text-muted sm:text-sm"
+              aria-label="Current India Standard Time">
+              {new Intl.DateTimeFormat("en-IN", {
+                timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric",
+                hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true,
+                timeZoneName: "short",
+              }).format(clockNow)}
+            </time>
           </div>
         </header>
 
@@ -195,8 +212,8 @@ export default function Layout({ user, children }) {
       {/* mobile bottom bar */}
       <div className="app-header fixed bottom-0 left-0 right-0 z-30 border-t border-line pb-[env(safe-area-inset-bottom)] md:hidden">
         <div className={`grid ${user?.role === "superadmin" ? "grid-cols-2"
-          : user?.role === "site_manager" ? "grid-cols-1"
-            : showIndustrialTools ? "grid-cols-5" : "grid-cols-4"}`}>
+          : user?.role === "site_manager" ? "grid-cols-3"
+            : "grid-cols-5"}`}>
           {user?.role === "superadmin" || user?.role === "site_manager" ? mobileNav.map((n) => <BottomLink key={n.to} n={n} />) : (
             showIndustrialTools ? <>
               {mobileNav.slice(0, 2).map((n) => <BottomLink key={n.to} n={n} />)}

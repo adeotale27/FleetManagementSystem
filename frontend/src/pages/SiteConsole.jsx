@@ -987,8 +987,8 @@ export default function SiteConsole({ user, adminOnly = false }) {
                 ? <Link className="btn-s justify-center" to={`/sites/${siteId}/trips/${selectedBoardTrip.id}`}>Open selected booking</Link>
                 : <a className="btn-s justify-center" href="#booking-lrs">Choose a booking for an LR</a>}
               <a className="btn-s justify-center" href="#booking-records">View booking records</a>
-              <Link className="btn-s justify-center" to="/booking-finance">Booking finance</Link>
-              <Link className="btn-s justify-center" to="/booking-reports">Booking reports</Link>
+              <Link className="btn-s justify-center" to="/booking/receipts">Receipts</Link>
+              <Link className="btn-s justify-center" to="/booking/ledger">Ledger</Link>
               {owner && <Link className="btn-s justify-center" to="/booking-setup">Booking setup & access</Link>}
               <Link className="btn-s justify-center" to="/vehicles">Manage Vehicles</Link>
               <Link className="btn-s justify-center" to="/parties">Manage Parties</Link>

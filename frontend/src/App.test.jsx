@@ -17,13 +17,9 @@ jest.mock("./pages/SiteConsole", () => ({
   __esModule: true,
   default: ({ adminOnly }) => <div data-testid="site-console">{adminOnly ? "setup" : "dashboard"}</div>,
 }));
-jest.mock("./pages/BookingFinance", () => ({
+jest.mock("./pages/Booking", () => ({
   __esModule: true,
-  default: () => <div data-testid="booking-finance">booking finance</div>,
-}));
-jest.mock("./pages/BookingReports", () => ({
-  __esModule: true,
-  default: () => <div data-testid="booking-reports">booking reports</div>,
+  default: () => <div data-testid="booking">new booking workspace</div>,
 }));
 
 describe("Booking setup route access", () => {
@@ -60,24 +56,27 @@ describe("Booking setup route access", () => {
     expect(container.querySelector('[data-testid="site-console"]').textContent).toBe("setup");
   });
 
-  it("redirects site managers away from Booking Setup & Access", async () => {
+  it("redirects site managers from setup to the booking workspace", async () => {
     await renderAs("site_manager");
-    expect(container.querySelector('[data-testid="site-console"]').textContent).toBe("dashboard");
+    expect(container.querySelector('[data-testid="booking"]')).not.toBeNull();
   });
 
   it.each([
-    ["/booking-finance", "booking-finance"],
-    ["/booking-reports", "booking-reports"],
-  ])("lets business owners open %s directly", async (path, testId) => {
+    ["/booking-finance", "ledger"],
+    ["/booking-reports", "ledger"],
+    ["/sites", "dashboard"],
+    ["/booking/dashboard", "dashboard"],
+  ])("sends an owner from %s to the new %s workspace", async (path) => {
     await renderAs("owner", path);
-    expect(container.querySelector(`[data-testid="${testId}"]`)).not.toBeNull();
+    expect(container.querySelector('[data-testid="booking"]')).not.toBeNull();
   });
 
   it.each([
     ["/booking-finance", "site_manager"],
     ["/booking-reports", "site_manager"],
-  ])("redirects site managers away from %s", async (path, role) => {
+    ["/booking/ledger", "site_manager"],
+  ])("routes managers from %s into the authorized booking workspace", async (path, role) => {
     await renderAs(role, path);
-    expect(container.querySelector('[data-testid="site-console"]').textContent).toBe("dashboard");
+    expect(container.querySelector('[data-testid="booking"]')).not.toBeNull();
   });
 });
