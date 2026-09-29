@@ -21,9 +21,60 @@ New features and architecture changes also require updates to [APP_SUMMARY.md](A
 
 ## Current version
 
-**v1.13.0** — 27 September 2026
+**v1.18.1** — 29 September 2026
 
 ## Changelog
+
+### v1.18.1 — 29 September 2026
+
+- **Amount entry:** Booking charge fields display whole rupee amounts by default, accept optional decimal input, and treat a cleared per-good charge as zero instead of rejecting the ledger save. Charges are labeled in INR and rendered with Indian digit grouping.
+- **Goods-row layout:** Bhada and Hamali inputs sit alongside their goods row on desktop; the ledger gives the goods-and-charge area more room and shortens routine save status while keeping full failure details expandable.
+- **Phone and timestamps:** Booking receipt phone entry accepts only 10 digits. The shared page header shows a live India Standard Time clock; each receipt saves its creation timestamp and prints that original IST time.
+- **Verification:** Focused site Booking tests passed (73), covering blank/decimal charges, invalid phone lengths, and persisted receipt time. Focused Booking UI and Layout tests passed (13); the production build compiled successfully and `git diff --check` passed. No live MongoDB end-to-end run was performed.
+
+### v1.18.0 — 29 September 2026
+
+- **Per-goods charges and receipt print:** Each goods row stores and edits Bhada and Hamali independently. The branded Hindi LR print now shows Bhada, Hamali and their total for each goods row as well as the receipt totals.
+- **Owner settlement and recovery:** The owner ledger checkbox records the remaining Bhada as a real Cash payment and reverses only payments created by that control when unchecked. Finance groups outstanding balances by receiver and can settle a receiver's remaining Bhada. Owners can restore a mistakenly voided receipt with a reason; compensating postings preserve the original void and payment history.
+- **Excel export:** Monetary values are numeric spreadsheet cells with currency formatting, rather than text, so exported ledgers sort and calculate correctly.
+- **Verification:** See the v1.18.1 verification entry above for combined current-worktree test results.
+
+### v1.17.1 — 29 September 2026
+
+- **Receipt save recovery:** Booking now surfaces structured validation and conflict messages instead of hiding them behind “Request failed.” When a receiver resembles an existing same-day receiver, the receipt form explains the match and lets the manager choose the same receiver or a different one before retrying.
+- **Owner oversight navigation:** Business owners can open Booking Finance and Booking Audit directly; site managers continue to see only Dashboard, Receipts and Ledger.
+- **Verification:** The available backend suite passed (87 passed, 1 skipped) excluding `test_multitenant_features.py`, which hard-codes unavailable `/app/frontend/.env`. The frontend suite passed (9 suites, 40 tests), the production build compiled successfully, and `git diff --check` passed. No live MongoDB end-to-end run was performed.
+
+### v1.17.0 — 29 September 2026
+
+- **Owner corrections:** Business owners can correct posted/closed receipts and void financially posted receipts with a required audit reason. Receiver corrections transfer any remaining Bhada balance between receiver accounts; voiding reverses posted payments and charge postings instead of deleting history. Managers retain the existing safeguards.
+- **Booking Finance:** Added an owner-only finance page that sums active ledger Bhada + Hamali into a grand total, separates posted collections/outstanding Bhada, and lists unreconciled/unpriced receipts. Owners can record a promised payment date and follow-up note for the audit trail.
+- **Booking Audit:** Added an owner-only view of pending/unpaid receipts, promised payment dates, and site audit events. Finance and audit are available from the booking navigation; the legacy `/booking-finance` URL now opens the new finance page.
+- **Compatibility:** Added optional follow-up fields to site LRs and a site-scoped owner-only finance endpoint. Existing records remain valid; no migration or destructive data change is required. Hamali remains informational and is not treated as collected Bhada.
+- **Verification:** The v1.17.0 and v1.17.1 working-tree changes were validated together; see the v1.17.1 verification entry above.
+
+### v1.16.0 — 29 September 2026
+
+- **Owner audit trail:** New site booking records and manager/tenant logins store creator login ID, name/role snapshot and timestamp. Site audit events also store actor ID and role; audit history is owner-only and manager-facing responses omit creator metadata. Existing records are unchanged and need no migration.
+- **Ledger layout:** The desktop table now fits the window without horizontal scrolling. Hindi name/type fields appear under the English text, sender/receiver addresses are omitted from the ledger and export, and the columns remain editable.
+- **Charge editing and attribution:** Site managers with receipt-edit access can enter and edit Bhada/Hamali in receipts and the ledger. The ledger's final column shows a circled A for the business owner or M for a site manager who last changed charges; the owner-only audit trail retains the editor's login and timestamp.
+- **Verification:** Focused site-operations tests passed (57 tests); the available backend suite passed (83 passed, 1 skipped) excluding `test_multitenant_features.py`, which hard-codes unavailable `/app/frontend/.env`. The frontend suite passed (9 suites, 39 tests) and the production build compiled successfully. No live MongoDB end-to-end run was performed.
+
+### v1.15.0 — 29 September 2026
+
+- **Receipt entry and Hindi:** Sender name is optional, sender-phone entry is removed, and each goods row now supports a description. Offline Hindi conversion is applied on save unless the manager has supplied a correction.
+- **Branded LR printing:** Receipt print uses the business name, logo, saved contact/address and receipt data in a Hindi-capable A4 layout. Print mode is isolated from the application and clears after the browser print dialog closes.
+- **Ledger output:** Ledger printing uses a clean landscape table with repeated headers. Download Excel returns a formatted `.xlsx` workbook with a receipt-level Ledger sheet and one row per good in Goods Details. Both include trip numbers and optional sender/receiver addresses; ledger cards are comfortable to edit on mobile, while the desktop table remains spreadsheet-like.
+- **Ledger safeguards:** Closed-trip and voided receipts are read-only in the ledger. Concurrent edits use server row versions; a conflict can be explicitly reloaded instead of repeatedly retrying a stale update.
+- **Compatibility:** Optional sender/city and goods descriptions are additive on site LRs; old sender-phone data and legacy container rows remain readable. No historical-data migration or deletion is required. `openpyxl` is added for server-side workbook generation.
+- **Verification:** Frontend production build succeeded; frontend tests passed (9 suites, 38 tests); backend tests passed (79 passed, 1 skipped) when excluding `test_multitenant_features.py`, whose collection hard-codes unavailable `/app/frontend/.env`; focused site-operations tests passed (53 tests). No live MongoDB end-to-end run was performed.
+
+### v1.14.0 — 29 September 2026
+
+- **Simple site-booking workflow:** Replaced the old booking dashboard, trip-detail, finance and report screens with Dashboard, Receipts and Ledger. Managers can create optional-vehicle/driver trips, save multiple goods rows per Hindi-printable receipt, and edit receipts directly in the ledger.
+- **Backward-compatible API/data:** Kept `site_trips` and `site_lrs`, legacy goods/container fields, number sequences, tenant/site authorization, and audit/finance logic. New receipt addresses/Hindi text and goods rows are additive; no record migration or destructive data change is required. Site startup creates a partial unique index for receipt request idempotency; rollback is to drop `site_lr_idempotency_unique` and restore the previous application release.
+- **Ledger safeguards:** Added site-scoped ledger list/CSV endpoints, charge permission checks, stale-edit detection, and audited voiding restricted to receipts without charge/payment history. Reconciled/financial history remains protected.
+- **Verification:** Added booking form/navigation and model-validation tests; optimized frontend build succeeded and 77 available backend tests passed (one skipped). One separate backend test module cannot collect in this Windows checkout because it reads `/app/frontend/.env`.
 
 ### v1.13.0 — 27 September 2026
 

@@ -40,6 +40,7 @@ describe("owner quick actions", () => {
     expect(container.querySelector('[data-testid="global-search"]')).toBeNull();
     expect(container.querySelector('[data-testid="quick-action-btn"]')).toBeNull();
     expect(container.querySelector('[data-testid="mobile-quick-btn"]')).toBeNull();
+    expect(container.querySelector('time[aria-label="Current India Standard Time"]')?.textContent).toContain("IST");
   });
 
   it("keeps quick-entry actions on industrial routes", async () => {
@@ -50,39 +51,47 @@ describe("owner quick actions", () => {
     expect(container.querySelector('[data-testid="mobile-quick-btn"]')).not.toBeNull();
   });
 
-  it("keeps booking finance and reports distinct and hidden from site managers", async () => {
-    await renderAt("/sites");
+  it("shows owner-only Finance and Audit alongside the primary booking navigation", async () => {
+    await renderAt("/booking/dashboard");
+    for (const label of ["dashboard", "receipts", "ledger"]) {
+      expect(container.querySelector(`[data-testid="nav-${label}"]`)).not.toBeNull();
+    }
     expect(container.querySelector('[data-testid="nav-booking-finance"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="nav-booking-reports"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="nav-booking-audit"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="nav-booking-reports"]')).toBeNull();
 
     await act(async () => {
       root.render(
-        <MemoryRouter initialEntries={["/sites"]}>
+        <MemoryRouter initialEntries={["/booking/dashboard"]}>
           <Layout user={{ role: "site_manager", name: "Manager", features: {} }}>
             <div>Site page</div>
           </Layout>
         </MemoryRouter>,
       );
     });
+    for (const label of ["dashboard", "receipts", "ledger"]) {
+      expect(container.querySelector(`[data-testid="nav-${label}"]`)).not.toBeNull();
+    }
     expect(container.querySelector('[data-testid="nav-booking-finance"]')).toBeNull();
+    expect(container.querySelector('[data-testid="nav-booking-audit"]')).toBeNull();
     expect(container.querySelector('[data-testid="nav-booking-reports"]')).toBeNull();
   });
 
   it("does not show industrial search or Quick Add on booking finance routes", async () => {
-    await renderAt("/booking-finance");
+    await renderAt("/booking/ledger");
 
     expect(container.querySelector('[data-testid="global-search"]')).toBeNull();
     expect(container.querySelector('[data-testid="quick-action-btn"]')).toBeNull();
     expect(container.querySelector('[data-testid="mobile-quick-btn"]')).toBeNull();
   });
 
-  it("shows Booking Setup & Access to owners but not site managers", async () => {
+  it("keeps setup outside the three primary booking navigation options", async () => {
     await renderAt("/booking-setup");
-    expect(container.querySelector('[data-testid="nav-booking-setup---access"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="nav-booking-setup---access"]')).toBeNull();
 
     await act(async () => {
       root.render(
-        <MemoryRouter initialEntries={["/booking-setup"]}>
+        <MemoryRouter initialEntries={["/booking/dashboard"]}>
           <Layout user={{ role: "site_manager", name: "Manager", features: {} }}>
             <div>Site page</div>
           </Layout>

@@ -1,13 +1,13 @@
-# Fleet Manager v1.7.0
+# Fleet Manager v1.18.1
 
 Transport office software for one or many logistics businesses.
 
-- **Business owner** operates two distinct workflows: daily site bookings on the Booking Dashboard and large industrial shipments in Industrial Trips & LRs, with separate finances and reports.
+- **Business owner** operates three simple booking screens—Dashboard, Receipts, and Ledger—alongside separate industrial Trips & LRs, Fleet, Parties, Team, Industrial Finance, and Industrial Reports.
 - **Business owner** can administer multiple sites, assign site managers, review site operations and reconcile per-trip ledgers.
 - **Site manager** operates only assigned site bookings and granted actions; industrial business routes are owner-only.
 - **Platform owner** issues licences, suspends businesses, resets owner passwords, and turns modules on/off per business; platform access does not grant business-owner access.
 
-Current application version: **v1.7.0**. See [VERSION.md](VERSION.md) for the release policy and changelog.
+Current application version: **v1.18.1**. See [VERSION.md](VERSION.md) for the release policy and changelog.
 
 ## Project guide
 
@@ -128,9 +128,9 @@ Sign-in page: http://localhost:3000/login
 | Who | Username | Password | After login |
 |-----|----------|----------|-------------|
 | **Platform owner** | `superadmin` | `super123` | **`/platform`** — licences for all businesses |
-| **Business owner** | `owner` | `owner123` | **`/sites`** — Booking Dashboard |
+| **Business owner** | `owner` | `owner123` | **`/booking/dashboard`** — Booking Dashboard |
 | Same business (alt) | `priyanshu` | `owner123` | Same office as `owner` |
-| **Site manager** | Created by the business owner | Set during assignment/reset | Assigned-site workspace at **`/sites`** |
+| **Site manager** | Created by the business owner | Set during assignment/reset | Assigned-site workspace at **`/booking/dashboard`** |
 
 These values come from `backend/.env`. If you change them, restart the backend; seed will update name/role and **reset the password** if it no longer matches the env file.
 
@@ -166,10 +166,13 @@ Business-owner tokens get **403** on these routes.
 
 | Path | What |
 |------|------|
-| `/sites` | Booking Dashboard for daily site bookings, site administration and scoped booking access |
-| `/booking-finance` | Owner-only Finance for site booking charges, posted collections, expenses and collectible balances |
-| `/booking-reports` | Owner-only searchable, paginated site LR report and loaded-row CSV export |
-| `/dashboard` | Redirects to the Booking Dashboard; the retired office dashboard remains only as legacy API code |
+| `/booking/dashboard` | Choose a date, create an open trip, and select a trip for its receipts |
+| `/booking/receipts` | Create/edit/print branded Hindi receipts; sender is optional and goods rows include descriptions |
+| `/booking/ledger` | Inline-edit receipts and goods rows; print a landscape ledger or download a formatted `.xlsx` workbook |
+| `/sites` | Legacy browser path redirects to `/booking/dashboard` |
+| `/booking-finance`, `/booking-reports` | Legacy browser paths redirect to `/booking/ledger` |
+| `/booking-setup` | Owner-only site, manager-access and booking-category administration |
+| `/dashboard` | Redirects to the Booking Dashboard |
 | `/trips?tab=trips` | Owner-only Industrial Trips (indoor / outdoor), status, cancel = reverse |
 | `/trips?tab=lrs`, `/lrs/new`, `/lrs/:id` | Owner-only Industrial LRs; create / print |
 | `/vehicles` | Fleet, documents, fuel, pumps |
@@ -179,7 +182,7 @@ Business-owner tokens get **403** on these routes.
 | `/reports` | Industrial reports + CSV / Excel / PDF / print |
 | `/settings` | Company, routes, numbering, opening cash/bank |
 
-Industrial money is derived from unscoped (`site_id` absent) `ledger`, `cashbook` and `expenses` records. Site booking entries use separate trip/LR/payment collections and tag shared expense/ledger/cashbook rows with `site_id`; they are visible through the Booking Dashboard/site views, not industrial Finance or Reports. Cancellation reverses entries; rows are not deleted.
+Industrial money is derived from unscoped (`site_id` absent) `ledger`, `cashbook` and `expenses` records. Site booking entries use separate trip/LR/payment collections and tag shared expense/ledger/cashbook rows with `site_id`; they are visible through the booking workspace, not industrial Finance or Reports. The redesigned booking pages use the existing canonical site records and keep booking charges separate from industrial balances.
 
 ---
 
@@ -203,18 +206,20 @@ Users collection id = username. Roles include `superadmin` (no tenant), `owner` 
 
 ### Owner: create sites and assign access
 
-1. Sign in as the business owner. Booking Dashboard is the default page at **`/sites`**. The old `/dashboard` browser route redirects here.
+1. Sign in as the business owner. The default booking page is **Dashboard** at `/booking/dashboard`; authorized managers land in the same three-screen workspace.
 2. Create a site with a unique short code and an IANA timezone such as `Asia/Kolkata`. Codes are unique within the business.
 3. Assign a site manager with a unique username and a strong initial password. The password is bcrypt-hashed; managers access only explicitly assigned sites and permitted actions.
 4. Use manager access controls to grant/revoke per-site actions, reset credentials, replace a manager, or deactivate access. Deactivation preserves audit history and does not rewrite historical trip/LR creators.
-5. Use the board's site/trip filters to inspect business-wide or site-level bookings, LRs and financial summaries.
-6. Use **Booking Finance** for site booking charges, collections, trip expenses and collectible outstanding. Use **Booking Reports** to filter canonical LRs by date/site/search and export the rows currently loaded.
+5. Open Dashboard, choose the trip date, and create a trip. Vehicle and driver details are optional.
+6. Select the trip and open Receipts. Each receipt is linked to that trip; its first five goods rows are ready immediately, with additional rows available if needed. Sender/receiver addresses are optional. English names/goods get an offline Hindi suggestion that can be corrected before saving.
+7. Use **Save & print** or print a saved receipt again. The A4 LR shows Hindi names/goods and the combined total rent; it does not show the bhada/hamali breakdown or signature lines.
+8. Use **Ledger** to edit supported fields and goods rows in place. Changes autosave through the scoped, audited site-LR endpoint. The trip number filter is a dropdown; date and sender/receiver search remain simple filters. Print the visible ledger or download the saved selected-period CSV.
 
 ### Site manager: trips, LRs and collections
 
-Site managers use the normal login and are routed to their assigned-site workspace. They can create multiple trips per operating day, select a tenant vehicle and driver from the trip form or enter either manually if it is not in the list, edit trip assignments while the trip is open, book LRs with multiple container lines, and close trips when authorized. The selected vehicle/driver IDs are retained alongside the trip's identifying number/name snapshots. The operating date uses the site's timezone. Trip/LR numbering is server-generated and atomic; truck number is descriptive, not an identifier. Owners can reopen a closed trip with a recorded reason.
+Site managers use the normal login and see only Dashboard, Receipts and Ledger for assigned sites. They can create a trip without a vehicle or driver, add multiple receipts under the selected trip, and close trips when authorized. The selected vehicle/driver remain attached to the trip and are not re-entered on each receipt. The operating date uses the site's timezone. Trip/LR numbering is server-generated and atomic; truck number is descriptive, not an identifier. Owners can reopen a closed trip with a recorded reason.
 
-Sender and receiver phone numbers are optional LR fields. After booking an LR, the app opens its printable detail view for quick browser/OS printing; the print action remains available later and can also save to PDF. On a phone, select any printer exposed by the browser or operating system (availability depends on the device and printer setup). The A4 LR view includes rent only when recorded and excludes hamali, internal identifiers, payment status and private ledger notes. Financial fields/actions follow the manager's assigned permissions.
+Sender/receiver addresses and phone numbers are optional. Printing uses the browser print dialog and can also save to PDF. Financial fields/actions follow the manager's existing site permissions; charge editing still requires `finance:update` as well as receipt-update permission.
 
 Create/update actions show a top-right success or failure notice. Unexpected server failures use a reference ID; platform owners can use it to find the sanitized diagnostic in the platform error log. Validation feedback remains visible to the person correcting the form.
 
@@ -222,7 +227,7 @@ Create/update actions show a top-right success or failure notice. Unexpected ser
 
 Owners can download separate versioned CSV files for goods-wise and receiver-wise ledgers, a summary, and an import template for a selected trip. CSV has no worksheet concept, so these are separate files. The template includes immutable LR/trip/site IDs; receiver names and row order are never matching keys.
 
-On an open site booking, the owner can use its **LR charge sheet** to edit bhada and hamali per LR. Each row saves via the existing audited site-LR update route, so the canonical booking LR and subsequent Booking Finance/Reports reads use the same values. Reconciled LRs remain locked; the booking must be reopened before editing closed-trip charges, and bhada cannot be reduced below payments already recorded.
+Closing a trip locks receipt creation and ordinary edits. Reopening is owner-only and requires an audit reason. Voiding is audited and preserves the receipt; it is limited to receipts with no charges or payment history so accounting history is not silently discarded. Historical booking rows remain in `site_trips` and `site_lrs`; the redesign requires no data migration. On first startup, site storage adds a partial unique index for receipt idempotency. Rollback: deploy the previous application release and, if desired, drop the MongoDB index named `site_lr_idempotency_unique` from tenant databases; no records need to be transformed.
 
 1. Select the site and trip, then upload the completed CSV template.
 2. Review the entire staged preview: matched records, changes, missing/unknown IDs, duplicates, invalid values and scope conflicts.

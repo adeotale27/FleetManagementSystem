@@ -1758,7 +1758,16 @@ async def me_profile(u=Depends(site_user)):
                      "photo": company.get("owner_photo", ""), "site_ids": u.get("site_ids", []),
                      "site_permissions": u.get("site_permissions", {})},
             "features": feats,
-            "branding": {"logo": company.get("logo", ""), "name": company.get("name", "")},
+            "branding": {
+                "logo": company.get("logo", ""),
+                "name": company.get("name", ""),
+                "address": company.get("address", ""),
+                "city": company.get("city", ""),
+                "state": company.get("state", ""),
+                "mobile": company.get("mobile", ""),
+                "alt_mobile": company.get("alt_mobile", ""),
+                "footer": company.get("footer", ""),
+            },
             "tenant": {"plan": (tenant or {}).get("plan", ""), "license_status": (tenant or {}).get("license_status", ""),
                        "license_expiry": (tenant or {}).get("license_expiry", ""),
                        "custom_requests": (tenant or {}).get("custom_requests", ""),
@@ -1903,17 +1912,25 @@ async def create_tenant(body: TenantIn, u=Depends(require_super)):
     while await platform_db.tenants.find_one({"_id": tid}):
         tid, n = f"{base}_{n}", n + 1
     dbn = tenant_db_name(tid)
+    created_at = now_iso()
+    creator = {
+        "created_by_id": str(u.get("_id") or u["username"]),
+        "created_by_login": u["username"],
+        "created_by_name": u.get("name", ""),
+        "created_by_role": u.get("role", ""),
+        "created_at": created_at,
+    }
     await platform_db.tenants.insert_one({
         "_id": tid, "name": body.name.strip(), "owner_name": body.owner_name.strip(),
         "owner_username": username, "mobile": body.mobile, "city": body.city, "state": body.state,
         "plan": body.plan, "license_status": "Active",
         "license_start": date.today().isoformat(),
         "license_expiry": (date.today() + timedelta(days=int(body.license_days or 365))).isoformat(),
-        "created_at": now_iso(), "db_name": dbn,
+        **creator, "db_name": dbn,
     })
     await platform_db.users.insert_one({
         "_id": username, "name": body.owner_name.strip(), "password": hash_pw(body.owner_password),
-        "role": "owner", "tenant_id": tid, "active": True,
+        "role": "owner", "tenant_id": tid, "active": True, **creator,
     })
     tdb = tenant_db(tid)
     company = dict(DEFAULT_SETTINGS["company"])

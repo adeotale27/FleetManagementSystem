@@ -14,7 +14,10 @@ from bson.decimal128 import Decimal128
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
@@ -50,6 +53,11 @@ LEDGER_COLUMNS = (
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("rent", "hamali", check_fields=False, mode="before")
+    @classmethod
+    def blank_charge_is_zero(cls, value):
+        return Decimal("0.00") if value == "" else value
 
 
 class SiteCreate(StrictModel):
@@ -89,8 +97,8 @@ class ManagerPasswordReset(StrictModel):
 
 class TripCreate(StrictModel):
     operating_date: Optional[str] = None
-    truck_no: str = Field(min_length=1, max_length=32)
-    driver_name: str = Field(min_length=1, max_length=100)
+    truck_no: str = Field(default="", max_length=32)
+    driver_name: str = Field(default="", max_length=100)
     vehicle_id: Optional[str] = None
     driver_id: Optional[str] = None
 
@@ -135,38 +143,138 @@ class ReopenTrip(StrictModel):
     reason: str = Field(min_length=5, max_length=500)
 
 
+class VoidReceipt(StrictModel):
+    reason: str = Field(min_length=5, max_length=500)
+
+
+class RestoreReceipt(StrictModel):
+    reason: str = Field(min_length=5, max_length=500)
+    idempotency_key: str = Field(min_length=8, max_length=120)
+
+
 class ContainerLine(StrictModel):
     type: str = Field(min_length=1, max_length=80)
     quantity: int = Field(gt=0, le=1000000)
+    type_hindi: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=500)
+    rent: Optional[Decimal] = None
+    hamali: Optional[Decimal] = None
+
+    @field_validator("rent", "hamali", mode="before")
+    @classmethod
+    def blank_amount_defaults_to_zero(cls, value):
+        return Decimal("0.00") if value == "" else value
+
+
+class GoodsRow(StrictModel):
+    type: str = Field(min_length=1, max_length=80)
+    quantity: int = Field(gt=0, le=1000000)
+    type_hindi: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=500)
+    rent: Optional[Decimal] = None
+    hamali: Optional[Decimal] = None
+
+    @field_validator("rent", "hamali", mode="before")
+    @classmethod
+    def blank_amount_defaults_to_zero(cls, value):
+        return Decimal("0.00") if value == "" else value
 
 
 class LRCreate(StrictModel):
-    sender_name: str = Field(min_length=1, max_length=160)
+    sender_name: str = Field(default="", max_length=160)
     sender_phone: Optional[str] = Field(default=None, max_length=40)
     receiver_name: str = Field(min_length=1, max_length=160)
     receiver_phone: Optional[str] = Field(default=None, max_length=40)
     receiver_identifier: str = Field(default="", max_length=120)
     receiver_match_action: Optional[str] = None
     receiver_identity_id: Optional[str] = None
-    goods_type: str = Field(min_length=1, max_length=80)
-    containers: list[ContainerLine] = Field(min_length=1, max_length=30)
-    rent: Optional[Decimal] = None
-    hamali: Optional[Decimal] = None
+    sender_address: str = Field(default="", max_length=500)
+    receiver_address: str = Field(default="", max_length=500)
+    city: str = Field(default="", max_length=100)
+    sender_name_hindi: str = Field(default="", max_length=160)
+    receiver_name_hindi: str = Field(default="", max_length=160)
+    receipt_date: Optional[str] = None
+    goods_type: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    goods_type_hindi: str = Field(default="", max_length=120)
+    containers: Optional[list[ContainerLine]] = Field(default=None, min_length=1, max_length=30)
+    goods_rows: Optional[list[GoodsRow]] = Field(default=None, min_length=1, max_length=30)
+    rent: Optional[Decimal] = Decimal("0.00")
+    hamali: Optional[Decimal] = Decimal("0.00")
+    idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=120)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_goods_rows(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        values = value.copy()
+        goods_rows = values.pop("goods_rows", None)
+        if goods_rows is not None:
+            rows = [row for row in goods_rows if isinstance(row, dict) and str(row.get("type", "")).strip()]
+            if rows:
+                values["goods_type"] = rows[0]["type"]
+                values["goods_type_hindi"] = rows[0].get("type_hindi", "")
+                values["containers"] = rows
+        return values
+
+    @model_validator(mode="after")
+    def require_goods(self):
+        if not self.goods_type or not self.containers:
+            raise ValueError("Enter at least one goods type and quantity")
+        return self
 
 
 class LRUpdate(StrictModel):
-    sender_name: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    sender_name: Optional[str] = Field(default=None, max_length=160)
     sender_phone: Optional[str] = Field(default=None, max_length=40)
     receiver_name: Optional[str] = Field(default=None, min_length=1, max_length=160)
     receiver_phone: Optional[str] = Field(default=None, max_length=40)
     receiver_identifier: Optional[str] = Field(default=None, max_length=120)
+    sender_address: Optional[str] = Field(default=None, max_length=500)
+    receiver_address: Optional[str] = Field(default=None, max_length=500)
+    city: Optional[str] = Field(default=None, max_length=100)
+    sender_name_hindi: Optional[str] = Field(default=None, max_length=160)
+    receiver_name_hindi: Optional[str] = Field(default=None, max_length=160)
+    receipt_date: Optional[str] = None
     receiver_match_action: Optional[str] = None
     receiver_identity_id: Optional[str] = None
     goods_type: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    goods_type_hindi: Optional[str] = Field(default=None, max_length=120)
     containers: Optional[list[ContainerLine]] = Field(default=None, min_length=1, max_length=30)
+    goods_rows: Optional[list[GoodsRow]] = Field(default=None, min_length=1, max_length=30)
     rent: Optional[Decimal] = None
     hamali: Optional[Decimal] = None
     idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=120)
+    expected_updated_at: Optional[str] = None
+    owner_correction_reason: Optional[str] = Field(default=None, max_length=500)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_goods_rows(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        values = value.copy()
+        goods_rows = values.pop("goods_rows", None)
+        if goods_rows is not None:
+            rows = [row for row in goods_rows if isinstance(row, dict) and str(row.get("type", "")).strip()]
+            if rows:
+                values["goods_type"] = rows[0]["type"]
+                values["goods_type_hindi"] = rows[0].get("type_hindi", "")
+                values["containers"] = rows
+            else:
+                raise ValueError("A receipt must contain at least one goods row")
+        return values
+
+
+class BookingFollowupUpdate(StrictModel):
+    promised_date: Optional[str] = None
+    note: str = Field(default="", max_length=500)
+
+
+class BookingSettlementUpdate(StrictModel):
+    received: bool
+    idempotency_key: str = Field(min_length=8, max_length=120)
+    reason: str = Field(default="", max_length=500)
 
 
 class PaymentCreate(StrictModel):
@@ -244,7 +352,10 @@ def _normalize_label(value, field, maximum=160):
 def _optional_phone(value, field):
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
-    return _normalize_label(value, field, 40)
+    phone = _normalize_label(value, field, 40)
+    if not re.fullmatch(r"[0-9]{10}", phone):
+        raise HTTPException(422, f"{field} must contain exactly 10 digits")
+    return phone
 
 
 def _normalize_code(value):
@@ -309,6 +420,66 @@ def _doc(value: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     return data
 
 
+CREATOR_FIELDS = (
+    "created_by", "created_by_id", "created_by_login", "created_by_name",
+    "created_by_role", "created_at",
+)
+CHARGE_EDITOR_FIELDS = (
+    "charge_updated_by_id", "charge_updated_by_login", "charge_updated_by_name",
+    "charge_updated_by_role", "charge_updated_at",
+)
+
+
+def _creator_metadata(user: dict[str, Any]) -> dict[str, str]:
+    login = str(user.get("username") or user.get("_id") or "")
+    return {
+        "created_by": login,
+        "created_by_id": str(user.get("_id") or login),
+        "created_by_login": login,
+        "created_by_name": str(user.get("name") or ""),
+        "created_by_role": str(user.get("role") or ""),
+        "created_at": now_iso(),
+    }
+
+
+def _charge_editor_metadata(user: dict[str, Any]) -> dict[str, str]:
+    login = str(user.get("username") or user.get("_id") or "")
+    return {
+        "charge_updated_by_id": str(user.get("_id") or login),
+        "charge_updated_by_login": login,
+        "charge_updated_by_name": str(user.get("name") or ""),
+        "charge_updated_by_role": str(user.get("role") or ""),
+        "charge_updated_at": now_iso(),
+    }
+
+
+def _charge_editor_marker(record: dict[str, Any]) -> str:
+    role = record.get("charge_updated_by_role")
+    if role in {"owner", "admin"}:
+        return "A"
+    if role == "site_manager":
+        return "M"
+    return ""
+
+
+def _creator_user(user: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **user,
+        "_id": record.get("created_by_id", user.get("_id") or user["username"]),
+        "username": record.get("created_by_login", record.get("created_by", user["username"])),
+        "name": record.get("created_by_name", user.get("name", "")),
+        "role": record.get("created_by_role", user.get("role", "")),
+    }
+
+
+def _doc_for_user(value: Optional[dict[str, Any]], user: dict[str, Any]) -> Optional[dict[str, Any]]:
+    data = _doc(value)
+    if data is not None and user.get("role") == "site_manager":
+        for key in (*CREATOR_FIELDS, *CHARGE_EDITOR_FIELDS):
+            data.pop(key, None)
+    return data
+
+
 def _scoped(business_id: str, site_id: str, **filters: Any) -> dict[str, Any]:
     return {"business_id": business_id, "site_id": site_id, **filters}
 
@@ -344,6 +515,11 @@ async def initialize_site_storage():
         await db.site_lrs.create_index(
             [("business_id", 1), ("site_id", 1), ("trip_id", 1), ("operating_date", 1)],
             name="site_lr_trip_date",
+        )
+        await db.site_lrs.create_index(
+            [("business_id", 1), ("site_id", 1), ("idempotency_key", 1)],
+            unique=True, partialFilterExpression={"idempotency_key": {"$exists": True}},
+            name="site_lr_idempotency_unique",
         )
         await db.site_lrs.create_index(
             [("business_id", 1), ("site_id", 1), ("receiver_normalized", 1), ("operating_date", 1)],
@@ -449,7 +625,9 @@ async def _audit(site, user, action, target_type, target_id, old=None, new=None,
         {"_id": event_id or new_id()},
         {"$setOnInsert": {
         "business_id": str(site["business_id"]), "site_id": site["_id"],
+        "actor_id": str(user.get("_id") or user["username"]),
         "actor_username": user["username"], "actor_name": user.get("name", ""),
+        "actor_role": user.get("role", ""),
         "action": action, "target_type": target_type, "target_id": target_id,
         "old_values": old or {}, "new_values": new or {}, "reason": reason or "",
         "created_at": now_iso(),
@@ -535,7 +713,7 @@ async def list_sites(u=Depends(site_user)):
     elif u.get("role") != "owner":
         raise HTTPException(403, "Business site access required")
     sites = await db.sites.find(query).sort([("is_default", -1), ("name", 1)]).to_list(500)
-    return [_doc(s) for s in sites]
+    return [_doc_for_user(s, u) for s in sites]
 
 
 @router.post("/sites")
@@ -555,8 +733,8 @@ async def create_site(body: SiteCreate, u=Depends(site_user)):
         "code_normalized": code, "location": " ".join(body.location.split()),
         "city": " ".join(body.city.split()), "timezone": timezone_name,
         "status": "Active", "config": body.config, "manager_username": None,
-        "is_default": first_site, "created_by": u["username"],
-        "created_at": now_iso(), "updated_at": now_iso(),
+        "is_default": first_site, **_creator_metadata(u),
+        "updated_at": now_iso(),
     }
     try:
         await db.sites.insert_one(site)
@@ -596,6 +774,7 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
     _owner(u)
     site = await _site_for_user(site_id, u)
     business_id = _tenant_id(u)
+    actor_login = str(u.get("username") or u.get("_id") or "")
     username = body.username.strip().lower()
     if not re.fullmatch(r"[a-z0-9._-]{3,60}", username):
         raise HTTPException(422, "Username may contain lowercase letters, numbers, dot, underscore, and hyphen")
@@ -626,6 +805,11 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
         update_fields = {
             "name": _normalize_label(body.name, "Manager name", 100),
             "active": True,
+            "updated_by_id": str(u.get("_id") or actor_login),
+            "updated_by_login": actor_login,
+            "updated_by_name": u.get("name", ""),
+            "updated_by_role": u.get("role", ""),
+            "updated_at": now_iso(),
         }
         if body.team_member_id:
             update_fields["team_member_id"] = body.team_member_id
@@ -640,7 +824,7 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
             "_id": username, "name": _normalize_label(body.name, "Manager name", 100),
             "password": hash_manager_pw(password), "role": "site_manager",
             "tenant_id": business_id, "active": True, "site_ids": [],
-            "site_permissions": {}, "created_at": now_iso(),
+            "site_permissions": {}, **_creator_metadata(u),
             **({"team_member_id": body.team_member_id} if body.team_member_id else {}),
         })
     await _replace_manager_access(username, business_id, site_id, permissions)
@@ -791,15 +975,22 @@ def _can_read_site_finances(user: dict[str, Any], site_id: str) -> bool:
     )
 
 
-def _site_expense_doc(row: dict[str, Any]) -> dict[str, Any]:
-    result = _doc(row)
+def _can_view_site_lr_charges(user: dict[str, Any], site_id: str) -> bool:
+    if user.get("role") != "site_manager":
+        return True
+    permissions = (user.get("site_permissions") or {}).get(site_id, [])
+    return bool({"finance:read", "finance:update", "lrs:create", "lrs:update"}.intersection(permissions))
+
+
+def _site_expense_doc(row: dict[str, Any], user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    result = _doc_for_user(row, user or {})
     for key in ("idempotency_key", "request_fingerprint", "posting_started_at", "posting_error"):
         result.pop(key, None)
     return result
 
 
 async def _trip_expense_rows(
-    site: dict[str, Any], trip_id: str,
+    site: dict[str, Any], trip_id: str, user: Optional[dict[str, Any]] = None,
 ) -> tuple[list[dict[str, Any]], Decimal, int]:
     query = _scoped(str(site["business_id"]), site["_id"], trip_id=trip_id, cancelled=False)
     rows = await db.expenses.find(query).sort([("date", -1), ("created_at", -1)]).to_list(500)
@@ -809,7 +1000,7 @@ async def _trip_expense_rows(
     ]).to_list(1)
     summary = aggregates[0] if aggregates else {}
     total = _decimal_value(summary.get("total"))
-    return [_site_expense_doc(row) for row in rows], total, summary.get("count", 0)
+    return [_site_expense_doc(row, user) for row in rows], total, summary.get("count", 0)
 
 
 async def _site_trip_expense_totals(query: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1097,9 +1288,9 @@ async def _ensure_site_trip_expense_posted(
 
 
 async def _site_trip_expense_response(
-    site: dict[str, Any], trip_id: str,
+    site: dict[str, Any], trip_id: str, user: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    expenses, total, count = await _trip_expense_rows(site, trip_id)
+    expenses, total, count = await _trip_expense_rows(site, trip_id, user)
     settings = await db.settings.find_one({"_id": "settings"}) or {}
     return {
         "expenses": expenses,
@@ -1123,10 +1314,12 @@ async def _payments_by_lr(site, trip_id, lr_ids):
     if not lr_ids:
         return {}
     out = {}
+    match = _scoped(str(site["business_id"]), site["_id"],
+                    lr_id={"$in": lr_ids}, posting_status={"$ne": "rejected"})
+    if trip_id is not None:
+        match["trip_id"] = trip_id
     async for row in db.site_payments.aggregate([
-        {"$match": _scoped(str(site["business_id"]), site["_id"],
-                           trip_id=trip_id, lr_id={"$in": lr_ids},
-                           posting_status={"$ne": "rejected"})},
+        {"$match": match},
         {"$group": {
             "_id": "$lr_id",
             "net": {"$sum": {"$cond": [{"$eq": ["$kind", "reversal"]},
@@ -1191,26 +1384,87 @@ async def _lr_rows(
     user: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     paid = await _payments_by_lr(site, trip_id, [r["_id"] for r in rows])
+    settled_by_ledger = set()
+    if user and user.get("role") == "owner" and rows:
+        async for settlement in db.site_payments.aggregate([
+            {"$match": _scoped(
+                str(site["business_id"]), site["_id"], trip_id=trip_id,
+                lr_id={"$in": [row["_id"] for row in rows]},
+                kind="payment", source="booking_settlement", posting_status="posted",
+            )},
+            {"$lookup": {
+                "from": "site_payments", "let": {"payment_id": "$_id"},
+                "pipeline": [{"$match": {"$expr": {"$and": [
+                    {"$eq": ["$reversal_of", "$$payment_id"]},
+                    {"$eq": ["$kind", "reversal"]},
+                    {"$eq": ["$posting_status", "posted"]},
+                ]}}}, {"$limit": 1}],
+                "as": "reversals",
+            }},
+            {"$match": {"reversals": {"$eq": []}}},
+            {"$group": {"_id": "$lr_id"}},
+        ]):
+            settled_by_ledger.add(settlement["_id"])
     result = []
     for row in rows:
-        item = _doc(row)
+        item = _doc_for_user(row, user or {})
+        item["charge_editor_marker"] = _charge_editor_marker(row)
+        if user and user.get("role") == "owner":
+            item["charge_editor_name"] = row.get("charge_updated_by_name", "")
+        item.setdefault("receipt_date", item.get("operating_date", ""))
+        item.setdefault("sender_address", "")
+        item.setdefault("receiver_address", "")
+        item.setdefault("city", "")
+        item.setdefault("sender_name_hindi", item.get("sender_name", ""))
+        item.setdefault("receiver_name_hindi", item.get("receiver_name", ""))
+        source_goods = item.get("goods_rows") or item.get("containers") or []
+        legacy_charge_allocation = bool(source_goods) and not any(
+            "rent" in line or "hamali" in line for line in source_goods
+        )
+        item["goods_rows"] = [
+            {
+                "type": line.get("type", ""),
+                "type_hindi": line.get("type_hindi", line.get("type", "")),
+                "quantity": line.get("quantity", 0),
+                "description": line.get("description", ""),
+                "rent": format(
+                    _decimal_value(row.get("rent")) if legacy_charge_allocation and index == 0
+                    else _decimal_value(line.get("rent")), ".2f",
+                ),
+                "hamali": format(
+                    _decimal_value(row.get("hamali")) if legacy_charge_allocation and index == 0
+                    else _decimal_value(line.get("hamali")), ".2f",
+                ),
+            }
+            for index, line in enumerate(source_goods)
+        ]
+        item["containers"] = item["goods_rows"]
+        item["legacy_charge_allocation"] = legacy_charge_allocation
+        item["total_rent"] = format(
+            _decimal_value(row.get("rent")) + _decimal_value(row.get("hamali")), ".2f",
+        )
         paid_total = paid.get(row["_id"], Decimal("0.00"))
         item["paid_total"] = format(paid_total, ".2f")
         item["outstanding"] = format(
             max(_decimal_value(row.get("rent")) - paid_total, Decimal("0.00"))
             if row.get("rent") is not None else Decimal("0.00"), ".2f")
         item["payment_status"] = _payment_status(row.get("rent"), paid_total)
+        if user and user.get("role") == "owner":
+            item["ledger_settlement_created"] = row["_id"] in settled_by_ledger
         permissions = (user.get("site_permissions") or {}).get(site["_id"], []) if user else []
         if (user and user.get("role") == "site_manager"
-                and not {"finance:read", "finance:update"}.intersection(permissions)):
-            for key in ("rent", "hamali", "paid_total", "outstanding", "payment_status"):
+                and not {"finance:read", "finance:update", "lrs:create", "lrs:update"}.intersection(permissions)):
+            for key in ("rent", "hamali", "total_rent", "paid_total", "outstanding", "payment_status"):
                 item.pop(key, None)
+            for line in item["goods_rows"]:
+                line.pop("rent", None)
+                line.pop("hamali", None)
         result.append(item)
     return result
 
 
 async def _financial_event(event_id, site, party_id, event_date, description, delta,
-                           cash_direction=None, mode=None):
+                           cash_direction=None, mode=None, user=None):
     amount = abs(delta).quantize(Decimal("0.01"))
     if amount <= 0:
         return
@@ -1221,7 +1475,7 @@ async def _financial_event(event_id, site, party_id, event_date, description, de
             "party_id": party_id, "date": event_date, "description": description,
             "amount": Decimal128(amount), "direction": "debit" if delta > 0 else "credit",
             "cash_direction": cash_direction, "mode": mode, "status": "pending",
-            "created_at": now_iso(),
+            **(_creator_metadata(user) if user else {"created_at": now_iso()}),
         }},
         upsert=True,
     )
@@ -1320,14 +1574,13 @@ async def _receiver_for_lr(site, user, trip, name, identifier, action, selected_
         identity = {
             "_id": new_id(), "business_id": str(site["business_id"]), "site_id": site["_id"],
             "operating_date": day, "name": original, "normalized_name": normalized,
-            "identifier": identity_value, "label": label, "created_by": user["username"],
-            "created_at": now_iso(),
+            "identifier": identity_value, "label": label, **_creator_metadata(user),
         }
         await db.site_receivers.insert_one(identity)
     return identity
 
 
-async def _party_for_receiver(site, identity, phone=None):
+async def _party_for_receiver(site, identity, phone=None, user=None):
     q = _scoped(str(site["business_id"]), site["_id"],
                 site_receiver_id=identity["_id"])
     party = await db.parties.find_one(q)
@@ -1341,7 +1594,7 @@ async def _party_for_receiver(site, identity, phone=None):
             "_id": party_id, "name": identity["label"], "mobile": phone or "",
             "status": "Active", "archived": False, "site_id": site["_id"],
             "business_id": str(site["business_id"]), "site_receiver_id": identity["_id"],
-            "created_at": now_iso(),
+            **(_creator_metadata(user) if user else {"created_at": now_iso()}),
         })
     except DuplicateKeyError:
         existing = await db.parties.find_one(q)
@@ -1427,7 +1680,7 @@ async def site_dashboard(site_id: str, u=Depends(site_user)):
     if _can_read_site_finances(u, site_id):
         result["trip_expenses"] = format(expense_total, ".2f")
         result["trip_expense_count"] = expense_count
-        result["recent_trip_expenses"] = [_site_expense_doc(row) for row in recent_expenses]
+        result["recent_trip_expenses"] = [_site_expense_doc(row, u) for row in recent_expenses]
     if u.get("role") == "site_manager" and "finance:read" not in (u.get("site_permissions") or {}).get(site_id, []):
         for key in ("recorded_bhada", "reconciled_bhada", "collected_bhada",
                     "outstanding_bhada", "recorded_outstanding_bhada", "recorded_hamali"):
@@ -1669,6 +1922,11 @@ async def system_dashboard(
         "business_id": business_id, "site_id": {"$in": selected_ids},
         "created_at": {"$gte": start, "$lte": end + "T23:59:59"},
     }).sort("created_at", -1).limit(20).to_list(20)
+    recent_activity = [_doc(row) for row in audit]
+    if u.get("role") == "site_manager":
+        for event in recent_activity:
+            for key in ("actor_id", "actor_username", "actor_name", "actor_role"):
+                event.pop(key, None)
     return {
         "from_date": start, "to_date": end, "sites": rows,
         "receivables": receivables,
@@ -1694,7 +1952,7 @@ async def system_dashboard(
             "trip_expenses": format(total_trip_expenses, ".2f"),
             "trip_expense_count": sum(r["trip_expense_count"] for r in rows),
         },
-        "recent_activity": [_doc(row) for row in audit],
+        "recent_activity": recent_activity,
         "activity_by_date": activity_by_date,
         "alerts": {
             "trips_awaiting_closure": sum(r["open_trips"] for r in rows),
@@ -1786,12 +2044,16 @@ async def create_site_trip(site_id: str, body: TripCreate, u=Depends(site_user))
         "_id": new_id(), "business_id": business_id, "site_id": site_id,
         "operating_date": operating_date, "timezone": site.get("timezone", "Asia/Kolkata"),
         "sequence": sequence, "trip_ref": trip_ref,
-        "truck_no": master_values.get("truck_no") or _normalize_label(body.truck_no, "Truck number", 32),
-        "driver_name": master_values.get("driver_name") or _normalize_label(body.driver_name, "Driver name", 100),
+        "truck_no": master_values.get("truck_no") or (
+            _normalize_label(body.truck_no, "Truck number", 32) if body.truck_no.strip() else ""
+        ),
+        "driver_name": master_values.get("driver_name") or (
+            _normalize_label(body.driver_name, "Driver name", 100) if body.driver_name.strip() else ""
+        ),
         "vehicle_id": master_values.get("vehicle_id"),
         "driver_id": master_values.get("driver_id"),
-        "status": "open", "reconciled": False, "created_by": u["username"],
-        "created_at": now_iso(), "updated_at": now_iso(),
+        "status": "open", "reconciled": False, **_creator_metadata(u),
+        "updated_at": now_iso(),
     }
     await db.site_trips.insert_one(trip)
     await _audit(site, u, "trip.created", "trip", trip["_id"], new={
@@ -1799,7 +2061,7 @@ async def create_site_trip(site_id: str, body: TripCreate, u=Depends(site_user))
         "truck_no": trip["truck_no"], "driver_name": trip["driver_name"],
         "vehicle_id": trip["vehicle_id"], "driver_id": trip["driver_id"],
     })
-    return _doc(trip)
+    return _doc_for_user(trip, u)
 
 
 @router.get("/sites/{site_id}/trip-resources")
@@ -1856,7 +2118,21 @@ async def list_site_trips(
     trips = await db.site_trips.find(query).sort(
         [("operating_date", -1), ("sequence", -1)]
     ).skip(offset).limit(limit).to_list(limit)
-    return {"rows": [_doc(row) for row in trips], "total": total,
+    trip_ids = [trip["_id"] for trip in trips]
+    receipt_counts = {}
+    if trip_ids:
+        async for row in db.site_lrs.aggregate([
+            {"$match": _scoped(
+                str(site["business_id"]), site_id,
+                trip_id={"$in": trip_ids}, voided={"$ne": True},
+            )},
+            {"$group": {"_id": "$trip_id", "count": {"$sum": 1}}},
+        ]):
+            receipt_counts[row["_id"]] = row["count"]
+    trip_rows = [_doc_for_user(row, u) for row in trips]
+    for row in trip_rows:
+        row["lr_count"] = receipt_counts.get(row["id"], 0)
+    return {"rows": trip_rows, "total": total,
             "limit": limit, "offset": offset}
 
 
@@ -1864,9 +2140,9 @@ async def list_site_trips(
 async def get_site_trip(site_id: str, trip_id: str, u=Depends(site_user)):
     site = await _site_for_user(site_id, u, "trips:read")
     trip = await _trip(site, trip_id)
-    result = _doc(trip)
+    result = _doc_for_user(trip, u)
     if _can_read_site_finances(u, site_id):
-        expense_summary = await _site_trip_expense_response(site, trip_id)
+        expense_summary = await _site_trip_expense_response(site, trip_id, u)
         result.update(expense_summary)
     return result
 
@@ -1877,7 +2153,7 @@ async def list_site_trip_expenses(site_id: str, trip_id: str, u=Depends(site_use
     if not _can_read_site_finances(u, site_id):
         raise HTTPException(403, "You do not have permission to read site finances")
     await _trip(site, trip_id)
-    return await _site_trip_expense_response(site, trip_id)
+    return await _site_trip_expense_response(site, trip_id, u)
 
 
 @router.post("/sites/{site_id}/trips/{trip_id}/expenses")
@@ -1921,8 +2197,7 @@ async def create_site_trip_expense(
         "proof_url": "", "remarks": description, "description": description,
         "cancelled": False, "idempotency_key": idempotency_key,
         "request_fingerprint": fingerprint, "posting_status": "pending",
-        "created_by": u["username"], "created_by_name": u.get("name", ""),
-        "created_at": now_iso(),
+        **_creator_metadata(u),
     }
     identity = _scoped(
         str(site["business_id"]), site["_id"], trip_id=trip_id,
@@ -1941,7 +2216,7 @@ async def create_site_trip_expense(
         raise HTTPException(409, "This idempotency key was already used for different expense details")
     stored = await _ensure_site_trip_expense_posted(site, stored)
     await _audit(
-        site, u, "trip.expense.created", "expense", stored["_id"],
+        site, _creator_user(u, stored), "trip.expense.created", "expense", stored["_id"],
         new={
             "trip_id": trip_id, "trip_ref": trip.get("trip_ref", ""),
             "category": category, "amount": format(amount, ".2f"),
@@ -1951,7 +2226,7 @@ async def create_site_trip_expense(
         },
         event_id=f"site-trip-expense-created:{stored['_id']}",
     )
-    return await _site_trip_expense_response(site, trip_id)
+    return await _site_trip_expense_response(site, trip_id, u)
 
 
 @router.patch("/sites/{site_id}/trips/{trip_id}")
@@ -1964,7 +2239,7 @@ async def update_site_trip(site_id: str, trip_id: str, body: TripUpdate, u=Depen
         raise HTTPException(409, "Trip details are locked because its ledger has been reconciled")
     changes = body.model_dump(exclude_unset=True)
     if not changes:
-        return _doc(trip)
+        return _doc_for_user(trip, u)
     master_values = await _trip_master_values(
         changes.get("vehicle_id"), changes.get("driver_id"),
         allow_archived_vehicle_id=trip.get("vehicle_id"),
@@ -1993,7 +2268,7 @@ async def update_site_trip(site_id: str, trip_id: str, body: TripUpdate, u=Depen
     await _audit(site, u, "trip.updated", "trip", trip_id,
                  old={k: trip.get(k) for k in changes if k in trip},
                  new={k: changes[k] for k in changes if k != "updated_at"})
-    return _doc(await _trip(site, trip_id))
+    return _doc_for_user(await _trip(site, trip_id), u)
 
 
 @router.post("/sites/{site_id}/trips/{trip_id}/close")
@@ -2001,15 +2276,16 @@ async def close_site_trip(site_id: str, trip_id: str, u=Depends(site_user)):
     site = await _site_for_user(site_id, u, "trips:close")
     trip = await _trip(site, trip_id)
     if trip["status"] == "closed":
-        return _doc(trip)
-    await db.site_trips.update_one(
+        return _doc_for_user(trip, u)
+    result = await db.site_trips.update_one(
         _scoped(str(site["business_id"]), site_id, _id=trip_id, status="open"),
         {"$set": {"status": "closed", "closed_by": u["username"],
                   "closed_at": now_iso(), "updated_at": now_iso()}},
     )
-    await _audit(site, u, "trip.closed", "trip", trip_id,
-                 old={"status": "open"}, new={"status": "closed"})
-    return _doc(await _trip(site, trip_id))
+    if result.modified_count:
+        await _audit(site, u, "trip.closed", "trip", trip_id,
+                     old={"status": "open"}, new={"status": "closed"})
+    return _doc_for_user(await _trip(site, trip_id), u)
 
 
 @router.post("/sites/{site_id}/trips/{trip_id}/reopen")
@@ -2028,7 +2304,7 @@ async def reopen_site_trip(site_id: str, trip_id: str, body: ReopenTrip, u=Depen
     )
     await _audit(site, u, "trip.reopened", "trip", trip_id,
                  old={"status": "closed"}, new={"status": "open"}, reason=reason)
-    return _doc(await _trip(site, trip_id))
+    return _doc_for_user(await _trip(site, trip_id), u)
 
 
 @router.get("/sites/{site_id}/categories")
@@ -2058,8 +2334,7 @@ async def add_site_category(site_id: str, body: CategoryCreate, u=Depends(site_u
         await db.site_categories.update_one(
             query,
             {"$setOnInsert": {"_id": new_id(), "name": name, "kind": body.kind,
-                              "normalized_name": normalized, "created_by": u["username"],
-                              "created_at": now_iso()}},
+                              "normalized_name": normalized, **_creator_metadata(u)}},
             upsert=True,
         )
     except DuplicateKeyError:
@@ -2080,69 +2355,132 @@ async def _save_category(site, user, kind, value):
         await db.site_categories.update_one(
             query,
             {"$setOnInsert": {"_id": new_id(), "name": value, "kind": kind,
-                              "normalized_name": normalized, "created_by": user["username"],
-                              "created_at": now_iso()}},
+                              "normalized_name": normalized, **_creator_metadata(user)}},
             upsert=True,
         )
     except DuplicateKeyError:
         pass
 
 
+async def _finish_site_lr_creation(site, user, trip, lr):
+    lines = lr.get("goods_rows") or lr.get("containers") or []
+    await _save_category(site, user, "goods", lr["goods_type"])
+    for goods_name in {line["type"] for line in lines}:
+        await _save_category(site, user, "goods", goods_name)
+    rent = _decimal_value(lr.get("rent"))
+    if rent > 0:
+        await _financial_event(
+            f"site-lr-charge-{lr['_id']}", site, lr["party_id"], trip["operating_date"],
+            f"Site LR {lr['lr_ref']} bhada", rent, user=_creator_user(user, lr),
+        )
+    await _audit(
+        site, _creator_user(user, lr), "lr.created", "lr", lr["_id"],
+        new={"lr_ref": lr["lr_ref"], "trip_id": trip["_id"],
+             "goods_type": lr["goods_type"], "total_quantity": lr["total_quantity"],
+             "rent": _clean(lr.get("rent")), "hamali": _clean(lr.get("hamali"))},
+        event_id=f"site-lr-created:{lr['_id']}",
+    )
+    await db.site_lrs.update_one(
+        _scoped(str(site["business_id"]), site["_id"], _id=lr["_id"]),
+        {"$set": {"creation_status": "complete"}},
+    )
+
+
 @router.post("/sites/{site_id}/trips/{trip_id}/lrs")
 async def create_site_lr(site_id: str, trip_id: str, body: LRCreate, u=Depends(site_user)):
     site = await _site_for_user(site_id, u, "lrs:create", include_inactive_owner=False)
-    if (u.get("role") == "site_manager" and (body.rent is not None or body.hamali is not None)
-            and "finance:update" not in (u.get("site_permissions") or {}).get(site_id, [])):
-        raise HTTPException(403, "Finance update permission is required to enter LR charges")
     trip = await _trip(site, trip_id)
+    if body.idempotency_key:
+        previous = await db.site_lrs.find_one(_scoped(
+            str(site["business_id"]), site_id, idempotency_key=body.idempotency_key,
+        ))
+        if previous:
+            if previous.get("trip_id") != trip_id:
+                raise HTTPException(409, "This receipt request key belongs to another trip")
+            if previous.get("creation_status") == "pending":
+                await _finish_site_lr_creation(site, u, trip, previous)
+            return (await _lr_rows(site, trip_id, [previous], u))[0]
     if trip["status"] != "open":
         raise HTTPException(409, "Lorry receipts can only be added to an open trip")
     receiver = await _receiver_for_lr(
         site, u, trip, body.receiver_name, body.receiver_identifier,
         body.receiver_match_action, body.receiver_identity_id,
     )
-    sender_name = _normalize_label(body.sender_name, "Sender", 160)
+    sender_name = _normalize_label(body.sender_name, "Sender", 160) if body.sender_name.strip() else ""
     sender_phone = _optional_phone(body.sender_phone, "Sender phone")
     receiver_phone = _optional_phone(body.receiver_phone, "Receiver phone")
     goods_type = _normalize_label(body.goods_type, "Goods type", 80)
+    receipt_date = body.receipt_date or trip["operating_date"]
+    _validate_iso_date(receipt_date)
     containers = []
     for line in body.containers:
-        containers.append({"type": _normalize_label(line.type, "Container type", 80),
-                           "quantity": line.quantity})
-    rent = _decimal(body.rent, "Bhada", allow_none=True)
-    hamali = _decimal(body.hamali, "Hamali", allow_none=True)
+        container = {
+            "type": _normalize_label(line.type, "Goods type", 80),
+            "type_hindi": line.type_hindi.strip() or line.type,
+            "quantity": line.quantity,
+            "description": " ".join(line.description.split()),
+        }
+        if line.rent is not None:
+            container["rent"] = Decimal128(_decimal(line.rent, "Bhada"))
+        if line.hamali is not None:
+            container["hamali"] = Decimal128(_decimal(line.hamali, "Hamali"))
+        containers.append(container)
+    per_goods_charges = any(
+        line.rent is not None or line.hamali is not None for line in body.containers
+    )
+    rent = (
+        sum((_decimal_value(line.get("rent")) for line in containers), Decimal("0.00"))
+        if per_goods_charges else _decimal(body.rent, "Bhada", allow_none=True)
+    )
+    hamali = (
+        sum((_decimal_value(line.get("hamali")) for line in containers), Decimal("0.00"))
+        if per_goods_charges else _decimal(body.hamali, "Hamali", allow_none=True)
+    )
     sequence = await _next_sequence(site_id, trip["operating_date"], "lr")
     lr_ref = f"{site['code']}LR{date.fromisoformat(trip['operating_date']):%d%m%Y}-{sequence:02d}"
     lr_id = new_id()
-    party_id = await _party_for_receiver(site, receiver, receiver_phone)
+    party_id = await _party_for_receiver(site, receiver, receiver_phone, u)
+    creator_metadata = _creator_metadata(u)
     lr = {
         "_id": lr_id, "business_id": str(site["business_id"]), "site_id": site_id,
         "trip_id": trip_id, "trip_ref": trip["trip_ref"], "operating_date": trip["operating_date"],
         "timezone": trip["timezone"], "sequence": sequence, "lr_ref": lr_ref,
-        "sender_name": sender_name, "sender_phone": sender_phone or "",
+        "receipt_date": receipt_date,
+        "sender_name": sender_name, "sender_name_hindi": body.sender_name_hindi.strip() or sender_name,
+        "sender_address": " ".join(body.sender_address.split()), "sender_phone": sender_phone or "",
         "receiver_name": receiver["name"], "receiver_phone": receiver_phone or "",
+        "receiver_name_hindi": body.receiver_name_hindi.strip() or receiver["name"],
+        "receiver_address": " ".join(body.receiver_address.split()),
+        "city": " ".join(body.city.split()),
         "receiver_normalized": receiver["normalized_name"], "receiver_label": receiver["label"],
         "receiver_identity_id": receiver["_id"], "receiver_identifier": receiver.get("identifier", ""),
-        "party_id": party_id, "goods_type": goods_type, "containers": containers,
+        "party_id": party_id, "goods_type": goods_type,
+        "goods_type_hindi": body.goods_type_hindi.strip() or containers[0]["type_hindi"],
+        "containers": containers, "goods_rows": containers,
         "total_quantity": sum(line["quantity"] for line in containers),
         "rent": Decimal128(rent) if rent is not None else None,
         "hamali": Decimal128(hamali) if hamali is not None else None,
-        "reconciled": False, "created_by": u["username"], "created_at": now_iso(),
+        "creation_status": "pending",
+        "receipt_created_at": creator_metadata["created_at"],
+        "reconciled": False, **creator_metadata,
+        **(_charge_editor_metadata(u)
+           if (rent or Decimal("0.00")) > 0 or (hamali or Decimal("0.00")) > 0 else {}),
         "updated_at": now_iso(),
+        **({"idempotency_key": body.idempotency_key} if body.idempotency_key else {}),
     }
-    await db.site_lrs.insert_one(lr)
-    await _save_category(site, u, "goods", goods_type)
-    for container_type in {line["type"] for line in containers}:
-        await _save_category(site, u, "containers", container_type)
-    if rent is not None and rent > 0:
-        await _financial_event(
-            f"site-lr-charge-{lr_id}", site, party_id, trip["operating_date"],
-            f"Site LR {lr_ref} bhada", rent,
-        )
-    await _audit(site, u, "lr.created", "lr", lr_id,
-                 new={"lr_ref": lr_ref, "trip_id": trip_id, "goods_type": goods_type,
-                      "total_quantity": lr["total_quantity"], "rent": _clean(lr["rent"]),
-                      "hamali": _clean(lr["hamali"])})
+    try:
+        await db.site_lrs.insert_one(lr)
+    except DuplicateKeyError:
+        if body.idempotency_key:
+            previous = await db.site_lrs.find_one(_scoped(
+                str(site["business_id"]), site_id, idempotency_key=body.idempotency_key,
+            ))
+            if previous:
+                if previous.get("creation_status") == "pending":
+                    await _finish_site_lr_creation(site, u, trip, previous)
+                return (await _lr_rows(site, trip_id, [previous], u))[0]
+        raise
+    await _finish_site_lr_creation(site, u, trip, lr)
     return (await _lr_rows(site, trip_id, [lr], u))[0]
 
 
@@ -2181,15 +2519,21 @@ async def update_site_lr(
 ):
     site = await _site_for_user(site_id, u, "lrs:update")
     trip = await _trip(site, trip_id)
-    if trip["status"] != "open":
+    correction_reason = " ".join((body.owner_correction_reason or "").split())
+    is_owner = u.get("role") == "owner"
+    if trip["status"] != "open" and not is_owner:
         raise HTTPException(409, "Reopen the trip before correcting its LRs")
+    if trip["status"] != "open" and not correction_reason:
+        raise HTTPException(422, "Enter a correction reason to edit a receipt in a closed trip")
     lr = await _lr(site, trip_id, lr_id)
+    if lr.get("voided"):
+        raise HTTPException(409, "Voided receipts are read-only")
     changes = body.model_dump(exclude_unset=True)
     idempotency_key = changes.pop("idempotency_key", None)
-    if (u.get("role") == "site_manager" and any(
-            key in changes for key in ("rent", "hamali"))
-            and "finance:update" not in (u.get("site_permissions") or {}).get(site_id, [])):
-        raise HTTPException(403, "Finance update permission is required to change LR charges")
+    expected_updated_at = changes.pop("expected_updated_at", None)
+    changes.pop("owner_correction_reason", None)
+    if expected_updated_at and lr.get("updated_at") != expected_updated_at:
+        raise HTTPException(409, "This receipt changed elsewhere. Reload it before saving your edits.")
     action = changes.pop("receiver_match_action", None)
     identity_id = changes.pop("receiver_identity_id", None)
     old_values = {}
@@ -2207,23 +2551,45 @@ async def update_site_lr(
     if not changes:
         return (await _lr_rows(site, trip_id, [lr], u))[0]
     financial_fields = {"rent", "hamali"}
-    if lr.get("reconciled") and financial_fields.intersection(changes):
-        raise HTTPException(409, "Reconciled bhada and hamali are locked; use a new adjustment workflow")
+    incoming_goods = changes.get("containers") or []
+    row_charge_change = bool(incoming_goods) and any(
+        line.get("rent") is not None or line.get("hamali") is not None
+        for line in incoming_goods
+    ) and (
+        sum((_decimal_value(line.get("rent")) for line in incoming_goods), Decimal("0.00"))
+        != _decimal_value(lr.get("rent"))
+        or sum((_decimal_value(line.get("hamali")) for line in incoming_goods), Decimal("0.00"))
+        != _decimal_value(lr.get("hamali"))
+    )
+    charge_values_changed = False
+    if lr.get("reconciled") and (financial_fields.intersection(changes) or row_charge_change) and (
+        not is_owner or not correction_reason
+    ):
+        raise HTTPException(409, "Only the business owner can correct reconciled charges; enter an audit reason")
     if "sender_name" in changes:
         old_values["sender_name"] = lr["sender_name"]
-        changes["sender_name"] = _normalize_label(changes["sender_name"], "Sender", 160)
+        changes["sender_name"] = (
+            _normalize_label(changes["sender_name"], "Sender", 160)
+            if str(changes["sender_name"] or "").strip() else ""
+        )
         new_values["sender_name"] = changes["sender_name"]
     if "receiver_name" in changes or "receiver_identifier" in changes:
         paid = (await _payments_by_lr(site, trip_id, [lr_id])).get(lr_id, Decimal("0.00"))
-        if lr.get("reconciled") or paid or _decimal_value(lr.get("rent")):
+        has_financial_history = (
+            lr.get("reconciled") or paid or _decimal_value(lr.get("rent"))
+            or _decimal_value(lr.get("hamali"))
+        )
+        if has_financial_history and (not is_owner or not correction_reason):
             raise HTTPException(
                 409,
-                "Receiver identity cannot change after bhada or payments are recorded; use an audited owner correction workflow",
+                "Only the business owner can correct a receiver after charges or payments; enter an audit reason",
             )
+        if has_financial_history and not idempotency_key:
+            raise HTTPException(422, "An idempotency key is required for an owner receiver correction")
         identity = await _receiver_for_lr(
             site, u, trip, changes.get("receiver_name", lr["receiver_name"]),
             changes.get("receiver_identifier", lr.get("receiver_identifier", "")),
-            action, identity_id,
+            action or ("different" if has_financial_history else None), identity_id,
         )
         for key, value in (("receiver_name", identity["name"]),
                            ("receiver_normalized", identity["normalized_name"]),
@@ -2234,38 +2600,114 @@ async def update_site_lr(
             changes[key] = value
             new_values[key] = value
         party_phone = changes.get("receiver_phone", lr.get("receiver_phone"))
-        party_id = await _party_for_receiver(site, identity, party_phone)
+        party_id = await _party_for_receiver(site, identity, party_phone, u)
         old_values["party_id"] = lr.get("party_id")
         changes["party_id"] = party_id
         new_values["party_id"] = party_id
+        if has_financial_history and party_id != lr.get("party_id"):
+            old_party_id = lr["party_id"]
+            outstanding = max(_decimal_value(lr.get("rent")) - paid, Decimal("0.00"))
+            if outstanding:
+                await _financial_event(
+                    f"lr-receiver-correction:{lr_id}:{idempotency_key}:old",
+                    site, old_party_id, lr["operating_date"],
+                    f"Owner correction transfer out for site LR {lr['lr_ref']}",
+                    -outstanding, user=u,
+                )
+                await _financial_event(
+                    f"lr-receiver-correction:{lr_id}:{idempotency_key}:new",
+                    site, party_id, lr["operating_date"],
+                    f"Owner correction transfer in for site LR {lr['lr_ref']}",
+                    outstanding, user=u,
+                )
     elif "receiver_phone" in changes:
         await db.parties.update_one(
             _scoped(str(site["business_id"]), site_id, _id=lr["party_id"]),
             {"$set": {"mobile": changes["receiver_phone"]}},
         )
     if "goods_type" in changes:
-        old_values["goods_type"] = lr["goods_type"]
+        old_values["goods_type"] = lr.get("goods_type", "")
         changes["goods_type"] = _normalize_label(changes["goods_type"], "Goods type", 80)
         new_values["goods_type"] = changes["goods_type"]
         await _save_category(site, u, "goods", changes["goods_type"])
+    for key, max_length in (
+        ("sender_name_hindi", 160), ("receiver_name_hindi", 160),
+        ("goods_type_hindi", 120),
+    ):
+        if key in changes:
+            changes[key] = " ".join((changes[key] or "").split())[:max_length]
+            old_values[key] = lr.get(key, "")
+            new_values[key] = changes[key]
+    for key in ("sender_address", "receiver_address", "city"):
+        if key in changes:
+            changes[key] = " ".join(str(changes[key] or "").split())
+            old_values[key] = lr.get(key, "")
+            new_values[key] = changes[key]
+    if "receipt_date" in changes:
+        changes["receipt_date"] = _validate_iso_date(changes["receipt_date"]).isoformat()
+        old_values["receipt_date"] = lr.get("receipt_date", lr.get("operating_date"))
+        new_values["receipt_date"] = changes["receipt_date"]
     if "containers" in changes:
-        old_values["containers"] = lr["containers"]
-        containers = [{"type": _normalize_label(line["type"], "Container type", 80),
-                       "quantity": line["quantity"]} for line in changes["containers"]]
+        old_values["containers"] = lr.get("containers", lr.get("goods_rows", []))
+        source_containers = changes["containers"]
+        supplied_goods_charges = any(
+            line.get("rent") is not None or line.get("hamali") is not None
+            for line in source_containers
+        )
+        prior_goods = lr.get("goods_rows") or lr.get("containers") or []
+        prior_has_allocation = any(
+            "rent" in line or "hamali" in line for line in prior_goods
+        )
+        containers = [{
+            "type": _normalize_label(line["type"], "Goods type", 80),
+            "type_hindi": " ".join((line.get("type_hindi") or line["type"]).split())[:120],
+            "quantity": line["quantity"],
+            "description": " ".join((line.get("description") or "").split())[:500],
+            **({
+                "rent": Decimal128(_decimal(
+                    _decimal_value(line.get("rent")) if supplied_goods_charges else
+                    (_decimal_value(prior_goods[index].get("rent"))
+                     if prior_has_allocation and index < len(prior_goods)
+                     else _decimal_value(lr.get("rent")) if index == 0 else Decimal("0.00")),
+                    "Bhada",
+                )),
+                "hamali": Decimal128(_decimal(
+                    _decimal_value(line.get("hamali")) if supplied_goods_charges else
+                    (_decimal_value(prior_goods[index].get("hamali"))
+                     if prior_has_allocation and index < len(prior_goods)
+                     else _decimal_value(lr.get("hamali")) if index == 0 else Decimal("0.00")),
+                    "Hamali",
+                )),
+            }),
+        } for line in changes["containers"]]
         changes["containers"] = containers
+        changes["goods_rows"] = containers
+        changes["goods_type"] = containers[0]["type"]
+        changes["goods_type_hindi"] = containers[0]["type_hindi"]
         changes["total_quantity"] = sum(line["quantity"] for line in containers)
         new_values["containers"] = containers
+        new_values["goods_rows"] = containers
+        new_values["goods_type"] = changes["goods_type"]
+        new_values["goods_type_hindi"] = changes["goods_type_hindi"]
         new_values["total_quantity"] = changes["total_quantity"]
-        for container_type in {line["type"] for line in containers}:
-            await _save_category(site, u, "containers", container_type)
+        if any("rent" in line or "hamali" in line for line in containers):
+            changes["rent"] = sum(
+                (_decimal_value(line.get("rent")) for line in containers), Decimal("0.00"),
+            )
+            changes["hamali"] = sum(
+                (_decimal_value(line.get("hamali")) for line in containers), Decimal("0.00"),
+            )
+        for goods_name in {line["type"] for line in containers}:
+            await _save_category(site, u, "goods", goods_name)
     if "rent" in changes:
         if not idempotency_key:
             raise HTTPException(422, "An idempotency key is required when changing bhada")
         old_rent = _decimal_value(lr.get("rent"))
         new_rent = _decimal(changes["rent"], "Bhada", allow_none=True)
         paid = (await _payments_by_lr(site, trip_id, [lr_id])).get(lr_id, Decimal("0.00"))
-        if new_rent is not None and new_rent < paid:
+        if new_rent is not None and new_rent < paid and (not is_owner or not correction_reason):
             raise HTTPException(409, "Bhada cannot be reduced below payments already recorded")
+        charge_values_changed = charge_values_changed or new_rent != old_rent
         new_values["rent"] = format(new_rent, ".2f") if new_rent is not None else None
         old_values["rent"] = format(old_rent, ".2f") if lr.get("rent") is not None else None
         changes["rent"] = Decimal128(new_rent) if new_rent is not None else None
@@ -2274,21 +2716,162 @@ async def update_site_lr(
             event_id = f"lr-rent-edit:{lr_id}:{idempotency_key}"
             await _financial_event(
                 event_id, site, changes.get("party_id", lr["party_id"]), lr["operating_date"],
-                f"Rent correction for site LR {lr['lr_ref']}", delta,
+                f"Rent correction for site LR {lr['lr_ref']}", delta, user=u,
             )
     if "hamali" in changes:
         old_hamali = _decimal_value(lr.get("hamali"))
         new_hamali = _decimal(changes["hamali"], "Hamali", allow_none=True)
+        charge_values_changed = charge_values_changed or new_hamali != old_hamali
         old_values["hamali"] = format(old_hamali, ".2f") if lr.get("hamali") is not None else None
         new_values["hamali"] = format(new_hamali, ".2f") if new_hamali is not None else None
         changes["hamali"] = Decimal128(new_hamali) if new_hamali is not None else None
+    if "containers" not in changes and financial_fields.intersection(changes):
+        goods = lr.get("goods_rows") or lr.get("containers") or []
+        if goods:
+            rows_with_charges = []
+            for index, line in enumerate(goods):
+                rent_value = _decimal_value(line.get("rent"))
+                hamali_value = _decimal_value(line.get("hamali"))
+                if index == 0:
+                    if "rent" in changes:
+                        rent_value += _decimal_value(changes["rent"]) - _decimal_value(lr.get("rent"))
+                    if "hamali" in changes:
+                        hamali_value += _decimal_value(changes["hamali"]) - _decimal_value(lr.get("hamali"))
+                rows_with_charges.append({
+                    **line, "rent": Decimal128(rent_value), "hamali": Decimal128(hamali_value),
+                })
+            changes["containers"] = rows_with_charges
+            changes["goods_rows"] = rows_with_charges
+    if charge_values_changed:
+        changes.update(_charge_editor_metadata(u))
     changes["updated_at"] = now_iso()
-    await db.site_lrs.update_one(
-        _scoped(str(site["business_id"]), site_id, _id=lr_id, trip_id=trip_id),
+    update_query = _scoped(str(site["business_id"]), site_id, _id=lr_id, trip_id=trip_id)
+    if expected_updated_at:
+        update_query["updated_at"] = expected_updated_at
+    updated_result = await db.site_lrs.update_one(
+        update_query,
         {"$set": changes},
     )
-    await _audit(site, u, "lr.updated", "lr", lr_id, old=old_values, new=new_values)
+    if expected_updated_at and not updated_result.matched_count:
+        raise HTTPException(409, "This receipt changed elsewhere. Reload it before saving your edits.")
+    await _audit(
+        site, u, "lr.updated", "lr", lr_id, old=old_values, new=new_values,
+        reason=correction_reason or None,
+    )
     return (await _lr_rows(site, trip_id, [await _lr(site, trip_id, lr_id)], u))[0]
+
+
+@router.post("/sites/{site_id}/trips/{trip_id}/lrs/{lr_id}/void")
+async def void_site_lr(
+    site_id: str, trip_id: str, lr_id: str, body: VoidReceipt, u=Depends(site_user),
+):
+    site = await _site_for_user(site_id, u, "lrs:update")
+    trip = await _trip(site, trip_id)
+    is_owner = u.get("role") == "owner"
+    if trip.get("status") != "open" and not is_owner:
+        raise HTTPException(409, "Reopen the trip before voiding a receipt")
+    lr = await _lr(site, trip_id, lr_id)
+    if lr.get("voided"):
+        return {"id": lr_id, "voided": True}
+    reason = _normalize_label(body.reason, "Void reason", 500)
+    has_financial_history = (
+        lr.get("reconciled") or _decimal_value(lr.get("rent"))
+        or _decimal_value(lr.get("hamali"))
+    )
+    if has_financial_history and not is_owner:
+        raise HTTPException(403, "Only the business owner can void a receipt with charges or reconciliation history")
+    if (has_financial_history or trip.get("status") != "open") and is_owner and len(reason) < 5:
+        raise HTTPException(422, "Enter a detailed reason for this owner correction")
+    void_cycle = int(lr.get("void_cycle", 0)) + 1
+    paid = (await _payments_by_lr(site, trip_id, [lr_id])).get(lr_id, Decimal("0.00"))
+    if is_owner and paid:
+        payments = await db.site_payments.find(_scoped(
+            str(site["business_id"]), site_id, trip_id=trip_id, lr_id=lr_id,
+            kind="payment", posting_status="posted",
+        )).sort("created_at", 1).to_list(1000)
+        for payment in payments:
+            reversal = await db.site_payments.find_one(_scoped(
+                str(site["business_id"]), site_id, reversal_of=payment["_id"], kind="reversal",
+            ))
+            if reversal:
+                continue
+            await _record_lr_payment(
+                site, trip, lr, _decimal_value(payment["amount"]), payment["date"],
+                payment["method"], payment.get("reference", ""),
+                f"void-reversal-{payment['_id']}", u, kind="reversal",
+                reversal_of=payment["_id"], reason=reason,
+                source="receipt_void", void_cycle=void_cycle,
+            )
+    rent = _decimal_value(lr.get("rent"))
+    if is_owner and rent:
+        await _financial_event(
+            f"site-lr-void-rent:{lr_id}:{void_cycle}", site, lr["party_id"], lr["operating_date"],
+            f"Owner void correction for site LR {lr['lr_ref']}", -rent, user=u,
+        )
+    await db.site_lrs.update_one(
+        _scoped(str(site["business_id"]), site_id, _id=lr_id, trip_id=trip_id, voided={"$ne": True}),
+        {"$set": {"voided": True, "voided_by": u["username"], "voided_at": now_iso(),
+                  "void_reason": reason, "void_cycle": void_cycle, "updated_at": now_iso()}},
+    )
+    await _audit(site, u, "lr.voided", "lr", lr_id,
+                 old={"voided": False}, new={"voided": True}, reason=reason)
+    return {"id": lr_id, "voided": True}
+
+
+@router.post("/sites/{site_id}/trips/{trip_id}/lrs/{lr_id}/unvoid")
+async def unvoid_site_lr(
+    site_id: str, trip_id: str, lr_id: str, body: RestoreReceipt, u=Depends(site_user),
+):
+    _owner(u)
+    site = await _site_for_user(site_id, u)
+    trip = await _trip(site, trip_id)
+    lr = await _lr(site, trip_id, lr_id)
+    if not lr.get("voided"):
+        return {"id": lr_id, "voided": False}
+    reason = _normalize_label(body.reason, "Restore reason", 500)
+    cycle = int(lr.get("void_cycle", 0))
+    restore_key = body.idempotency_key
+    if cycle:
+        reversals = await db.site_payments.find(_scoped(
+            str(site["business_id"]), site_id, trip_id=trip_id, lr_id=lr_id,
+            kind="reversal", posting_status="posted", source="receipt_void",
+            void_cycle=cycle,
+        )).sort("created_at", 1).to_list(1000)
+    else:
+        reversals = await db.site_payments.find(_scoped(
+            str(site["business_id"]), site_id, trip_id=trip_id, lr_id=lr_id,
+            kind="reversal", posting_status="posted", reason=lr.get("void_reason", ""),
+        )).sort("created_at", 1).to_list(1000)
+    for reversal in reversals:
+        await _record_lr_payment(
+            site, trip, lr, _decimal_value(reversal["amount"]), reversal["date"],
+            reversal["method"], reversal.get("reference", ""),
+            f"unvoid-{restore_key}-{reversal['_id']}", u,
+            reason=reason, source="receipt_unvoid", void_cycle=cycle,
+        )
+    rent = _decimal_value(lr.get("rent"))
+    if rent:
+        await _financial_event(
+            f"site-lr-unvoid-rent:{lr_id}:{cycle}:{restore_key}", site,
+            lr["party_id"], lr["operating_date"],
+            f"Owner restore correction for site LR {lr['lr_ref']}", rent, user=u,
+        )
+    now = now_iso()
+    update = {
+        "voided": False, "unvoided_by": u["username"], "unvoided_at": now,
+        "unvoid_reason": reason, "updated_at": now,
+    }
+    await db.site_lrs.update_one(
+        _scoped(str(site["business_id"]), site_id, _id=lr_id, trip_id=trip_id, voided=True),
+        {"$set": update},
+    )
+    await _audit(
+        site, u, "lr.unvoided", "lr", lr_id,
+        old={"voided": True, "void_reason": lr.get("void_reason", "")},
+        new={"voided": False, "reason": reason}, reason=reason,
+        event_id=f"site-lr-unvoid-audit:{lr_id}:{restore_key}",
+    )
+    return {"id": lr_id, "voided": False, "restored_payments": len(reversals)}
 
 
 async def _ensure_payment_posting(payment, site):
@@ -2388,7 +2971,7 @@ async def _apply_payment_balance(payment, site):
 
 async def _record_lr_payment(site, trip, lr, amount, payment_date, method,
                              reference, idempotency_key, user, kind="payment",
-                             reversal_of=None, reason=None):
+                             reversal_of=None, reason=None, source=None, void_cycle=None):
     business_id = str(site["business_id"])
     existing = await db.site_payments.find_one(
         _scoped(business_id, site["_id"], idempotency_key=idempotency_key)
@@ -2427,11 +3010,14 @@ async def _record_lr_payment(site, trip, lr, amount, payment_date, method,
         "amount": Decimal128(amount), "date": payment_date, "method": method,
         "reference": reference, "kind": kind,
         "reason": reason or "", "idempotency_key": idempotency_key,
-        "posting_status": "pending", "created_by": user["username"],
-        "created_at": now_iso(),
+        "posting_status": "pending", **_creator_metadata(user),
     }
     if reversal_of:
         payment["reversal_of"] = reversal_of
+    if source:
+        payment["source"] = source
+    if void_cycle is not None:
+        payment["void_cycle"] = void_cycle
     try:
         await db.site_payments.insert_one(payment)
     except DuplicateKeyError:
@@ -2475,7 +3061,89 @@ async def record_site_payment(
     amount = _decimal(body.amount, "Payment")
     result = await _record_lr_payment(site, trip, lr, amount, payment_date, method,
                                       body.reference.strip(), body.idempotency_key, u)
-    return _doc(result)
+    return _doc_for_user(result, u)
+
+
+@router.post("/sites/{site_id}/trips/{trip_id}/lrs/{lr_id}/settlement")
+async def update_site_lr_settlement(
+    site_id: str, trip_id: str, lr_id: str,
+    body: BookingSettlementUpdate, u=Depends(site_user),
+):
+    _owner(u)
+    site = await _site_for_user(site_id, u)
+    trip = await _trip(site, trip_id)
+    lr = await _lr(site, trip_id, lr_id)
+    if lr.get("voided"):
+        raise HTTPException(409, "Restore this receipt before recording or reversing payment")
+    reason = " ".join(body.reason.split()) or "Owner updated payment received status in the booking ledger"
+    if body.received:
+        if lr.get("rent") is None:
+            raise HTTPException(409, "Enter Bhada before marking this receipt as paid")
+        paid = (await _payments_by_lr(site, trip_id, [lr_id])).get(lr_id, Decimal("0.00"))
+        outstanding = max(_decimal_value(lr.get("rent")) - paid, Decimal("0.00"))
+        if outstanding:
+            payment_date = _now_at_site(site)[0]
+            payment = await _record_lr_payment(
+                site, trip, lr, outstanding, payment_date, "Cash",
+                "Booking ledger marked received",
+                f"booking-settlement-{body.idempotency_key}", u,
+                reason=reason, source="booking_settlement",
+            )
+            await db.site_payments.update_one(
+                {"_id": payment["_id"]},
+                {"$set": {"source": "booking_settlement", "settlement_reason": reason}},
+            )
+        else:
+            payment = None
+        result = {
+            "id": lr_id, "received": True,
+            "paid_total": format(_decimal_value(lr.get("rent")), ".2f"),
+            "outstanding": "0.00",
+            "settlement_payment_id": payment["_id"] if payment else None,
+        }
+        await _audit(
+            site, u, "lr.settlement_marked_received", "lr", lr_id,
+            new={"received": True, "amount": format(outstanding, ".2f"),
+                 "payment_id": payment["_id"] if payment else ""},
+            reason=reason,
+            event_id=f"site-lr-settlement-audit:{lr_id}:{body.idempotency_key}",
+        )
+        return result
+
+    settlements = await db.site_payments.find(_scoped(
+        str(site["business_id"]), site_id, trip_id=trip_id, lr_id=lr_id,
+        kind="payment", source="booking_settlement", posting_status="posted",
+    )).sort("created_at", -1).to_list(1000)
+    reversed_count = 0
+    for payment in settlements:
+        reversal = await db.site_payments.find_one(_scoped(
+            str(site["business_id"]), site_id, reversal_of=payment["_id"], kind="reversal",
+        ))
+        if reversal:
+            continue
+        await _record_lr_payment(
+            site, trip, lr, _decimal_value(payment["amount"]), payment["date"],
+            payment["method"], payment.get("reference", ""),
+            f"booking-settlement-reversal-{payment['_id']}", u,
+            kind="reversal", reversal_of=payment["_id"], reason=reason,
+            source="booking_settlement_undo",
+        )
+        reversed_count += 1
+    if reversed_count:
+        await _audit(
+            site, u, "lr.settlement_reversed", "lr", lr_id,
+            new={"received": False, "reversed_settlements": reversed_count},
+            reason=reason,
+            event_id=f"site-lr-settlement-undo-audit:{lr_id}:{body.idempotency_key}",
+        )
+    paid = (await _payments_by_lr(site, trip_id, [lr_id])).get(lr_id, Decimal("0.00"))
+    rent = _decimal_value(lr.get("rent"))
+    return {
+        "id": lr_id, "received": paid >= rent and lr.get("rent") is not None,
+        "paid_total": format(paid, ".2f"),
+        "outstanding": format(max(rent - paid, Decimal("0.00")), ".2f"),
+        "reversed_settlements": reversed_count,
+    }
 
 
 @router.post("/sites/{site_id}/trips/{trip_id}/lrs/{lr_id}/payments/{payment_id}/reverse")
@@ -2530,7 +3198,7 @@ async def list_site_payments(site_id: str, trip_id: str, lr_id: Optional[str] = 
         await _lr(site, trip_id, lr_id)
         query["lr_id"] = lr_id
     payments = await db.site_payments.find(query).sort("created_at", -1).limit(1000).to_list(1000)
-    return [_doc(payment) for payment in payments]
+    return [_doc_for_user(payment, u) for payment in payments]
 
 
 @router.post("/sites/{site_id}/trips/{trip_id}/lrs/{lr_id}/payments/{payment_id}/retry")
@@ -2556,12 +3224,13 @@ async def retry_site_payment_posting(
         u, kind=payment.get("kind", "payment"),
         reversal_of=payment.get("reversal_of"), reason=payment.get("reason"),
     )
-    return _doc(result)
+    return _doc_for_user(result, u)
 
 
 @router.get("/sites/{site_id}/audit")
 async def list_site_audit(site_id: str, limit: int = Query(default=50, ge=1, le=100),
                           offset: int = Query(default=0, ge=0), u=Depends(site_user)):
+    _owner(u)
     site = await _site_for_user(site_id, u, "dashboard:read")
     query = _scoped(str(site["business_id"]), site_id)
     total = await db.site_audit_events.count_documents(query)
@@ -2569,6 +3238,173 @@ async def list_site_audit(site_id: str, limit: int = Query(default=50, ge=1, le=
     visible = _audit_rows_for_user(rows, u, site_id)
     return {"rows": visible, "total": total,
             "limit": limit, "offset": offset}
+
+
+@router.get("/sites/{site_id}/booking-finance")
+async def site_booking_finance(site_id: str, u=Depends(site_user)):
+    _owner(u)
+    site = await _site_for_user(site_id, u, "dashboard:read")
+    business_id = str(site["business_id"])
+    lrs = await db.site_lrs.find(_scoped(
+        business_id, site_id, voided={"$ne": True},
+    )).sort([("operating_date", -1), ("sequence", -1)]).limit(10001).to_list(10001)
+    if len(lrs) > 10000:
+        raise HTTPException(413, "This booking finance view has more than 10,000 receipts")
+
+    paid_by_lr = {}
+    async for payment in db.site_payments.aggregate([
+        {"$match": _scoped(
+            business_id, site_id, posting_status="posted",
+            kind={"$in": ["payment", "reversal"]},
+        )},
+        {"$group": {
+            "_id": "$lr_id",
+            "paid": {"$sum": {"$cond": [
+                {"$eq": ["$kind", "reversal"]},
+                {"$multiply": ["$amount", -1]}, "$amount",
+            ]}},
+        }},
+    ]):
+        paid_by_lr[payment["_id"]] = _decimal_value(payment.get("paid"))
+
+    trips = {}
+    for trip_id in {lr["trip_id"] for lr in lrs}:
+        trip = await db.site_trips.find_one(_scoped(business_id, site_id, _id=trip_id))
+        if trip:
+            trips[trip_id] = trip
+
+    totals = {
+        "receipt_count": 0, "pending_orders": 0, "unpriced_receipts": 0,
+        "unpaid_receipts": 0, "recorded_bhada": Decimal("0.00"),
+        "recorded_hamali": Decimal("0.00"), "grand_total": Decimal("0.00"),
+        "collected_bhada": Decimal("0.00"), "outstanding_bhada": Decimal("0.00"),
+        "collectible_outstanding_bhada": Decimal("0.00"),
+    }
+    rows = []
+    receiver_totals = {}
+    today = date.fromisoformat(_now_at_site(site)[0])
+    for lr in lrs:
+        trip = trips.get(lr["trip_id"])
+        if not trip:
+            continue
+        rent = _decimal_value(lr.get("rent"))
+        hamali = _decimal_value(lr.get("hamali"))
+        paid = paid_by_lr.get(lr["_id"], Decimal("0.00"))
+        outstanding = max(rent - paid, Decimal("0.00"))
+        reconciled = lr.get("reconciled") is True
+        receipt_day = lr.get("receipt_date", lr.get("operating_date", ""))
+        age_days = max((today - _validate_iso_date(receipt_day)).days, 0)
+        goods = lr.get("goods_rows") or lr.get("containers") or []
+        totals["receipt_count"] += 1
+        totals["recorded_bhada"] += rent
+        totals["recorded_hamali"] += hamali
+        totals["grand_total"] += rent + hamali
+        totals["collected_bhada"] += paid
+        totals["outstanding_bhada"] += outstanding
+        totals["pending_orders"] += int(not reconciled)
+        totals["unpriced_receipts"] += int(lr.get("rent") is None)
+        totals["unpaid_receipts"] += int(outstanding > 0)
+        if reconciled:
+            totals["collectible_outstanding_bhada"] += outstanding
+        receiver_key = str(lr.get("party_id") or lr.get("receiver_identity_id")
+                           or lr.get("receiver_name") or lr["_id"])
+        receiver = receiver_totals.setdefault(receiver_key, {
+            "receiver_name": lr.get("receiver_name", ""),
+            "receiver_label": lr.get("receiver_label", lr.get("receiver_name", "")),
+            "receipt_count": 0, "bhada": Decimal("0.00"),
+            "collected": Decimal("0.00"), "outstanding": Decimal("0.00"),
+        })
+        receiver["receipt_count"] += 1
+        receiver["bhada"] += rent
+        receiver["collected"] += paid
+        receiver["outstanding"] += outstanding
+        rows.append({
+            "id": lr["_id"], "site_id": site_id, "trip_id": lr["trip_id"],
+            "trip_ref": trip.get("trip_ref", ""), "lr_ref": lr.get("lr_ref", ""),
+            "receipt_date": receipt_day,
+            "sender_name": lr.get("sender_name", ""),
+            "receiver_name": lr.get("receiver_name", ""),
+            "receiver_label": lr.get("receiver_label", lr.get("receiver_name", "")),
+            "goods": "; ".join(
+                f"{line.get('type', '')} x {line.get('quantity', 0)}" for line in goods
+            ),
+            "rent": format(rent, ".2f") if lr.get("rent") is not None else None,
+            "hamali": format(hamali, ".2f"),
+            "total": format(rent + hamali, ".2f"),
+            "paid": format(paid, ".2f"),
+            "outstanding": format(outstanding, ".2f"),
+            "payment_status": _payment_status(lr.get("rent"), paid),
+            "reconciled": reconciled, "age_days": age_days,
+            "promised_date": lr.get("payment_promised_date", ""),
+            "followup_note": lr.get("payment_followup_note", ""),
+            "created_by_login": lr.get("created_by_login", lr.get("created_by", "")),
+            "created_by_role": lr.get("created_by_role", ""),
+        })
+    money_keys = (
+        "recorded_bhada", "recorded_hamali", "grand_total", "collected_bhada",
+        "outstanding_bhada", "collectible_outstanding_bhada",
+    )
+    formatted = {
+        **totals,
+        **{key: format(totals[key], ".2f") for key in money_keys},
+    }
+    receiver_balances = [
+        {
+            **{key: value for key, value in receiver.items()
+               if key not in {"bhada", "collected", "outstanding"}},
+            "bhada": format(receiver["bhada"], ".2f"),
+            "collected": format(receiver["collected"], ".2f"),
+            "outstanding": format(receiver["outstanding"], ".2f"),
+        }
+        for receiver in sorted(
+            receiver_totals.values(),
+            key=lambda value: (-value["outstanding"], value["receiver_name"].casefold()),
+        )
+    ]
+    return {
+        "site": {"id": site_id, "name": site.get("name", ""), "code": site.get("code", "")},
+        "totals": formatted,
+        "receiver_balances": receiver_balances,
+        "basis": (
+            "Grand total is all active receipt Bhada plus Hamali. Outstanding and collections "
+            "track Bhada only; unreconciled orders are listed separately. Payments include only "
+            "successfully posted payments and reversals."
+        ),
+        "rows": rows,
+    }
+
+
+@router.patch("/sites/{site_id}/trips/{trip_id}/lrs/{lr_id}/followup")
+async def update_site_lr_followup(
+    site_id: str, trip_id: str, lr_id: str,
+    body: BookingFollowupUpdate, u=Depends(site_user),
+):
+    _owner(u)
+    site = await _site_for_user(site_id, u, "dashboard:read")
+    lr = await _lr(site, trip_id, lr_id)
+    promised_date = (
+        _validate_iso_date(body.promised_date).isoformat()
+        if body.promised_date else ""
+    )
+    note = " ".join(body.note.split())[:500]
+    old = {
+        "payment_promised_date": lr.get("payment_promised_date", ""),
+        "payment_followup_note": lr.get("payment_followup_note", ""),
+    }
+    new = {
+        "payment_promised_date": promised_date,
+        "payment_followup_note": note,
+    }
+    updated_at = now_iso()
+    await db.site_lrs.update_one(
+        _scoped(str(site["business_id"]), site_id, _id=lr["_id"], trip_id=trip_id),
+        {"$set": {**new, "updated_at": updated_at}},
+    )
+    await _audit(
+        site, u, "lr.payment_followup_updated", "lr", lr["_id"],
+        old=old, new=new,
+    )
+    return {"id": lr["_id"], **new, "updated_at": updated_at}
 
 
 LEGACY_COLLECTIONS = (
@@ -2657,6 +3493,69 @@ def _report_csv_response(filename, columns, rows):
         writer.writerow([_safe_csv_text(value) for value in row])
     return Response(
         content="\ufeff" + stream.getvalue(), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                 "Cache-Control": "no-store"},
+    )
+
+
+def _excel_safe(value):
+    if isinstance(value, str) and value.lstrip(" \t\r\n\v\f").startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
+def _xlsx_response(filename, site_name, date_range, sheets):
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    for title, headers, rows, widths in sheets:
+        sheet = workbook.create_sheet(title)
+        sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+        heading = sheet.cell(1, 1, _excel_safe(site_name))
+        heading.font = Font(name="Calibri", size=16, bold=True, color="FFFFFF")
+        heading.fill = PatternFill("solid", fgColor="0B5C4E")
+        heading.alignment = Alignment(vertical="center")
+        sheet.row_dimensions[1].height = 28
+        sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
+        subtitle = sheet.cell(2, 1, f"Ledger period: {date_range}")
+        subtitle.font = Font(name="Calibri", size=11, italic=True, color="334155")
+        header_row = 4
+        for column, label in enumerate(headers, start=1):
+            cell = sheet.cell(header_row, column, label)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="176B5A")
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        for row_number, values in enumerate(rows, start=header_row + 1):
+            for column, value in enumerate(values, start=1):
+                if isinstance(value, Decimal):
+                    value = float(value)
+                cell = sheet.cell(row_number, column, _excel_safe(value))
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+                if headers[column - 1] in {"Bhada", "Hamali", "Total", "Total rent"} and value != "":
+                    cell.number_format = '"₹"#,##0.00'
+            if row_number % 2 == 0:
+                for cell in sheet[row_number]:
+                    cell.fill = PatternFill("solid", fgColor="F1F7F5")
+        sheet.freeze_panes = "A5"
+        sheet.auto_filter.ref = f"A{header_row}:{get_column_letter(len(headers))}{header_row + len(rows)}"
+        sheet.sheet_view.showGridLines = False
+        sheet.column_dimensions["A"].width = 14
+        for column, width in enumerate(widths, start=1):
+            sheet.column_dimensions[get_column_letter(column)].width = width
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
+        sheet.page_setup.orientation = "landscape"
+        sheet.page_setup.fitToWidth = 1
+        sheet.page_setup.fitToHeight = 0
+        sheet.print_title_rows = "1:4"
+        sheet.print_area = f"A1:{get_column_letter(len(headers))}{header_row + len(rows)}"
+        sheet.page_margins.left = 0.25
+        sheet.page_margins.right = 0.25
+        sheet.page_margins.top = 0.5
+        sheet.page_margins.bottom = 0.5
+    output = io.BytesIO()
+    workbook.save(output)
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"',
                  "Cache-Control": "no-store"},
     )
@@ -2846,6 +3745,136 @@ async def export_site_ledger(site_id: str, trip_id: str, section: str, u=Depends
     )
 
 
+@router.get("/sites/{site_id}/ledger/entries")
+async def list_site_ledger_entries(
+    site_id: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    trip_ref: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(default=1000, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    u=Depends(site_user),
+):
+    site = await _site_for_user(site_id, u, "lrs:read")
+    query = _scoped(str(site["business_id"]), site_id)
+    clauses = []
+    if from_date or to_date:
+        dates = {}
+        if from_date:
+            dates["$gte"] = _validate_iso_date(from_date).isoformat()
+        if to_date:
+            dates["$lte"] = _validate_iso_date(to_date).isoformat()
+        clauses.append({"$or": [
+            {"receipt_date": dates},
+            {"receipt_date": {"$exists": False}, "operating_date": dates},
+        ]})
+    if trip_ref and trip_ref.strip():
+        query["trip_ref"] = {"$regex": re.escape(trip_ref.strip()), "$options": "i"}
+    term = (search or "").strip()
+    if term:
+        escaped = re.escape(term)
+        clauses.append({"$or": [
+            {"sender_name": {"$regex": escaped, "$options": "i"}},
+            {"receiver_name": {"$regex": escaped, "$options": "i"}},
+        ]})
+    if clauses:
+        query["$and"] = clauses
+    total = await db.site_lrs.count_documents(query)
+    rows = await db.site_lrs.find(query).sort(
+        [("operating_date", -1), ("sequence", -1)],
+    ).skip(offset).limit(limit).to_list(limit)
+    by_trip = {}
+    for row in rows:
+        by_trip.setdefault(row["trip_id"], []).append(row)
+    trips = {}
+    for trip_id in by_trip:
+        trip = await db.site_trips.find_one(_scoped(
+            str(site["business_id"]), site_id, _id=trip_id,
+        ))
+        if trip:
+            trips[trip_id] = trip
+    result = []
+    for trip_id, trip_lrs in by_trip.items():
+        trip = trips.get(trip_id)
+        if not trip:
+            continue
+        enriched = await _lr_rows(site, trip_id, trip_lrs, u)
+        for entry in enriched:
+            entry["site_name"] = site.get("name", "")
+            entry["trip_ref"] = trip.get("trip_ref", "")
+            entry["trip_status"] = trip.get("status", "open")
+            entry["truck_no"] = trip.get("truck_no", "")
+            entry["driver_name"] = trip.get("driver_name", "")
+            entry["total_rent"] = format(
+                _decimal_value(entry.get("rent")) + _decimal_value(entry.get("hamali")), ".2f",
+            ) if _can_view_site_lr_charges(u, site_id) else None
+            result.append(entry)
+    result.sort(key=lambda row: (row.get("receipt_date", row.get("operating_date", "")),
+                                 row.get("sequence", 0)), reverse=True)
+    return {"rows": result, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/sites/{site_id}/ledger/export")
+async def export_site_ledger_csv(
+    site_id: str,
+    from_date: str = Query(...),
+    to_date: str = Query(...),
+    u=Depends(site_user),
+):
+    site = await _site_for_user(site_id, u, "lrs:read")
+    if u.get("role") == "site_manager" and "ledger:export" not in (
+        (u.get("site_permissions") or {}).get(site_id, [])
+    ):
+        raise HTTPException(403, "Ledger export permission is required for this site")
+    start = _validate_iso_date(from_date).isoformat()
+    end = _validate_iso_date(to_date).isoformat()
+    if start > end:
+        raise HTTPException(422, "Start date must be before or equal to end date")
+    date_range = {"$gte": start, "$lte": end}
+    query = _scoped(str(site["business_id"]), site_id,
+                    **{"$or": [
+                        {"receipt_date": date_range},
+                        {"receipt_date": {"$exists": False}, "operating_date": date_range},
+                    ]})
+    lrs = await db.site_lrs.find(query).sort(
+        [("operating_date", 1), ("sequence", 1)],
+    ).limit(10001).to_list(10001)
+    if len(lrs) > 10000:
+        raise HTTPException(413, "This ledger contains more than 10,000 receipts; export a shorter period")
+    trips = {}
+    for trip_id in {row["trip_id"] for row in lrs}:
+        trip = await db.site_trips.find_one(_scoped(str(site["business_id"]), site_id, _id=trip_id))
+        if trip:
+            trips[trip_id] = trip
+    columns = (
+        "Date", "Trip number", "LR number", "Sender", "Sender address",
+        "Receiver", "Receiver address", "Goods", "Quantity", "Bhada",
+        "Hamali", "Total rent", "Status",
+    )
+    rows = []
+    for lr in lrs:
+        trip = trips.get(lr["trip_id"])
+        if not trip:
+            continue
+        goods = lr.get("goods_rows") or lr.get("containers") or []
+        rent = _decimal_value(lr.get("rent"))
+        hamali = _decimal_value(lr.get("hamali"))
+        can_read_finances = _can_view_site_lr_charges(u, site_id)
+        rows.append((
+            lr.get("receipt_date", lr.get("operating_date", "")), trip.get("trip_ref", ""),
+            lr.get("lr_ref", ""), lr.get("sender_name", ""), lr.get("sender_address", ""),
+            lr.get("receiver_name", ""), lr.get("receiver_address", ""),
+            "; ".join(line.get("type", "") for line in goods),
+            sum(line.get("quantity", 0) for line in goods),
+            format(rent, ".2f") if can_read_finances else "",
+            format(hamali, ".2f") if can_read_finances else "",
+            format(rent + hamali, ".2f") if can_read_finances else "",
+            "VOID" if lr.get("voided") else "Active",
+        ))
+    return _report_csv_response(f"{site.get('code', site_id)}-ledger-{start}-{end}.csv", columns, rows)
+
+
 @router.get("/sites/{site_id}/ledger/daily")
 async def export_site_daily_ledger(
     site_id: str, operating_date: str = Query(...), u=Depends(site_user),
@@ -2934,6 +3963,115 @@ async def export_site_daily_ledger(
         ))
     return _report_csv_response(
         f"{site.get('code', site_id)}-daily-ledger-{day}.csv", columns, rows,
+    )
+
+
+@router.get("/sites/{site_id}/ledger/export.xlsx")
+async def export_site_ledger_xlsx(
+    site_id: str,
+    from_date: str = Query(...),
+    to_date: str = Query(...),
+    u=Depends(site_user),
+):
+    site = await _site_for_user(site_id, u, "lrs:read")
+    if u.get("role") == "site_manager" and "ledger:export" not in (
+        (u.get("site_permissions") or {}).get(site_id, [])
+    ):
+        raise HTTPException(403, "Ledger export permission is required for this site")
+    start = _validate_iso_date(from_date).isoformat()
+    end = _validate_iso_date(to_date).isoformat()
+    if start > end:
+        raise HTTPException(422, "Start date must be before or equal to end date")
+    date_range = {"$gte": start, "$lte": end}
+    query = _scoped(str(site["business_id"]), site_id,
+                    **{"$or": [
+                        {"receipt_date": date_range},
+                        {"receipt_date": {"$exists": False}, "operating_date": date_range},
+                    ]})
+    lrs = await db.site_lrs.find(query).sort(
+        [("operating_date", 1), ("sequence", 1)],
+    ).limit(10001).to_list(10001)
+    if len(lrs) > 10000:
+        raise HTTPException(413, "This ledger contains more than 10,000 receipts; export a shorter period")
+    trips = {}
+    for trip_id in {row["trip_id"] for row in lrs}:
+        trip = await db.site_trips.find_one(_scoped(str(site["business_id"]), site_id, _id=trip_id))
+        if trip:
+            trips[trip_id] = trip
+
+    can_read_finances = _can_view_site_lr_charges(u, site_id)
+    paid_by_lr = await _payments_by_lr(site, None, [row["_id"] for row in lrs])
+    ledger_rows = []
+    goods_rows = []
+    for lr in lrs:
+        trip = trips.get(lr["trip_id"])
+        if not trip:
+            continue
+        goods = lr.get("goods_rows") or lr.get("containers") or []
+        legacy_charge_allocation = bool(goods) and not any(
+            "rent" in line or "hamali" in line for line in goods
+        )
+        rent = _decimal_value(lr.get("rent"))
+        hamali = _decimal_value(lr.get("hamali"))
+        quantity = sum(int(line.get("quantity", 0)) for line in goods)
+        ledger_rows.append((
+            lr.get("receipt_date", lr.get("operating_date", "")),
+            trip.get("trip_ref", ""), lr.get("lr_ref", ""),
+            "\n".join(filter(None, (
+                lr.get("sender_name", ""), lr.get("sender_name_hindi", ""),
+            ))),
+            "\n".join(filter(None, (
+                lr.get("receiver_name", ""), lr.get("receiver_name_hindi", ""),
+            ))), "\n\n".join(
+                "\n".join(filter(None, (
+                    line.get("type", ""), line.get("type_hindi", ""),
+                    line.get("description", ""),
+                    f"Quantity: {line.get('quantity', 0)}",
+                )))
+                for line in goods
+            ),
+            quantity, rent if can_read_finances else "",
+            hamali if can_read_finances else "",
+            rent + hamali if can_read_finances else "",
+            ("Paid" if lr.get("rent") is not None
+             and paid_by_lr.get(lr["_id"], Decimal("0.00")) >= rent else "Unpaid")
+            if can_read_finances and not lr.get("voided") else "",
+            "VOID" if lr.get("voided") else "Active",
+            _charge_editor_marker(lr),
+        ))
+        for line_number, line in enumerate(goods, start=1):
+            line_rent = (
+                rent if legacy_charge_allocation and line_number == 1
+                else _decimal_value(line.get("rent"))
+            )
+            line_hamali = (
+                hamali if legacy_charge_allocation and line_number == 1
+                else _decimal_value(line.get("hamali"))
+            )
+            goods_rows.append((
+                lr.get("receipt_date", lr.get("operating_date", "")),
+                lr.get("lr_ref", ""), line_number, line.get("type", ""),
+                line.get("type_hindi", line.get("type", "")),
+                line.get("description", ""), int(line.get("quantity", 0)),
+                line_rent if can_read_finances else "",
+                line_hamali if can_read_finances else "",
+                line_rent + line_hamali if can_read_finances else "",
+            ))
+
+    filename = f"{site.get('code', site_id)}-ledger-{start}-{end}.xlsx"
+    return _xlsx_response(
+        filename, site.get("name", "Booking ledger"), f"{start} to {end}",
+        [
+            ("Ledger", (
+                "Date", "Trip number", "LR number", "Sender", "Receiver",
+                "Goods type, Hindi, description and quantity", "Total quantity",
+                "Bhada", "Hamali", "Total rent", "Payment received", "Status", "Charge editor",
+            ), ledger_rows, (14, 24, 24, 20, 20, 48, 14, 14, 14, 14, 18, 12, 12)),
+            ("Goods details", (
+                "Date", "LR number", "Goods row", "Goods type", "Goods type (Hindi)",
+                "Description", "Quantity", "Bhada", "Hamali", "Total",
+            ), goods_rows, (14, 24, 10, 24, 28, 48, 12, 14, 14, 14)),
+        ],
     )
 
 
@@ -3279,7 +4417,7 @@ async def _apply_import_amount(imported, site, trip, lr, field, target, user):
         await _financial_event(
             effect_id, site, lr["party_id"], lr["operating_date"],
             f"Ledger reconciliation {lr['lr_ref']} bhada adjustment",
-            delta,
+            delta, user=u,
         )
     audit_old = prior_effect["from"] if prior_effect else format(current, ".2f")
     await _audit(
