@@ -7,7 +7,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from difflib import SequenceMatcher
-from typing import Any, Optional, overload
+from typing import Any, Literal, Optional, overload
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bson.decimal128 import Decimal128
@@ -33,13 +33,13 @@ _index_lock = asyncio.Lock()
 DEFAULT_GOODS = ["General Goods", "Food Grains", "Cement", "Steel", "Fertilizer", "Other"]
 DEFAULT_CONTAINERS = ["Box", "Open Parcel", "Container", "Jute Bags", "Carton", "Drum", "Other"]
 MANAGER_PERMISSIONS = {
-    "dashboard:read", "trips:read", "trips:create", "trips:update", "trips:close",
+    "dashboard:read", "trips:read", "trips:create", "trips:update",
     "lrs:read", "lrs:create", "lrs:update", "finance:read",
     "finance:update",
     "payments:read", "payments:create", "ledger:export",
 }
 DEFAULT_MANAGER_PERMISSIONS = [
-    "dashboard:read", "trips:read", "trips:create", "trips:update", "trips:close",
+    "dashboard:read", "trips:read", "trips:create", "trips:update",
     "lrs:read", "lrs:create", "lrs:update", "ledger:export",
 ]
 LEDGER_TEMPLATE_VERSION = "1"
@@ -76,6 +76,14 @@ class SiteUpdate(StrictModel):
     timezone: Optional[str] = Field(default=None, max_length=80)
     config: Optional[dict] = None
     status: Optional[str] = None
+
+
+class ReceiptControls(StrictModel):
+    hindi_conversion_enabled: bool = True
+    receipt_language: Literal["hindi", "english"] = "hindi"
+    sender_address_enabled: bool = True
+    receiver_address_enabled: bool = True
+    receipt_fee: Decimal = Field(default=Decimal("2.00"), ge=0, decimal_places=2)
 
 
 class ManagerAssignment(StrictModel):
@@ -157,6 +165,7 @@ class ContainerLine(StrictModel):
     quantity: int = Field(gt=0, le=1000000)
     type_hindi: str = Field(default="", max_length=120)
     description: str = Field(default="", max_length=500)
+    description_hindi: str = Field(default="", max_length=500)
     rent: Optional[Decimal] = None
     hamali: Optional[Decimal] = None
 
@@ -171,6 +180,7 @@ class GoodsRow(StrictModel):
     quantity: int = Field(gt=0, le=1000000)
     type_hindi: str = Field(default="", max_length=120)
     description: str = Field(default="", max_length=500)
+    description_hindi: str = Field(default="", max_length=500)
     rent: Optional[Decimal] = None
     hamali: Optional[Decimal] = None
 
@@ -190,6 +200,8 @@ class LRCreate(StrictModel):
     receiver_identity_id: Optional[str] = None
     sender_address: str = Field(default="", max_length=500)
     receiver_address: str = Field(default="", max_length=500)
+    sender_address_hindi: str = Field(default="", max_length=500)
+    receiver_address_hindi: str = Field(default="", max_length=500)
     city: str = Field(default="", max_length=100)
     sender_name_hindi: str = Field(default="", max_length=160)
     receiver_name_hindi: str = Field(default="", max_length=160)
@@ -232,6 +244,8 @@ class LRUpdate(StrictModel):
     receiver_identifier: Optional[str] = Field(default=None, max_length=120)
     sender_address: Optional[str] = Field(default=None, max_length=500)
     receiver_address: Optional[str] = Field(default=None, max_length=500)
+    sender_address_hindi: Optional[str] = Field(default=None, max_length=500)
+    receiver_address_hindi: Optional[str] = Field(default=None, max_length=500)
     city: Optional[str] = Field(default=None, max_length=100)
     sender_name_hindi: Optional[str] = Field(default=None, max_length=160)
     receiver_name_hindi: Optional[str] = Field(default=None, max_length=160)
@@ -338,6 +352,24 @@ def _valid_timezone(value):
     except (ZoneInfoNotFoundError, ValueError, TypeError):
         raise HTTPException(400, "Select a valid IANA time zone")
     return value
+
+
+def _site_config_with_receipt_controls(config, existing=None):
+    result = dict(existing or {})
+    result.update(config or {})
+    raw_controls = dict(result.get("receipt_controls") or {})
+    controls = ReceiptControls.model_validate(raw_controls)
+    result["receipt_controls"] = controls.model_dump(mode="json")
+    return result
+
+
+def _receipt_controls(site):
+    config = site.get("config") or {}
+    try:
+        raw_controls = dict(config.get("receipt_controls") or {})
+        return ReceiptControls.model_validate(raw_controls)
+    except ValidationError as error:
+        raise HTTPException(500, "Receipt controls are invalid; ask an administrator to review site settings") from error
 
 
 def _normalize_label(value, field, maximum=160):
@@ -460,6 +492,99 @@ def _charge_editor_marker(record: dict[str, Any]) -> str:
     if role == "site_manager":
         return "M"
     return ""
+
+
+def _entry_by(record: dict[str, Any]) -> str:
+    role = record.get("created_by_role")
+    label = "Admin" if role in {"owner", "admin"} else "Manager" if role == "site_manager" else ""
+    name = str(record.get("created_by_name") or "").strip()
+    return f"{label} - {name}" if label and name else ""
+
+
+def _hindi_digits(value: Any) -> str:
+    return str(value).translate(str.maketrans("0123456789", "०१२३४५६७८९"))
+
+
+def _ledger_hindi_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or any("\u0900" <= character <= "\u097f" for character in text):
+        return text
+    common_goods = {
+        "auto": "ऑटो", "truck": "ट्रक", "cement": "सीमेंट",
+        "food grains": "खाद्यान्न", "rice": "चावल", "wheat": "गेहूँ",
+        "flour": "आटा", "sugar": "चीनी", "salt": "नमक", "steel": "लोहा",
+        "iron": "लोहा", "bricks": "ईंट", "brick": "ईंट", "sand": "रेत",
+        "stone": "पत्थर", "wood": "लकड़ी", "fertilizer": "खाद",
+        "clothes": "कपड़े", "cloth": "कपड़ा", "oil": "तेल",
+        "vegetables": "सब्ज़ियाँ", "fruits": "फल", "general goods": "सामान",
+        "building material": "निर्माण सामग्री", "car": "कार", "cars": "कारें",
+        "hardware": "हार्डवेयर", "part": "पार्ट", "parts": "पार्ट्स",
+        "car part": "कार का पुर्जा", "car parts": "कार के पुर्ज़े",
+        "spare parts": "स्पेयर पार्ट्स", "bag": "बोरा", "bags": "बोरे",
+        "box": "बॉक्स", "boxes": "बॉक्स", "drum": "ड्रम", "carton": "कार्टन",
+        "parcel": "पार्सल", "grain": "अनाज", "grains": "अनाज",
+        "machine": "मशीन", "machinery": "मशीनरी", "tools": "औज़ार",
+        "pipe": "पाइप", "rod": "छड़", "plastic": "प्लास्टिक",
+        "paper": "कागज़", "potato": "आलू", "mango": "आम", "onion": "प्याज़",
+        "medicine": "दवाई", "water": "पानी",
+    }
+    if text.lower() in common_goods:
+        return common_goods[text.lower()]
+
+    consonants = (
+        ("ksh", "क्ष"), ("chh", "छ"), ("sh", "श"), ("ch", "च"), ("kh", "ख"),
+        ("gh", "घ"), ("th", "थ"), ("dh", "ध"), ("ph", "फ"), ("bh", "भ"),
+        ("jh", "झ"), ("ng", "ङ"), ("ny", "ञ"), ("q", "क़"), ("k", "क"),
+        ("g", "ग"), ("c", "क"), ("j", "ज"), ("t", "त"), ("d", "द"),
+        ("n", "न"), ("p", "प"), ("b", "ब"), ("m", "म"), ("y", "य"),
+        ("r", "र"), ("l", "ल"), ("v", "व"), ("w", "व"), ("s", "स"),
+        ("h", "ह"), ("f", "फ़"), ("z", "ज़"),
+    )
+    vowels = (
+        ("aa", "ा"), ("ee", "ी"), ("ii", "ी"), ("oo", "ू"), ("uu", "ू"),
+        ("ai", "ै"), ("au", "ौ"), ("a", ""), ("i", "ि"), ("u", "ु"),
+        ("e", "े"), ("o", "ो"),
+    )
+    independent_vowels = {
+        "ा": "आ", "ी": "ई", "ू": "ऊ", "ै": "ऐ", "ौ": "औ",
+        "ि": "इ", "ु": "उ", "े": "ए", "ो": "ओ",
+    }
+
+    def translate_word(word: str) -> str:
+        lower = word.lower()
+        if lower in common_goods:
+            return common_goods[lower]
+        result = []
+        index = 0
+        pending_consonant = False
+        while index < len(lower):
+            vowel = next((item for item in vowels if lower.startswith(item[0], index)), None)
+            if vowel:
+                result.append(vowel[1] if pending_consonant else independent_vowels.get(vowel[1], "अ"))
+                pending_consonant = False
+                index += len(vowel[0])
+                continue
+            consonant = next(
+                (item for item in consonants if lower.startswith(item[0], index)), None,
+            )
+            if consonant:
+                if pending_consonant:
+                    result.append("्")
+                result.append(consonant[1])
+                pending_consonant = True
+                index += len(consonant[0])
+                continue
+            if pending_consonant:
+                result.append("्")
+            result.append(word[index])
+            pending_consonant = False
+            index += 1
+        return "".join(result)
+
+    return "".join(
+        part if not part or re.fullmatch(r"\s+|[-/]", part) else translate_word(part)
+        for part in re.split(r"(\s+|[-/])", text)
+    )
 
 
 def _creator_user(user: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
@@ -732,7 +857,8 @@ async def create_site(body: SiteCreate, u=Depends(site_user)):
         "name": _normalize_label(body.name, "Site name", 100), "code": code,
         "code_normalized": code, "location": " ".join(body.location.split()),
         "city": " ".join(body.city.split()), "timezone": timezone_name,
-        "status": "Active", "config": body.config, "manager_username": None,
+        "status": "Active", "config": _site_config_with_receipt_controls(body.config),
+        "manager_username": None,
         "is_default": first_site, **_creator_metadata(u),
         "updated_at": now_iso(),
     }
@@ -753,6 +879,10 @@ async def update_site(site_id: str, body: SiteUpdate, u=Depends(site_user)):
         raise HTTPException(422, "Site status must be Active or Inactive")
     if "timezone" in changes:
         changes["timezone"] = _valid_timezone(changes["timezone"])
+    if "config" in changes:
+        changes["config"] = _site_config_with_receipt_controls(
+            changes["config"], site.get("config"),
+        )
     for key in ("name", "location", "city"):
         if key in changes and changes[key] is not None:
             changes[key] = _normalize_label(changes[key], key, 250 if key == "location" else 100) if changes[key] else ""
@@ -967,6 +1097,11 @@ async def _trip(site: dict[str, Any], trip_id: str) -> dict[str, Any]:
     return trip
 
 
+def _ensure_trip_ledger_open(trip: dict[str, Any]) -> None:
+    if trip.get("ledger_completed_at") or trip.get("ledger_completion_started_at"):
+        raise HTTPException(409, "This trip ledger is being completed or is already locked")
+
+
 def _can_read_site_finances(user: dict[str, Any], site_id: str) -> bool:
     return user.get("role") != "site_manager" or bool(
         {"finance:read", "finance:update"}.intersection(
@@ -1092,16 +1227,32 @@ async def _receivables_breakdown(lr_query: dict[str, Any]) -> dict[str, Any]:
             "_posted_lr_amount": {"$ifNull": [
                 {"$arrayElemAt": ["$_posted_payment_rows.total", 0]}, 0,
             ]},
-            "_collectible_rent": {"$cond": [collectable, "$rent", 0]},
+            "_collectible_rent": {"$cond": [
+                collectable,
+                {"$add": [
+                    "$rent", {"$ifNull": ["$receipt_fee", Decimal128(Decimal("2.00"))]},
+                ]},
+                0,
+            ]},
             "_collectible_paid": {"$cond": [collectable, "$_posted_lr_amount", 0]},
             "_collectible_outstanding": {"$cond": [
                 collectable,
-                {"$max": [{"$subtract": ["$rent", "$_posted_lr_amount"]}, 0]},
+                {"$max": [{"$subtract": [
+                    {"$add": [
+                        "$rent", {"$ifNull": ["$receipt_fee", Decimal128(Decimal("2.00"))]},
+                    ]},
+                    "$_posted_lr_amount",
+                ]}, 0]},
                 0,
             ]},
             "_collectible_unpaid": {"$cond": [
                 {"$and": [collectable, {"$gt": [
-                    {"$subtract": ["$rent", "$_posted_lr_amount"]}, 0,
+                    {"$subtract": [
+                        {"$add": [
+                            "$rent", {"$ifNull": ["$receipt_fee", Decimal128(Decimal("2.00"))]},
+                        ]},
+                        "$_posted_lr_amount",
+                    ]}, 0,
                 ]}]}, 1, 0,
             ]},
             "_unreconciled_rent": {"$cond": [
@@ -1409,11 +1560,14 @@ async def _lr_rows(
     for row in rows:
         item = _doc_for_user(row, user or {})
         item["charge_editor_marker"] = _charge_editor_marker(row)
+        item["entry_by"] = _entry_by(row)
         if user and user.get("role") == "owner":
             item["charge_editor_name"] = row.get("charge_updated_by_name", "")
         item.setdefault("receipt_date", item.get("operating_date", ""))
         item.setdefault("sender_address", "")
         item.setdefault("receiver_address", "")
+        item.setdefault("sender_address_hindi", item.get("sender_address", ""))
+        item.setdefault("receiver_address_hindi", item.get("receiver_address", ""))
         item.setdefault("city", "")
         item.setdefault("sender_name_hindi", item.get("sender_name", ""))
         item.setdefault("receiver_name_hindi", item.get("receiver_name", ""))
@@ -1427,6 +1581,7 @@ async def _lr_rows(
                 "type_hindi": line.get("type_hindi", line.get("type", "")),
                 "quantity": line.get("quantity", 0),
                 "description": line.get("description", ""),
+                "description_hindi": line.get("description_hindi", line.get("description", "")),
                 "rent": format(
                     _decimal_value(row.get("rent")) if legacy_charge_allocation and index == 0
                     else _decimal_value(line.get("rent")), ".2f",
@@ -1440,17 +1595,28 @@ async def _lr_rows(
         ]
         item["containers"] = item["goods_rows"]
         item["legacy_charge_allocation"] = legacy_charge_allocation
+        receipt_fee = _decimal_value(row.get("receipt_fee", Decimal128(Decimal("2.00"))))
+        item["receipt_fee"] = format(receipt_fee, ".2f")
         item["total_rent"] = format(
-            _decimal_value(row.get("rent")) + _decimal_value(row.get("hamali")), ".2f",
+            _decimal_value(row.get("rent")) + _decimal_value(row.get("hamali"))
+            + receipt_fee, ".2f",
         )
         paid_total = paid.get(row["_id"], Decimal("0.00"))
         item["paid_total"] = format(paid_total, ".2f")
+        amount_due = _decimal_value(row.get("rent")) + receipt_fee
         item["outstanding"] = format(
-            max(_decimal_value(row.get("rent")) - paid_total, Decimal("0.00"))
+            max(amount_due - paid_total, Decimal("0.00"))
             if row.get("rent") is not None else Decimal("0.00"), ".2f")
-        item["payment_status"] = _payment_status(row.get("rent"), paid_total)
+        item["payment_status"] = _payment_status(
+            amount_due if row.get("rent") is not None else None, paid_total,
+        )
         if user and user.get("role") == "owner":
             item["ledger_settlement_created"] = row["_id"] in settled_by_ledger
+            item["amount_paid"] = row.get("booking_ledger_paid", (
+                row.get("rent") is not None
+                and paid_total >= amount_due
+                and not row.get("voided")
+            ))
         permissions = (user.get("site_permissions") or {}).get(site["_id"], []) if user else []
         if (user and user.get("role") == "site_manager"
                 and not {"finance:read", "finance:update", "lrs:create", "lrs:update"}.intersection(permissions)):
@@ -2273,6 +2439,7 @@ async def update_site_trip(site_id: str, trip_id: str, body: TripUpdate, u=Depen
 
 @router.post("/sites/{site_id}/trips/{trip_id}/close")
 async def close_site_trip(site_id: str, trip_id: str, u=Depends(site_user)):
+    _owner(u)
     site = await _site_for_user(site_id, u, "trips:close")
     trip = await _trip(site, trip_id)
     if trip["status"] == "closed":
@@ -2373,6 +2540,12 @@ async def _finish_site_lr_creation(site, user, trip, lr):
             f"site-lr-charge-{lr['_id']}", site, lr["party_id"], trip["operating_date"],
             f"Site LR {lr['lr_ref']} bhada", rent, user=_creator_user(user, lr),
         )
+    receipt_fee = _decimal_value(lr.get("receipt_fee", Decimal128(Decimal("2.00"))))
+    if receipt_fee > 0:
+        await _financial_event(
+            f"site-lr-fee-{lr['_id']}", site, lr["party_id"], trip["operating_date"],
+            f"Site LR {lr['lr_ref']} receipt fee", receipt_fee, user=_creator_user(user, lr),
+        )
     await _audit(
         site, _creator_user(user, lr), "lr.created", "lr", lr["_id"],
         new={"lr_ref": lr["lr_ref"], "trip_id": trip["_id"],
@@ -2390,6 +2563,7 @@ async def _finish_site_lr_creation(site, user, trip, lr):
 async def create_site_lr(site_id: str, trip_id: str, body: LRCreate, u=Depends(site_user)):
     site = await _site_for_user(site_id, u, "lrs:create", include_inactive_owner=False)
     trip = await _trip(site, trip_id)
+    _ensure_trip_ledger_open(trip)
     if body.idempotency_key:
         previous = await db.site_lrs.find_one(_scoped(
             str(site["business_id"]), site_id, idempotency_key=body.idempotency_key,
@@ -2407,6 +2581,7 @@ async def create_site_lr(site_id: str, trip_id: str, body: LRCreate, u=Depends(s
         body.receiver_match_action, body.receiver_identity_id,
     )
     sender_name = _normalize_label(body.sender_name, "Sender", 160) if body.sender_name.strip() else ""
+    receipt_controls = _receipt_controls(site)
     sender_phone = _optional_phone(body.sender_phone, "Sender phone")
     receiver_phone = _optional_phone(body.receiver_phone, "Receiver phone")
     goods_type = _normalize_label(body.goods_type, "Goods type", 80)
@@ -2419,6 +2594,9 @@ async def create_site_lr(site_id: str, trip_id: str, body: LRCreate, u=Depends(s
             "type_hindi": line.type_hindi.strip() or line.type,
             "quantity": line.quantity,
             "description": " ".join(line.description.split()),
+            "description_hindi": " ".join(
+                (line.description_hindi or line.description).split()
+            ),
         }
         if line.rent is not None:
             container["rent"] = Decimal128(_decimal(line.rent, "Bhada"))
@@ -2448,9 +2626,11 @@ async def create_site_lr(site_id: str, trip_id: str, body: LRCreate, u=Depends(s
         "receipt_date": receipt_date,
         "sender_name": sender_name, "sender_name_hindi": body.sender_name_hindi.strip() or sender_name,
         "sender_address": " ".join(body.sender_address.split()), "sender_phone": sender_phone or "",
+        "sender_address_hindi": body.sender_address_hindi.strip() or body.sender_address.strip(),
         "receiver_name": receiver["name"], "receiver_phone": receiver_phone or "",
         "receiver_name_hindi": body.receiver_name_hindi.strip() or receiver["name"],
         "receiver_address": " ".join(body.receiver_address.split()),
+        "receiver_address_hindi": body.receiver_address_hindi.strip() or body.receiver_address.strip(),
         "city": " ".join(body.city.split()),
         "receiver_normalized": receiver["normalized_name"], "receiver_label": receiver["label"],
         "receiver_identity_id": receiver["_id"], "receiver_identifier": receiver.get("identifier", ""),
@@ -2460,6 +2640,7 @@ async def create_site_lr(site_id: str, trip_id: str, body: LRCreate, u=Depends(s
         "total_quantity": sum(line["quantity"] for line in containers),
         "rent": Decimal128(rent) if rent is not None else None,
         "hamali": Decimal128(hamali) if hamali is not None else None,
+        "receipt_fee": Decimal128(receipt_controls.receipt_fee),
         "creation_status": "pending",
         "receipt_created_at": creator_metadata["created_at"],
         "reconciled": False, **creator_metadata,
@@ -2519,12 +2700,10 @@ async def update_site_lr(
 ):
     site = await _site_for_user(site_id, u, "lrs:update")
     trip = await _trip(site, trip_id)
-    correction_reason = " ".join((body.owner_correction_reason or "").split())
+    _ensure_trip_ledger_open(trip)
     is_owner = u.get("role") == "owner"
     if trip["status"] != "open" and not is_owner:
         raise HTTPException(409, "Reopen the trip before correcting its LRs")
-    if trip["status"] != "open" and not correction_reason:
-        raise HTTPException(422, "Enter a correction reason to edit a receipt in a closed trip")
     lr = await _lr(site, trip_id, lr_id)
     if lr.get("voided"):
         raise HTTPException(409, "Voided receipts are read-only")
@@ -2548,6 +2727,16 @@ async def update_site_lr(
                 old_values[key] = lr.get(key, "")
                 changes[key] = phone
                 new_values[key] = phone
+    if "receiver_name" in changes or "receiver_identifier" in changes:
+        requested_name = " ".join(str(changes.get("receiver_name", lr.get("receiver_name", ""))).split())
+        current_name = " ".join(str(lr.get("receiver_name", "")).split())
+        requested_identifier = " ".join(str(
+            changes.get("receiver_identifier", lr.get("receiver_identifier", ""))
+        ).split())
+        current_identifier = " ".join(str(lr.get("receiver_identifier", "")).split())
+        if requested_name == current_name and requested_identifier == current_identifier:
+            changes.pop("receiver_name", None)
+            changes.pop("receiver_identifier", None)
     if not changes:
         return (await _lr_rows(site, trip_id, [lr], u))[0]
     financial_fields = {"rent", "hamali"}
@@ -2563,9 +2752,9 @@ async def update_site_lr(
     )
     charge_values_changed = False
     if lr.get("reconciled") and (financial_fields.intersection(changes) or row_charge_change) and (
-        not is_owner or not correction_reason
+        not is_owner
     ):
-        raise HTTPException(409, "Only the business owner can correct reconciled charges; enter an audit reason")
+        raise HTTPException(409, "Only the business owner can correct reconciled charges")
     if "sender_name" in changes:
         old_values["sender_name"] = lr["sender_name"]
         changes["sender_name"] = (
@@ -2579,10 +2768,10 @@ async def update_site_lr(
             lr.get("reconciled") or paid or _decimal_value(lr.get("rent"))
             or _decimal_value(lr.get("hamali"))
         )
-        if has_financial_history and (not is_owner or not correction_reason):
+        if has_financial_history and not is_owner:
             raise HTTPException(
                 409,
-                "Only the business owner can correct a receiver after charges or payments; enter an audit reason",
+                "Only the business owner can correct a receiver after charges or payments",
             )
         if has_financial_history and not idempotency_key:
             raise HTTPException(422, "An idempotency key is required for an owner receiver correction")
@@ -2638,7 +2827,15 @@ async def update_site_lr(
             changes[key] = " ".join((changes[key] or "").split())[:max_length]
             old_values[key] = lr.get(key, "")
             new_values[key] = changes[key]
-    for key in ("sender_address", "receiver_address", "city"):
+    if "containers" in changes:
+        for line in changes["containers"]:
+            line["description_hindi"] = " ".join(
+                (line.get("description_hindi") or line.get("description") or "").split()
+            )[:500]
+    for key in (
+        "sender_address", "receiver_address", "sender_address_hindi",
+        "receiver_address_hindi", "city",
+    ):
         if key in changes:
             changes[key] = " ".join(str(changes[key] or "").split())
             old_values[key] = lr.get(key, "")
@@ -2663,6 +2860,9 @@ async def update_site_lr(
             "type_hindi": " ".join((line.get("type_hindi") or line["type"]).split())[:120],
             "quantity": line["quantity"],
             "description": " ".join((line.get("description") or "").split())[:500],
+            "description_hindi": " ".join(
+                (line.get("description_hindi") or line.get("description") or "").split()
+            )[:500],
             **({
                 "rent": Decimal128(_decimal(
                     _decimal_value(line.get("rent")) if supplied_goods_charges else
@@ -2705,7 +2905,7 @@ async def update_site_lr(
         old_rent = _decimal_value(lr.get("rent"))
         new_rent = _decimal(changes["rent"], "Bhada", allow_none=True)
         paid = (await _payments_by_lr(site, trip_id, [lr_id])).get(lr_id, Decimal("0.00"))
-        if new_rent is not None and new_rent < paid and (not is_owner or not correction_reason):
+        if new_rent is not None and new_rent < paid and not is_owner:
             raise HTTPException(409, "Bhada cannot be reduced below payments already recorded")
         charge_values_changed = charge_values_changed or new_rent != old_rent
         new_values["rent"] = format(new_rent, ".2f") if new_rent is not None else None
@@ -2756,7 +2956,6 @@ async def update_site_lr(
         raise HTTPException(409, "This receipt changed elsewhere. Reload it before saving your edits.")
     await _audit(
         site, u, "lr.updated", "lr", lr_id, old=old_values, new=new_values,
-        reason=correction_reason or None,
     )
     return (await _lr_rows(site, trip_id, [await _lr(site, trip_id, lr_id)], u))[0]
 
@@ -2767,6 +2966,7 @@ async def void_site_lr(
 ):
     site = await _site_for_user(site_id, u, "lrs:update")
     trip = await _trip(site, trip_id)
+    _ensure_trip_ledger_open(trip)
     is_owner = u.get("role") == "owner"
     if trip.get("status") != "open" and not is_owner:
         raise HTTPException(409, "Reopen the trip before voiding a receipt")
@@ -2825,6 +3025,7 @@ async def unvoid_site_lr(
     _owner(u)
     site = await _site_for_user(site_id, u)
     trip = await _trip(site, trip_id)
+    _ensure_trip_ledger_open(trip)
     lr = await _lr(site, trip_id, lr_id)
     if not lr.get("voided"):
         return {"id": lr_id, "voided": False}
@@ -2947,7 +3148,10 @@ async def _apply_payment_balance(payment, site):
         query["$expr"] = {"$lte": [
             {"$add": [{"$ifNull": ["$paid_total", Decimal128(Decimal("0.00"))]},
                       Decimal128(amount)]},
-            "$rent",
+            {"$add": [
+                "$rent",
+                {"$ifNull": ["$receipt_fee", Decimal128(Decimal("2.00"))]},
+            ]},
         ]}
         update = {"$inc": {"paid_total": Decimal128(amount)},
                   "$addToSet": {"payment_effect_ids": payment_id}}
@@ -3053,6 +3257,7 @@ async def record_site_payment(
 ):
     site = await _site_for_user(site_id, u, "payments:create")
     trip = await _trip(site, trip_id)
+    _ensure_trip_ledger_open(trip)
     lr = await _lr(site, trip_id, lr_id)
     payment_date = _validate_iso_date(body.date).isoformat()
     method = body.method.strip()
@@ -3072,6 +3277,7 @@ async def update_site_lr_settlement(
     _owner(u)
     site = await _site_for_user(site_id, u)
     trip = await _trip(site, trip_id)
+    _ensure_trip_ledger_open(trip)
     lr = await _lr(site, trip_id, lr_id)
     if lr.get("voided"):
         raise HTTPException(409, "Restore this receipt before recording or reversing payment")
@@ -3080,7 +3286,10 @@ async def update_site_lr_settlement(
         if lr.get("rent") is None:
             raise HTTPException(409, "Enter Bhada before marking this receipt as paid")
         paid = (await _payments_by_lr(site, trip_id, [lr_id])).get(lr_id, Decimal("0.00"))
-        outstanding = max(_decimal_value(lr.get("rent")) - paid, Decimal("0.00"))
+        amount_due = _decimal_value(lr.get("rent")) + _decimal_value(
+            lr.get("receipt_fee", Decimal128(Decimal("2.00"))),
+        )
+        outstanding = max(amount_due - paid, Decimal("0.00"))
         if outstanding:
             payment_date = _now_at_site(site)[0]
             payment = await _record_lr_payment(
@@ -3095,9 +3304,14 @@ async def update_site_lr_settlement(
             )
         else:
             payment = None
+        await db.site_lrs.update_one(
+            _scoped(str(site["business_id"]), site_id, _id=lr_id, trip_id=trip_id),
+            {"$set": {"booking_ledger_paid": True, "booking_ledger_paid_by": u["username"],
+                      "booking_ledger_paid_at": now_iso()}},
+        )
         result = {
             "id": lr_id, "received": True,
-            "paid_total": format(_decimal_value(lr.get("rent")), ".2f"),
+            "paid_total": format(amount_due, ".2f"),
             "outstanding": "0.00",
             "settlement_payment_id": payment["_id"] if payment else None,
         }
@@ -3136,13 +3350,130 @@ async def update_site_lr_settlement(
             reason=reason,
             event_id=f"site-lr-settlement-undo-audit:{lr_id}:{body.idempotency_key}",
         )
+    await db.site_lrs.update_one(
+        _scoped(str(site["business_id"]), site_id, _id=lr_id, trip_id=trip_id),
+        {"$set": {"booking_ledger_paid": False, "booking_ledger_paid_by": u["username"],
+                  "booking_ledger_paid_at": now_iso()}},
+    )
     paid = (await _payments_by_lr(site, trip_id, [lr_id])).get(lr_id, Decimal("0.00"))
-    rent = _decimal_value(lr.get("rent"))
+    rent = _decimal_value(lr.get("rent")) + _decimal_value(
+        lr.get("receipt_fee", Decimal128(Decimal("2.00"))),
+    )
     return {
-        "id": lr_id, "received": paid >= rent and lr.get("rent") is not None,
+        "id": lr_id, "received": False,
         "paid_total": format(paid, ".2f"),
         "outstanding": format(max(rent - paid, Decimal("0.00")), ".2f"),
         "reversed_settlements": reversed_count,
+    }
+
+
+@router.post("/sites/{site_id}/trips/{trip_id}/ledger/complete")
+async def complete_site_trip_ledger(
+    site_id: str, trip_id: str, u=Depends(site_user),
+):
+    _owner(u)
+    site = await _site_for_user(site_id, u)
+    trip = await _trip(site, trip_id)
+    if trip.get("ledger_completed_at"):
+        return {
+            "id": trip_id, "ledger_completed": True,
+            "ledger_completed_at": trip["ledger_completed_at"],
+            "ledger_completed_by": trip.get("ledger_completed_by", ""),
+        }
+
+    business_id = str(site["business_id"])
+    lrs = await db.site_lrs.find(_scoped(
+        business_id, site_id, trip_id=trip_id,
+    )).sort("sequence", 1).limit(10001).to_list(10001)
+    if len(lrs) > 10000:
+        raise HTTPException(413, "This trip has more than 10,000 LRs; complete a smaller trip")
+    unpriced = [
+        lr["lr_ref"] for lr in lrs
+        if not lr.get("voided") and lr.get("rent") is None
+    ]
+    if unpriced:
+        preview = ", ".join(unpriced[:10])
+        suffix = "…" if len(unpriced) > 10 else ""
+        raise HTTPException(
+            409, f"Enter Bhada for every active receipt before completing the ledger: {preview}{suffix}",
+        )
+
+    if not trip.get("ledger_completion_started_at"):
+        started_at = now_iso()
+        completion_date = _now_at_site(site)[0]
+        await db.site_trips.update_one(
+            {
+                **_scoped(business_id, site_id, _id=trip_id),
+                "ledger_completion_started_at": {"$exists": False},
+                "ledger_completed_at": {"$exists": False},
+            },
+            {"$set": {
+                "ledger_completion_started_at": started_at,
+                "ledger_completion_date": completion_date,
+                "ledger_completion_started_by": u["username"],
+            }},
+        )
+        trip = await _trip(site, trip_id)
+        if trip.get("ledger_completed_at"):
+            return {
+                "id": trip_id, "ledger_completed": True,
+                "ledger_completed_at": trip["ledger_completed_at"],
+                "ledger_completed_by": trip.get("ledger_completed_by", ""),
+            }
+
+    completion_date = trip.get("ledger_completion_date") or _now_at_site(site)[0]
+    active_lrs = [lr for lr in lrs if not lr.get("voided")]
+    paid_by_lr = await _payments_by_lr(
+        site, trip_id, [lr["_id"] for lr in active_lrs],
+    )
+    for lr in active_lrs:
+        rent = _decimal_value(lr.get("rent"))
+        receipt_fee = _decimal_value(lr.get("receipt_fee", Decimal128(Decimal("2.00"))))
+        outstanding = max(
+            rent + receipt_fee - paid_by_lr.get(lr["_id"], Decimal("0.00")),
+            Decimal("0.00"),
+        )
+        if outstanding:
+            payment = await _record_lr_payment(
+                site, trip, lr, outstanding, completion_date, "Cash",
+                "Trip ledger completed",
+                f"trip-ledger-completion:{trip_id}:{lr['_id']}", u,
+                reason="Admin completed trip ledger", source="booking_settlement",
+            )
+            await db.site_payments.update_one(
+                {"_id": payment["_id"]},
+                {"$set": {
+                    "source": "booking_settlement",
+                    "settlement_reason": "Admin completed trip ledger",
+                }},
+            )
+        await db.site_lrs.update_one(
+            _scoped(business_id, site_id, _id=lr["_id"], trip_id=trip_id),
+            {"$set": {
+                "booking_ledger_paid": True,
+                "booking_ledger_paid_by": u["username"],
+                "booking_ledger_paid_at": now_iso(),
+            }},
+        )
+
+    completed_at = now_iso()
+    await db.site_trips.update_one(
+        _scoped(business_id, site_id, _id=trip_id),
+        {"$set": {
+            "ledger_completed_at": completed_at,
+            "ledger_completed_by": u["username"],
+            "ledger_completion_started_by": u["username"],
+        }},
+        )
+    await _audit(
+        site, u, "trip.ledger_completed", "trip", trip_id,
+        new={"ledger_completed": True, "receipt_count": len(active_lrs)},
+        event_id=f"trip-ledger-completed:{trip_id}",
+    )
+    return {
+        "id": trip_id, "ledger_completed": True,
+        "ledger_completed_at": completed_at,
+        "ledger_completed_by": u["username"],
     }
 
 
@@ -3154,6 +3485,7 @@ async def reverse_site_payment(
     _owner(u)
     site = await _site_for_user(site_id, u)
     trip = await _trip(site, trip_id)
+    _ensure_trip_ledger_open(trip)
     lr = await _lr(site, trip_id, lr_id)
     original = await db.site_payments.find_one(_scoped(
         str(site["business_id"]), site_id, _id=payment_id, trip_id=trip_id,
@@ -3209,6 +3541,7 @@ async def retry_site_payment_posting(
     _owner(u)
     site = await _site_for_user(site_id, u)
     trip = await _trip(site, trip_id)
+    _ensure_trip_ledger_open(trip)
     lr = await _lr(site, trip_id, lr_id)
     payment = await db.site_payments.find_one(_scoped(
         str(site["business_id"]), site_id, _id=payment_id,
@@ -3276,6 +3609,7 @@ async def site_booking_finance(site_id: str, u=Depends(site_user)):
     totals = {
         "receipt_count": 0, "pending_orders": 0, "unpriced_receipts": 0,
         "unpaid_receipts": 0, "recorded_bhada": Decimal("0.00"),
+        "recorded_receipt_fees": Decimal("0.00"),
         "recorded_hamali": Decimal("0.00"), "grand_total": Decimal("0.00"),
         "collected_bhada": Decimal("0.00"), "outstanding_bhada": Decimal("0.00"),
         "collectible_outstanding_bhada": Decimal("0.00"),
@@ -3289,16 +3623,19 @@ async def site_booking_finance(site_id: str, u=Depends(site_user)):
             continue
         rent = _decimal_value(lr.get("rent"))
         hamali = _decimal_value(lr.get("hamali"))
+        receipt_fee = _decimal_value(lr.get("receipt_fee", Decimal128(Decimal("2.00"))))
         paid = paid_by_lr.get(lr["_id"], Decimal("0.00"))
-        outstanding = max(rent - paid, Decimal("0.00"))
+        amount_due = rent + receipt_fee if lr.get("rent") is not None else Decimal("0.00")
+        outstanding = max(amount_due - paid, Decimal("0.00"))
         reconciled = lr.get("reconciled") is True
         receipt_day = lr.get("receipt_date", lr.get("operating_date", ""))
         age_days = max((today - _validate_iso_date(receipt_day)).days, 0)
         goods = lr.get("goods_rows") or lr.get("containers") or []
         totals["receipt_count"] += 1
         totals["recorded_bhada"] += rent
+        totals["recorded_receipt_fees"] += receipt_fee
         totals["recorded_hamali"] += hamali
-        totals["grand_total"] += rent + hamali
+        totals["grand_total"] += rent + hamali + receipt_fee
         totals["collected_bhada"] += paid
         totals["outstanding_bhada"] += outstanding
         totals["pending_orders"] += int(not reconciled)
@@ -3311,11 +3648,11 @@ async def site_booking_finance(site_id: str, u=Depends(site_user)):
         receiver = receiver_totals.setdefault(receiver_key, {
             "receiver_name": lr.get("receiver_name", ""),
             "receiver_label": lr.get("receiver_label", lr.get("receiver_name", "")),
-            "receipt_count": 0, "bhada": Decimal("0.00"),
+            "receipt_count": 0, "charges": Decimal("0.00"),
             "collected": Decimal("0.00"), "outstanding": Decimal("0.00"),
         })
         receiver["receipt_count"] += 1
-        receiver["bhada"] += rent
+        receiver["charges"] += rent + receipt_fee
         receiver["collected"] += paid
         receiver["outstanding"] += outstanding
         rows.append({
@@ -3330,10 +3667,13 @@ async def site_booking_finance(site_id: str, u=Depends(site_user)):
             ),
             "rent": format(rent, ".2f") if lr.get("rent") is not None else None,
             "hamali": format(hamali, ".2f"),
-            "total": format(rent + hamali, ".2f"),
+            "receipt_fee": format(receipt_fee, ".2f"),
+            "total": format(rent + hamali + receipt_fee, ".2f"),
             "paid": format(paid, ".2f"),
             "outstanding": format(outstanding, ".2f"),
-            "payment_status": _payment_status(lr.get("rent"), paid),
+            "payment_status": _payment_status(
+                amount_due if lr.get("rent") is not None else None, paid,
+            ),
             "reconciled": reconciled, "age_days": age_days,
             "promised_date": lr.get("payment_promised_date", ""),
             "followup_note": lr.get("payment_followup_note", ""),
@@ -3341,7 +3681,8 @@ async def site_booking_finance(site_id: str, u=Depends(site_user)):
             "created_by_role": lr.get("created_by_role", ""),
         })
     money_keys = (
-        "recorded_bhada", "recorded_hamali", "grand_total", "collected_bhada",
+        "recorded_bhada", "recorded_receipt_fees", "recorded_hamali",
+        "grand_total", "collected_bhada",
         "outstanding_bhada", "collectible_outstanding_bhada",
     )
     formatted = {
@@ -3351,8 +3692,8 @@ async def site_booking_finance(site_id: str, u=Depends(site_user)):
     receiver_balances = [
         {
             **{key: value for key, value in receiver.items()
-               if key not in {"bhada", "collected", "outstanding"}},
-            "bhada": format(receiver["bhada"], ".2f"),
+               if key not in {"charges", "collected", "outstanding"}},
+            "charges": format(receiver["charges"], ".2f"),
             "collected": format(receiver["collected"], ".2f"),
             "outstanding": format(receiver["outstanding"], ".2f"),
         }
@@ -3366,8 +3707,9 @@ async def site_booking_finance(site_id: str, u=Depends(site_user)):
         "totals": formatted,
         "receiver_balances": receiver_balances,
         "basis": (
-            "Grand total is all active receipt Bhada plus Hamali. Outstanding and collections "
-            "track Bhada only; unreconciled orders are listed separately. Payments include only "
+            "Grand total is active receipt Bhada, Hamali and receipt fees. Outstanding and "
+            "collections track Bhada plus receipt fees; unreconciled orders are listed separately. "
+            "Payments include only "
             "successfully posted payments and reversals."
         ),
         "rows": rows,
@@ -3381,6 +3723,8 @@ async def update_site_lr_followup(
 ):
     _owner(u)
     site = await _site_for_user(site_id, u, "dashboard:read")
+    trip = await _trip(site, trip_id)
+    _ensure_trip_ledger_open(trip)
     lr = await _lr(site, trip_id, lr_id)
     promised_date = (
         _validate_iso_date(body.promised_date).isoformat()
@@ -3750,6 +4094,7 @@ async def list_site_ledger_entries(
     site_id: str,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    trip_id: Optional[str] = None,
     trip_ref: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = Query(default=1000, ge=1, le=5000),
@@ -3758,6 +4103,8 @@ async def list_site_ledger_entries(
 ):
     site = await _site_for_user(site_id, u, "lrs:read")
     query = _scoped(str(site["business_id"]), site_id)
+    if trip_id:
+        query["trip_id"] = trip_id
     clauses = []
     if from_date or to_date:
         dates = {}
@@ -3765,10 +4112,16 @@ async def list_site_ledger_entries(
             dates["$gte"] = _validate_iso_date(from_date).isoformat()
         if to_date:
             dates["$lte"] = _validate_iso_date(to_date).isoformat()
-        clauses.append({"$or": [
-            {"receipt_date": dates},
-            {"receipt_date": {"$exists": False}, "operating_date": dates},
-        ]})
+        if trip_id:
+            clauses.append({"$or": [
+                {"operating_date": dates},
+                {"operating_date": {"$exists": False}, "receipt_date": dates},
+            ]})
+        else:
+            clauses.append({"$or": [
+                {"receipt_date": dates},
+                {"receipt_date": {"$exists": False}, "operating_date": dates},
+            ]})
     if trip_ref and trip_ref.strip():
         query["trip_ref"] = {"$regex": re.escape(trip_ref.strip()), "$options": "i"}
     term = (search or "").strip()
@@ -3807,7 +4160,8 @@ async def list_site_ledger_entries(
             entry["truck_no"] = trip.get("truck_no", "")
             entry["driver_name"] = trip.get("driver_name", "")
             entry["total_rent"] = format(
-                _decimal_value(entry.get("rent")) + _decimal_value(entry.get("hamali")), ".2f",
+                _decimal_value(entry.get("rent")) + _decimal_value(entry.get("hamali"))
+                + _decimal_value(entry.get("receipt_fee")), ".2f",
             ) if _can_view_site_lr_charges(u, site_id) else None
             result.append(entry)
     result.sort(key=lambda row: (row.get("receipt_date", row.get("operating_date", "")),
@@ -3850,7 +4204,7 @@ async def export_site_ledger_csv(
     columns = (
         "Date", "Trip number", "LR number", "Sender", "Sender address",
         "Receiver", "Receiver address", "Goods", "Quantity", "Bhada",
-        "Hamali", "Total rent", "Status",
+        "Hamali", "Receipt fee", "Total charges", "Status",
     )
     rows = []
     for lr in lrs:
@@ -3860,6 +4214,7 @@ async def export_site_ledger_csv(
         goods = lr.get("goods_rows") or lr.get("containers") or []
         rent = _decimal_value(lr.get("rent"))
         hamali = _decimal_value(lr.get("hamali"))
+        receipt_fee = _decimal_value(lr.get("receipt_fee", Decimal128(Decimal("2.00"))))
         can_read_finances = _can_view_site_lr_charges(u, site_id)
         rows.append((
             lr.get("receipt_date", lr.get("operating_date", "")), trip.get("trip_ref", ""),
@@ -3869,7 +4224,8 @@ async def export_site_ledger_csv(
             sum(line.get("quantity", 0) for line in goods),
             format(rent, ".2f") if can_read_finances else "",
             format(hamali, ".2f") if can_read_finances else "",
-            format(rent + hamali, ".2f") if can_read_finances else "",
+            format(receipt_fee, ".2f") if can_read_finances else "",
+            format(rent + hamali + receipt_fee, ".2f") if can_read_finances else "",
             "VOID" if lr.get("voided") else "Active",
         ))
     return _report_csv_response(f"{site.get('code', site_id)}-ledger-{start}-{end}.csv", columns, rows)
@@ -3933,7 +4289,7 @@ async def export_site_daily_ledger(
         "operating_date", "site_name", "site_code", "trip_ref", "truck_no", "driver_name",
         "lr_ref", "sender_name", "receiver_name", "receiver_identifier", "goods_type",
         "container_quantities", "parcel_quantity_units", "bhada_recorded_inr",
-        "hamali_recorded_inr", "bhada_collected_inr", "bhada_outstanding_inr",
+        "hamali_recorded_inr", "receipt_fee_inr", "bhada_collected_inr", "bhada_outstanding_inr",
         "payment_status", "payment_details",
     )
     rows = []
@@ -3943,6 +4299,7 @@ async def export_site_daily_ledger(
             continue
         paid = totals_by_lr.get(lr["_id"], Decimal("0.00"))
         rent = _decimal_value(lr.get("rent"))
+        receipt_fee = _decimal_value(lr.get("receipt_fee", Decimal128(Decimal("2.00"))))
         rows.append((
             day, site.get("name", ""), site.get("code", ""),
             trip.get("trip_ref", ""), trip.get("truck_no", ""), trip.get("driver_name", ""),
@@ -3955,10 +4312,13 @@ async def export_site_daily_ledger(
             format(rent, ".2f") if lr.get("rent") is not None else "",
             format(_decimal_value(lr.get("hamali")), ".2f")
             if lr.get("hamali") is not None else "",
+            format(receipt_fee, ".2f"),
             format(paid, ".2f"),
-            format(max(rent - paid, Decimal("0.00")), ".2f")
+            format(max(rent + receipt_fee - paid, Decimal("0.00")), ".2f")
             if lr.get("rent") is not None else "",
-            _payment_status(lr.get("rent"), paid),
+            _payment_status(
+                rent + receipt_fee if lr.get("rent") is not None else None, paid,
+            ),
             "; ".join(payments_by_lr.get(lr["_id"], [])),
         ))
     return _report_csv_response(
@@ -3971,6 +4331,7 @@ async def export_site_ledger_xlsx(
     site_id: str,
     from_date: str = Query(...),
     to_date: str = Query(...),
+    trip_id: Optional[str] = None,
     u=Depends(site_user),
 ):
     site = await _site_for_user(site_id, u, "lrs:read")
@@ -3983,11 +4344,17 @@ async def export_site_ledger_xlsx(
     if start > end:
         raise HTTPException(422, "Start date must be before or equal to end date")
     date_range = {"$gte": start, "$lte": end}
-    query = _scoped(str(site["business_id"]), site_id,
-                    **{"$or": [
-                        {"receipt_date": date_range},
-                        {"receipt_date": {"$exists": False}, "operating_date": date_range},
-                    ]})
+    date_clause = {"$or": [
+        {"operating_date": date_range},
+        {"operating_date": {"$exists": False}, "receipt_date": date_range},
+    ]} if trip_id else {"$or": [
+        {"receipt_date": date_range},
+        {"receipt_date": {"$exists": False}, "operating_date": date_range},
+    ]}
+    query = _scoped(
+        str(site["business_id"]), site_id, **({"trip_id": trip_id} if trip_id else {}),
+        **date_clause,
+    )
     lrs = await db.site_lrs.find(query).sort(
         [("operating_date", 1), ("sequence", 1)],
     ).limit(10001).to_list(10001)
@@ -4000,77 +4367,61 @@ async def export_site_ledger_xlsx(
             trips[trip_id] = trip
 
     can_read_finances = _can_view_site_lr_charges(u, site_id)
-    paid_by_lr = await _payments_by_lr(site, None, [row["_id"] for row in lrs])
+    paid_by_trip = {}
+    if u.get("role") == "owner":
+        for ledger_trip_id in trips:
+            paid_by_trip[ledger_trip_id] = await _payments_by_lr(
+                site, ledger_trip_id,
+                [row["_id"] for row in lrs if row.get("trip_id") == ledger_trip_id],
+            )
     ledger_rows = []
-    goods_rows = []
     for lr in lrs:
         trip = trips.get(lr["trip_id"])
         if not trip:
             continue
         goods = lr.get("goods_rows") or lr.get("containers") or []
-        legacy_charge_allocation = bool(goods) and not any(
-            "rent" in line or "hamali" in line for line in goods
-        )
         rent = _decimal_value(lr.get("rent"))
         hamali = _decimal_value(lr.get("hamali"))
-        quantity = sum(int(line.get("quantity", 0)) for line in goods)
-        ledger_rows.append((
+        receipt_fee = _decimal_value(lr.get("receipt_fee", Decimal128(Decimal("2.00"))))
+        row_values = (
             lr.get("receipt_date", lr.get("operating_date", "")),
             trip.get("trip_ref", ""), lr.get("lr_ref", ""),
-            "\n".join(filter(None, (
-                lr.get("sender_name", ""), lr.get("sender_name_hindi", ""),
-            ))),
-            "\n".join(filter(None, (
-                lr.get("receiver_name", ""), lr.get("receiver_name_hindi", ""),
-            ))), "\n\n".join(
-                "\n".join(filter(None, (
-                    line.get("type", ""), line.get("type_hindi", ""),
-                    line.get("description", ""),
-                    f"Quantity: {line.get('quantity', 0)}",
-                )))
+            _ledger_hindi_text(lr.get("sender_name_hindi")),
+            _ledger_hindi_text(lr.get("receiver_name_hindi")),
+            ", ".join(
+                " - ".join(part for part in (
+                    _ledger_hindi_text(line.get("type_hindi")),
+                    _ledger_hindi_text(line.get("description_hindi") or line.get("description")),
+                    _hindi_digits(line.get("quantity", 0)),
+                ) if part)
                 for line in goods
             ),
-            quantity, rent if can_read_finances else "",
+            rent if can_read_finances else "",
             hamali if can_read_finances else "",
-            rent + hamali if can_read_finances else "",
-            ("Paid" if lr.get("rent") is not None
-             and paid_by_lr.get(lr["_id"], Decimal("0.00")) >= rent else "Unpaid")
-            if can_read_finances and not lr.get("voided") else "",
-            "VOID" if lr.get("voided") else "Active",
-            _charge_editor_marker(lr),
-        ))
-        for line_number, line in enumerate(goods, start=1):
-            line_rent = (
-                rent if legacy_charge_allocation and line_number == 1
-                else _decimal_value(line.get("rent"))
+            receipt_fee,
+            _entry_by(lr),
+        )
+        if u.get("role") == "owner":
+            paid = paid_by_trip.get(lr["trip_id"], {}).get(lr["_id"], Decimal("0.00"))
+            row_values += (
+                "✓" if not lr.get("voided") and lr.get("rent") is not None
+                and paid >= rent + receipt_fee else "",
             )
-            line_hamali = (
-                hamali if legacy_charge_allocation and line_number == 1
-                else _decimal_value(line.get("hamali"))
-            )
-            goods_rows.append((
-                lr.get("receipt_date", lr.get("operating_date", "")),
-                lr.get("lr_ref", ""), line_number, line.get("type", ""),
-                line.get("type_hindi", line.get("type", "")),
-                line.get("description", ""), int(line.get("quantity", 0)),
-                line_rent if can_read_finances else "",
-                line_hamali if can_read_finances else "",
-                line_rent + line_hamali if can_read_finances else "",
-            ))
+        ledger_rows.append(row_values)
 
     filename = f"{site.get('code', site_id)}-ledger-{start}-{end}.xlsx"
+    columns = (
+        "दिनांक", "ट्रिप नंबर", "रसीद नंबर", "भेजने वाला", "प्राप्तकर्ता",
+        "माल एवं मात्रा", "भाड़ा", "हमाली", "रसीद शुल्क", "प्रविष्टि करने वाला",
+    )
+    widths = (14, 24, 24, 24, 24, 48, 14, 14, 14, 24)
+    if u.get("role") == "owner":
+        columns += ("Amount paid",)
+        widths += (14,)
     return _xlsx_response(
         filename, site.get("name", "Booking ledger"), f"{start} to {end}",
         [
-            ("Ledger", (
-                "Date", "Trip number", "LR number", "Sender", "Receiver",
-                "Goods type, Hindi, description and quantity", "Total quantity",
-                "Bhada", "Hamali", "Total rent", "Payment received", "Status", "Charge editor",
-            ), ledger_rows, (14, 24, 24, 20, 20, 48, 14, 14, 14, 14, 18, 12, 12)),
-            ("Goods details", (
-                "Date", "LR number", "Goods row", "Goods type", "Goods type (Hindi)",
-                "Description", "Quantity", "Bhada", "Hamali", "Total",
-            ), goods_rows, (14, 24, 10, 24, 28, 48, 12, 14, 14, 14)),
+            ("बही", columns, ledger_rows, widths),
         ],
     )
 
@@ -4438,6 +4789,7 @@ async def commit_site_ledger_import(
         raise HTTPException(422, "Confirm the ledger changes before applying them")
     site = await _site_for_user(site_id, u)
     trip = await _trip(site, trip_id)
+    _ensure_trip_ledger_open(trip)
     business_id = str(site["business_id"])
     scope = _scoped(business_id, site_id, trip_id=trip_id, _id=import_id)
     imported = await db.site_ledger_imports.find_one(scope)

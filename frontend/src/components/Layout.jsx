@@ -32,6 +32,7 @@ const BOOKING_NAV = [
   { to: "/booking/ledger", label: "Ledger", icon: Banknote },
 ];
 const OWNER_BOOKING_NAV = [
+  { to: "/booking-setup", label: "Booking settings", icon: Cog },
   { to: "/booking/finance", label: "Booking Finance", icon: Wallet },
   { to: "/booking/audit", label: "Booking Audit", icon: ShieldCheck },
 ];

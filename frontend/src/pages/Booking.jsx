@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
-import { CalendarDays, Check, ChevronRight, Download, FileText, Plus, Printer, Truck, X } from "lucide-react";
+import {
+  CalendarDays, Check, ChevronRight, Download, FileText, Hash, MapPin, Package, Phone,
+  Plus, Printer, Truck, UserRound, X,
+} from "lucide-react";
 import { api, errMsg } from "../lib/api";
 import { Btn, Card, ErrorState, Loader, PageHead } from "../components/ui";
 import { todayISO } from "../lib/format";
@@ -8,13 +12,17 @@ import BookingAudit from "./BookingAudit";
 import BookingFinance from "./BookingFinance";
 
 const field = "fld w-full";
-const blankGoods = () => Array.from({ length: 5 }, () => ({
-  type: "", type_hindi: "", description: "", quantity: "",
+const blankGoods = () => Array.from({ length: 3 }, () => ({
+  type: "", type_hindi: "", description: "", description_hindi: "", quantity: "",
 }));
+const isLedgerLocked = (trip) => Boolean(
+  trip?.ledger_completion_started_at || trip?.ledger_completed_at,
+);
 const keyForRequest = () => window.crypto?.randomUUID?.()
   || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const isHindi = (value) => /[\u0900-\u097f]/.test(value || "");
 const commonGoodsHindi = {
+  auto: "ऑटो", truck: "ट्रक", nagpur: "नागपुर", pune: "पुणे", mumbai: "मुंबई",
   cement: "सीमेंट", "food grains": "खाद्यान्न", rice: "चावल", wheat: "गेहूँ",
   flour: "आटा", sugar: "चीनी", salt: "नमक", steel: "लोहा", iron: "लोहा",
   bricks: "ईंट", brick: "ईंट", sand: "रेत", stone: "पत्थर", wood: "लकड़ी",
@@ -104,8 +112,9 @@ function getGoodsRows(receipt) {
   const rows = receipt.goods_rows || receipt.containers || [];
   return rows.map((line) => ({
     type: line.type || "",
-    type_hindi: line.type_hindi || line.type || "",
+    type_hindi: line.type_hindi || "",
     description: line.description || "",
+    description_hindi: line.description_hindi || "",
     quantity: line.quantity ?? "",
   }));
 }
@@ -119,155 +128,144 @@ function stripGoodsCharges(line) {
 
 function printGoods(receipt) {
   const lines = getGoodsRows(receipt).filter((line) => line.type && Number(line.quantity) > 0);
-  return lines.length ? lines : [{ type_hindi: receipt.goods_type_hindi || receipt.goods_type, quantity: receipt.total_quantity }];
+  return lines.length ? lines : [{
+    type: receipt.goods_type || "",
+    type_hindi: receipt.goods_type_hindi || "",
+    description: receipt.goods_description || "",
+    description_hindi: receipt.goods_description_hindi || "",
+    quantity: receipt.total_quantity,
+  }];
 }
 
-function HindiInput({ label, value, hindi, onChange, onHindiChange, onGenerateHindi, required = false, inputMode = "text" }) {
-  return (
-    <div>
-      <label className="lbl">{label}{required ? " *" : ""}</label>
-      <input className={field} required={required} value={value}
-        onChange={(event) => onChange(event.target.value)} inputMode={inputMode} placeholder="Type name" />
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <label className="text-sm font-semibold text-brand-700">Hindi / हिंदी (print text)</label>
-        <button type="button" className="text-xs font-semibold text-brand-700" onClick={onGenerateHindi}>
-          Make Hindi / हिंदी बनाएं
-        </button>
-      </div>
-      <input className={`${field} font-semibold`} value={hindi}
-        onChange={(event) => onHindiChange(event.target.value)}
-        lang="hi" dir="auto" aria-label={`${label} Hindi`} />
-    </div>
-  );
+function hindiText(hindi, english) {
+  return isHindi(hindi) ? hindi : romanHindi(english || hindi || "");
 }
 
-function ReceiptPrint({ receipt, trip, site, branding, showCharges, active }) {
+function hindiDigits(value) {
+  return String(value ?? "").replace(/[0-9]/g, (digit) => "०१२३४५६७८९"[Number(digit)]);
+}
+
+function hindiGoodsLine(line) {
+  const parts = [
+    hindiText(line.type_hindi, line.type),
+    line.description && hindiText(line.description_hindi, line.description),
+    hindiDigits(line.quantity),
+  ].filter(Boolean);
+  return parts.join(" - ");
+}
+
+function ReceiptPrint({ receipt, trip, site, branding, showCharges, controls, active }) {
   if (!receipt) return null;
   const rows = printGoods(receipt);
-  const companyName = branding?.name || site?.name || "Garage";
-  const companyAddress = [branding?.address, branding?.city, branding?.state].filter(Boolean).join(", ");
+  const hindi = controls.receipt_language !== "english";
+  const label = (hindiValue, englishValue) => hindi ? hindiValue : englishValue;
+  const printText = (hindiValue, englishValue) => hindi
+    ? hindiText(hindiValue, englishValue) : (englishValue || "");
+  const companyName = hindi ? "नायडू गुड्स ट्रांसपोर्ट" : "Naidu Goods Transport";
+  const companyAddress = [branding?.address, branding?.city, branding?.state]
+    .filter(Boolean).map((part) => hindi ? romanHindi(part) : part).join(", ");
   const contacts = [branding?.mobile, branding?.alt_mobile].filter(Boolean).join(" · ");
-  const city = receipt.city || site?.city || "";
+  const cityValue = receipt.city || site?.city || "";
+  const city = hindi ? romanHindi(cityValue) : cityValue;
+  const senderAddress = controls.sender_address_enabled
+    ? printText(receipt.sender_address_hindi, receipt.sender_address) : "";
+  const receiverAddress = controls.receiver_address_enabled
+    ? printText(receipt.receiver_address_hindi, receipt.receiver_address) : "";
+  const total = receipt.total_rent ?? Number(receipt.rent || 0) + Number(receipt.hamali || 0)
+    + 2;
   return (
-    <article className="booking-print-target" data-active={active ? "true" : "false"} lang="hi">
+    <article className="booking-print-target" data-active={active ? "true" : "false"} lang={hindi ? "hi" : "en"}>
       <div className="receipt-print-header">
         {branding?.logo && <img src={branding.logo} alt="" className="receipt-print-logo" />}
-        <div className="receipt-print-contact">{contacts && <span>संपर्क: {contacts}</span>}</div>
+        <div className="receipt-print-contact">{contacts && <span>{label("संपर्क", "Contact")}: {contacts}</span>}</div>
         <div className="receipt-print-company">
           <h1>{companyName}</h1>
-          <p>माल रसीद</p>
+          <p>{label("माल रसीद", "GOODS CONSIGNMENT NOTE")}</p>
           {companyAddress && <span>{companyAddress}</span>}
         </div>
       </div>
       <div className="receipt-print-meta">
-        <strong>रसीद नंबर: {receipt.lr_ref}</strong>
-        <span>दिनांक: {receipt.receipt_date || receipt.operating_date || trip?.operating_date}</span>
+        <strong>{label("रसीद नंबर", "Receipt No.")}: <span className="receipt-print-number">{receipt.lr_ref}</span></strong>
+        <span>{label("दिनांक", "Date")}: {receipt.receipt_date || receipt.operating_date || trip?.operating_date}</span>
         {receiptCreatedTime(receipt.receipt_created_at || receipt.created_at) &&
-          <span>समय: {receiptCreatedTime(receipt.receipt_created_at || receipt.created_at)}</span>}
-        {city && <span>शहर: {city}</span>}
+          <span>{label("समय", "Time")}: {receiptCreatedTime(receipt.receipt_created_at || receipt.created_at)}</span>}
+        {city && <span>{label("शहर", "City")}: {city}</span>}
       </div>
       <section className="receipt-print-parties">
-        {(receipt.sender_name_hindi || receipt.sender_name || receipt.sender_address) && <div>
-          <strong>भेजने वाला:</strong>
-          {receipt.sender_name_hindi || receipt.sender_name}
-          {receipt.sender_address && <span>{receipt.sender_address}</span>}
+        {(receipt.sender_name_hindi || receipt.sender_name || senderAddress) && <div>
+          <strong>{label("भेजने वाला", "Sender")}:</strong>
+          {printText(receipt.sender_name_hindi, receipt.sender_name)}
+          {senderAddress && <span>{senderAddress}</span>}
+          {receipt.sender_phone && <span>{label("मोबाइल", "Phone")}: {receipt.sender_phone}</span>}
         </div>}
-        {(receipt.receiver_name_hindi || receipt.receiver_name || receipt.receiver_address) && <div>
-          <strong>प्राप्त करने वाला:</strong>
-          {receipt.receiver_name_hindi || receipt.receiver_name}
-          {receipt.receiver_address && <span>{receipt.receiver_address}</span>}
+        {(receipt.receiver_name_hindi || receipt.receiver_name || receiverAddress) && <div>
+          <strong>{label("प्राप्त करने वाला", "Receiver")}:</strong>
+          {printText(receipt.receiver_name_hindi, receipt.receiver_name)}
+          {receiverAddress && <span>{receiverAddress}</span>}
+          {receipt.receiver_phone && <span>{label("मोबाइल", "Phone")}: {receipt.receiver_phone}</span>}
         </div>}
       </section>
       <table className="receipt-print-goods">
-        <thead><tr><th>मात्रा</th><th>माल का विवरण</th></tr></thead>
-        <tbody>{rows.map((line, index) => <tr key={`${line.type_hindi}-${index}`}>
-          <td>{line.quantity}</td>
-          <td>{line.type_hindi || line.type}{line.description && <span className="receipt-print-description">{line.description}</span>}</td>
-        </tr>)}</tbody>
+        <thead><tr><th>{label("माल का विवरण", "Goods description")}</th></tr></thead>
+        <tbody><tr><td>{rows.map((line) => hindi
+          ? hindiGoodsLine(line)
+          : [line.type, line.description, line.quantity].filter(Boolean).join(" - ")).join(", ")}</td></tr></tbody>
       </table>
       {showCharges ? <table className="receipt-print-charges">
         <tbody>
-          <tr><th>भाड़ा (Bhada)</th><td>{money(receipt.rent)}</td></tr>
-          <tr><th>हमाली (Hamali)</th><td>{money(receipt.hamali)}</td></tr>
-          <tr className="receipt-print-total-row"><th>कुल किराया</th>
-            <td>{money(receipt.total_rent ?? Number(receipt.rent || 0) + Number(receipt.hamali || 0))}</td></tr>
+          <tr><th>{label("भाड़ा", "Bhada")}</th><td>{money(receipt.rent)}</td></tr>
+          <tr><th>{label("हमाली", "Hamali")}</th><td>{money(receipt.hamali)}</td></tr>
+          <tr><th>{label("रसीद शुल्क", "Receipt fee")}</th>
+            <td>{money(receipt.receipt_fee ?? 2)}</td></tr>
+          <tr className="receipt-print-total-row"><th>{label("कुल", "Total")}</th>
+            <td>{money(total)}</td></tr>
         </tbody>
       </table> : receipt.total_rent != null &&
-        <p className="receipt-print-total">कुल किराया: {money(receipt.total_rent)}</p>}
-      {branding?.footer && <p className="receipt-print-footer">{branding.footer}</p>}
+        <p className="receipt-print-total">{label("कुल", "Total")}: {money(total)}</p>}
+      <p className="receipt-print-footer">{branding?.footer
+        ? (hindi ? romanHindi(branding.footer) : branding.footer)
+        : label("माल प्राप्त न होने पर कृपया 24 घंटे के भीतर कार्यालय से संपर्क करें।",
+          "Please contact the office within 24 hours if the goods are not received.")}</p>
     </article>
   );
 }
 
-function ReceiptForm({ trip, receipt, canEditFinance, owner, addressSuggestions, onCancel, onSaved }) {
+function ReceiptForm({
+  trip, receipt, canEditFinance, addressSuggestions, convertHindi, receiptFee,
+  senderAddressEnabled, receiverAddressEnabled, onCancel, onSaved,
+}) {
   const [form, setForm] = useState(() => receipt ? {
     receipt_date: receipt.receipt_date || receipt.operating_date || trip.operating_date,
-    sender_name: receipt.sender_name || "", sender_name_hindi: receipt.sender_name_hindi || "",
-    sender_address: receipt.sender_address || "", city: receipt.city || "",
-    receiver_name: receipt.receiver_name || "", receiver_name_hindi: receipt.receiver_name_hindi || "",
+    sender_name: receipt.sender_name || "",
+    sender_address: receipt.sender_address || "",
+    receiver_name: receipt.receiver_name || "",
     receiver_address: receipt.receiver_address || "", receiver_phone: receipt.receiver_phone || "",
-    goods_rows: [...getGoodsRows(receipt), ...Array.from({ length: Math.max(0, 5 - getGoodsRows(receipt).length) }, () => ({
-      type: "", type_hindi: "", description: "", quantity: "",
-    }))],
+    goods_rows: getGoodsRows(receipt).map((line) => ({
+      ...line,
+      type: [line.type, line.description].filter(Boolean).join(" "),
+      type_hindi: [line.type_hindi, line.description_hindi].filter(Boolean).join(" "),
+      description: "",
+      description_hindi: "",
+    })),
     rent: receipt.rent ?? "0", hamali: receipt.hamali ?? "0",
   } : {
-    receipt_date: trip.operating_date, sender_name: "", sender_name_hindi: "", sender_address: "", city: "",
-    receiver_name: "", receiver_name_hindi: "", receiver_address: "",
-    receiver_phone: "", goods_rows: blankGoods(), rent: "0", hamali: "0",
-  });
-  const [manualHindi, setManualHindi] = useState({
-    sender: Boolean(receipt?.sender_name_hindi),
-    receiver: Boolean(receipt?.receiver_name_hindi),
+    receipt_date: trip.operating_date, sender_name: "", sender_address: "",
+    receiver_name: "", receiver_address: "", receiver_phone: "",
+    goods_rows: blankGoods(), rent: "0", hamali: "0",
   });
   const [error, setError] = useState("");
-  const [correctionReason, setCorrectionReason] = useState("");
   const [receiverMatch, setReceiverMatch] = useState(null);
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [saveKey] = useState(keyForRequest);
-  const senderTimer = useRef(null);
-  const receiverTimer = useRef(null);
-  const goodsTimers = useRef({});
-  const manualGoodsHindi = useRef(new Set());
-
-  useEffect(() => {
-    senderTimer.current = window.setTimeout(() => {
-      if (!manualHindi.sender) {
-        setForm((current) => ({ ...current, sender_name_hindi: romanHindi(current.sender_name) }));
-      }
-    }, 450);
-    return () => window.clearTimeout(senderTimer.current);
-  }, [form.sender_name, manualHindi.sender]);
-  useEffect(() => {
-    receiverTimer.current = window.setTimeout(() => {
-      if (!manualHindi.receiver) {
-        setForm((current) => ({ ...current, receiver_name_hindi: romanHindi(current.receiver_name) }));
-      }
-    }, 450);
-    return () => window.clearTimeout(receiverTimer.current);
-  }, [form.receiver_name, manualHindi.receiver]);
-
   const patch = (values) => setForm((current) => ({ ...current, ...values }));
   const changeGoods = (index, key, value) => {
     setForm((current) => ({ ...current, goods_rows: current.goods_rows.map((line, row) =>
       row === index ? { ...line, [key]: value } : line) }));
   };
-  const changeGoodsType = (index, value) => {
-    changeGoods(index, "type", value);
-    manualGoodsHindi.current.delete(index);
-    window.clearTimeout(goodsTimers.current[index]);
-    goodsTimers.current[index] = window.setTimeout(() => {
-      if (!manualGoodsHindi.current.has(index)) {
-        changeGoods(index, "type_hindi", romanHindi(value));
-      }
-    }, 450);
-  };
-  const changeGoodsHindi = (index, value) => {
-    manualGoodsHindi.current.add(index);
-    window.clearTimeout(goodsTimers.current[index]);
-    changeGoods(index, "type_hindi", value);
-  };
   const save = async (event, printAfter = false, matchChoice = null) => {
     event?.preventDefault();
+    if (savingRef.current) return;
     setError("");
     const goods = form.goods_rows.filter((line) => line.type.trim() && Number(line.quantity) > 0);
     if (!form.receiver_name.trim() || !goods.length) {
@@ -278,24 +276,37 @@ function ReceiptForm({ trip, receipt, canEditFinance, owner, addressSuggestions,
       setError("Goods quantity must be a whole number greater than zero.");
       return;
     }
+    if (form.receiver_phone && form.receiver_phone.length !== 10) {
+      setError("Receiver phone must contain exactly 10 digits.");
+      return;
+    }
+    savingRef.current = true;
     setSaving(true);
     const body = {
       receipt_date: form.receipt_date,
       sender_name: form.sender_name.trim(),
-      sender_name_hindi: form.sender_name_hindi.trim() || romanHindi(form.sender_name),
-      sender_address: form.sender_address.trim(), city: form.city.trim(),
+      sender_name_hindi: convertHindi ? romanHindi(form.sender_name) : form.sender_name.trim(),
       receiver_name: form.receiver_name.trim(),
-      receiver_name_hindi: form.receiver_name_hindi.trim() || romanHindi(form.receiver_name),
-      receiver_address: form.receiver_address.trim(), receiver_phone: form.receiver_phone.trim(),
+      receiver_name_hindi: convertHindi ? romanHindi(form.receiver_name) : form.receiver_name.trim(),
+      city: "Hinganghat", receiver_phone: form.receiver_phone.trim(),
+      ...(senderAddressEnabled ? {
+        sender_address: form.sender_address.trim(),
+        sender_address_hindi: convertHindi ? romanHindi(form.sender_address) : form.sender_address.trim(),
+      } : {}),
+      ...(receiverAddressEnabled ? {
+        receiver_address: form.receiver_address.trim(),
+        receiver_address_hindi: convertHindi ? romanHindi(form.receiver_address) : form.receiver_address.trim(),
+      } : {}),
       goods_rows: goods.map((line) => ({
-        type: line.type.trim(), type_hindi: line.type_hindi.trim() || romanHindi(line.type),
-        description: line.description.trim(), quantity: Number(line.quantity),
+        type: line.type.trim(), type_hindi: convertHindi ? romanHindi(line.type) : line.type.trim(),
+        description: "",
+        description_hindi: "",
+        quantity: Number(line.quantity),
       })),
       ...(canEditFinance ? {
         rent: form.rent === "" ? "0" : form.rent || "0",
         hamali: form.hamali === "" ? "0" : form.hamali || "0",
       } : {}),
-      ...(owner && correctionReason.trim() ? { owner_correction_reason: correctionReason.trim() } : {}),
       ...(matchChoice ? {
         receiver_match_action: matchChoice.action,
         ...(matchChoice.identityId ? { receiver_identity_id: matchChoice.identityId } : {}),
@@ -322,12 +333,14 @@ function ReceiptForm({ trip, receipt, canEditFinance, owner, addressSuggestions,
         setError(errMsg(requestError));
       }
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
   const rentTotal = Number(form.rent) || 0;
   const hamaliTotal = Number(form.hamali) || 0;
-  const total = rentTotal + hamaliTotal;
+  const fee = receipt ? Number(receipt.receipt_fee) || 0 : receiptFee;
+  const total = rentTotal + hamaliTotal + fee;
 
   return (
     <Card className="p-4 sm:p-6">
@@ -358,74 +371,65 @@ function ReceiptForm({ trip, receipt, canEditFinance, owner, addressSuggestions,
           <div className="rounded-lg bg-canvas px-3 py-3 text-sm"><span className="lbl">Trip number</span><strong>{trip.trip_ref}</strong></div>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
-          <HindiInput label="Sender / भेजने वाला" value={form.sender_name} hindi={form.sender_name_hindi}
-            onChange={(value) => { patch({ sender_name: value }); setManualHindi((current) => ({ ...current, sender: false })); }}
-            onHindiChange={(value) => { patch({ sender_name_hindi: value }); setManualHindi((current) => ({ ...current, sender: true })); }}
-            onGenerateHindi={() => { patch({ sender_name_hindi: romanHindi(form.sender_name) }); setManualHindi((current) => ({ ...current, sender: true })); }} />
-          <HindiInput label="Receiver / पाने वाला" value={form.receiver_name} hindi={form.receiver_name_hindi}
-            required onChange={(value) => { patch({ receiver_name: value }); setManualHindi((current) => ({ ...current, receiver: false })); }}
-            onHindiChange={(value) => { patch({ receiver_name_hindi: value }); setManualHindi((current) => ({ ...current, receiver: true })); }}
-            onGenerateHindi={() => { patch({ receiver_name_hindi: romanHindi(form.receiver_name) }); setManualHindi((current) => ({ ...current, receiver: true })); }} />
+          <label><span className="lbl flex items-center gap-2"><UserRound size={16} aria-hidden="true" />Sender (optional)</span><input className={field} aria-label="Sender name in English"
+            value={form.sender_name} onChange={(event) => patch({ sender_name: event.target.value })} /></label>
+          <label><span className="lbl flex items-center gap-2"><UserRound size={16} aria-hidden="true" />Receiver *</span><input className={field} required aria-label="Receiver name in English"
+            value={form.receiver_name} onChange={(event) => patch({ receiver_name: event.target.value })} /></label>
         </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          <label><span className="lbl">Sender address (optional)</span><input className={field} list="sender-address-options"
+        {(senderAddressEnabled || receiverAddressEnabled) && <div className="grid gap-4 md:grid-cols-2">
+          {senderAddressEnabled && <label><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />Sender address (optional)</span><input className={field} list="sender-address-options"
             value={form.sender_address} onChange={(event) => patch({ sender_address: event.target.value })} />
             <datalist id="sender-address-options">{addressSuggestions.sender.map((address) =>
-              <option key={address} value={address} />)}</datalist></label>
-          <label><span className="lbl">Receiver address (optional)</span><input className={field} list="receiver-address-options"
+              <option key={address} value={address} />)}</datalist></label>}
+          {receiverAddressEnabled && <label><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />Receiver address (optional)</span><input className={field} list="receiver-address-options"
             value={form.receiver_address} onChange={(event) => patch({ receiver_address: event.target.value })} />
             <datalist id="receiver-address-options">{addressSuggestions.receiver.map((address) =>
-              <option key={address} value={address} />)}</datalist></label>
-          <label><span className="lbl">City (optional)</span><input className={field} maxLength={100} value={form.city}
-            placeholder="City" onChange={(event) => patch({ city: event.target.value })} /></label>
-          <label><span className="lbl">Receiver phone (10 digits, optional)</span><input className={field} type="tel"
+              <option key={address} value={address} />)}</datalist></label>}
+        </div>}
+        <div className="grid gap-4 md:grid-cols-2">
+          <label><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />Receiver city</span>
+            <select className={field} value="Hinganghat" disabled>
+              <option value="Hinganghat">Hinganghat</option>
+            </select></label>
+          <label><span className="lbl flex items-center gap-2"><Phone size={16} aria-hidden="true" />Receiver phone (10 digits, optional)</span><input className={field} type="tel"
             inputMode="numeric" maxLength={10} pattern="[0-9]{10}" value={form.receiver_phone}
             aria-label="Receiver phone (10 digits, optional)"
             onChange={(event) => patch({ receiver_phone: event.target.value.replace(/\D/g, "").slice(0, 10) })} /></label>
         </div>
-        {owner && receipt && <label className="block">
-          <span className="lbl">Owner correction reason (needed for posted/closed receipts)</span>
-          <input className={field} maxLength={500} value={correctionReason}
-            placeholder="Example: receiver name was entered incorrectly"
-            onChange={(event) => setCorrectionReason(event.target.value)} />
-        </label>}
         <section>
           <div className="mb-2 flex items-center justify-between gap-3">
-            <h3 className="text-lg font-bold">Goods / सामान</h3>
+            <h3 className="text-lg font-bold">Goods</h3>
             <button type="button" className="btn-s" onClick={() => patch({ goods_rows: [...form.goods_rows, {
-              type: "", type_hindi: "", description: "", quantity: "",
+              type: "", type_hindi: "", description: "", description_hindi: "", quantity: "",
             }] })}>
-              <Plus size={17} /> Add row
+              <Plus size={17} /> Add good
             </button>
           </div>
           <div className="space-y-2">
             {form.goods_rows.map((line, index) => <div key={index}
-              className="grid grid-cols-[2rem_minmax(0,1fr)_4rem_2.25rem] items-start gap-2 rounded-xl border border-line p-2">
+              className="grid grid-cols-[2rem_minmax(0,1fr)_10rem_2.25rem] items-start gap-2 rounded-xl border border-line p-2">
               <span className="pt-3 text-center font-semibold">{index + 1}</span>
-              <div>
-                <input className={field} list="booking-goods-suggestions" value={line.type} placeholder="Goods type"
-                  aria-label={`Goods type row ${index + 1}`} onChange={(event) => {
-                    const value = event.target.value;
-                    changeGoodsType(index, value);
-                  }} />
-                <input className={`${field} mt-1 font-semibold`} lang="hi" dir="auto" placeholder="हिंदी में छपाई"
-                  aria-label={`Goods type Hindi row ${index + 1}`} value={line.type_hindi}
-                  onChange={(event) => changeGoodsHindi(index, event.target.value)} />
-                <button type="button" className="mt-1 text-left text-xs font-semibold text-brand-700"
-                  onClick={() => changeGoodsHindi(index, romanHindi(line.type))}>Make Hindi / हिंदी बनाएं</button>
-                <input className={`${field} mt-1`} maxLength={500} value={line.description} placeholder="Description of goods (optional)"
-                  aria-label={`Goods description row ${index + 1}`}
-                  onChange={(event) => changeGoods(index, "description", event.target.value)} />
-              </div>
-              <input className={field} type="number" min="1" step="1" inputMode="numeric" placeholder="Qty"
-                aria-label={`Quantity row ${index + 1}`} value={line.quantity}
-                onChange={(event) => changeGoods(index, "quantity", event.target.value)} />
-              <button type="button" aria-label={`Clear goods row ${index + 1}`} className="rounded-lg p-2 text-muted hover:bg-red-50 hover:text-red-700 lg:order-last"
+              <label className="relative block">
+                <span className="sr-only">Good and description</span>
+                <Package size={16} aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                <input className={`${field} min-h-12 pl-9`} list="booking-goods-suggestions" value={line.type}
+                  placeholder="Good and description" aria-label={`Good and description row ${index + 1}`}
+                  onChange={(event) => changeGoods(index, "type", event.target.value)} />
+              </label>
+              <label className="relative block">
+                <Hash size={16} aria-hidden="true" className="pointer-events-none absolute left-2 top-3 text-muted" />
+                <input className={`${field} min-h-12 pl-8`} type="number" min="1" step="1" inputMode="numeric" placeholder="Qty"
+                  aria-label={`Quantity row ${index + 1}`} value={line.quantity}
+                  onChange={(event) => changeGoods(index, "quantity", event.target.value)} />
+              </label>
+              <button type="button" aria-label={`Remove goods row ${index + 1}`} className="rounded-lg p-2 text-muted hover:bg-red-50 hover:text-red-700 lg:order-last"
                 onClick={() => {
-                  setForm((current) => ({ ...current, goods_rows: current.goods_rows.map((row, rowIndex) =>
-                    rowIndex === index ? { type: "", type_hindi: "", description: "", quantity: "" } : row) }));
-                  manualGoodsHindi.current.delete(index);
-                  window.clearTimeout(goodsTimers.current[index]);
+                  setForm((current) => ({
+                    ...current,
+                    goods_rows: current.goods_rows.length > 1
+                      ? current.goods_rows.filter((_, rowIndex) => rowIndex !== index)
+                      : blankGoods(),
+                  }));
                 }}>
                 <X size={18} />
               </button>
@@ -444,14 +448,18 @@ function ReceiptForm({ trip, receipt, canEditFinance, owner, addressSuggestions,
             value={amountInput(form.hamali)} onChange={(event) => patch({ hamali: event.target.value })} /></label>
         </section>}
         <section className="rounded-xl bg-brand-50 p-4">
-          <h3 className="text-lg font-bold">Receipt total / कुल</h3>
+          <h3 className="text-lg font-bold">Receipt total</h3>
           <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
             <p>Bhada: <strong>{money(rentTotal)}</strong></p>
             <p>Hamali: <strong>{money(hamaliTotal)}</strong></p>
+            <p>Receipt fee: <strong>{money(fee)}</strong> (fixed)</p>
           </div>
           <p className="mt-2 flex justify-between text-xl font-bold"><span>Total</span><span>{money(total)}</span></p>
         </section>
         <div className="flex flex-col gap-3 sm:flex-row">
+          <button type="button" disabled={saving} onClick={onCancel} className="btn-s min-h-12 flex-1 text-base">
+            Cancel {receipt ? "editing" : "receipt"}
+          </button>
           <Btn type="submit" disabled={saving} className="min-h-12 flex-1 text-base">
             {saving ? "Saving…" : receipt ? "Save changes" : "Save receipt"}
           </Btn>
@@ -484,20 +492,20 @@ export default function Booking({ user }) {
   const [tripFormOpen, setTripFormOpen] = useState(false);
   const [tripForm, setTripForm] = useState({ date: todayISO(), truck_no: "", driver_name: "" });
   const [receiptFormOpen, setReceiptFormOpen] = useState(false);
+  const [receiptFormVersion, setReceiptFormVersion] = useState(0);
   const [editingReceipt, setEditingReceipt] = useState(null);
   const [printReceipt, setPrintReceipt] = useState(null);
   const [printMode, setPrintMode] = useState(null);
   const [success, setSuccess] = useState("");
   const [ledgerRows, setLedgerRows] = useState([]);
-  const [tripOptions, setTripOptions] = useState([]);
+  const [ledgerTrips, setLedgerTrips] = useState([]);
+  const [ledgerTripId, setLedgerTripId] = useState("");
   const [ledgerBusy, setLedgerBusy] = useState(false);
+  const [ledgerCompleting, setLedgerCompleting] = useState(false);
+  const [paidRowsUpdating, setPaidRowsUpdating] = useState(() => new Set());
   const [ledgerError, setLedgerError] = useState("");
   const [ledgerDate, setLedgerDate] = useState(todayISO());
-  const [allDates, setAllDates] = useState(false);
-  const [tripSearch, setTripSearch] = useState("");
-  const [partySearch, setPartySearch] = useState("");
   const [ledgerStatus, setLedgerStatus] = useState({});
-  const [settlementBusy, setSettlementBusy] = useState({});
   const dirtyRows = useRef({});
   const saveTimers = useRef({});
   const savingRows = useRef(new Set());
@@ -511,13 +519,29 @@ export default function Booking({ user }) {
   const receiptsRequestVersions = useRef(new Map());
   const activeTripsRequest = useRef("");
   const activeReceiptsRequest = useRef("");
+  const ledgerTripsRequest = useRef(0);
   const activeLedgerRequest = useRef(0);
   const restoredTripId = useRef("");
+  const previousPage = useRef(page);
   const site = sites.find((item) => item.id === siteId);
+  const ledgerTrip = ledgerTrips.find((trip) => trip.id === ledgerTripId);
   const permissions = user?.site_permissions?.[siteId] || [];
   const can = (permission) => owner || permissions.includes(permission);
   const canFinanceRead = can("finance:read") || can("finance:update") || can("lrs:create") || can("lrs:update");
   const canEditFinance = can("lrs:update");
+  const receiptControls = site?.config?.receipt_controls || {};
+  const convertHindi = receiptControls.hindi_conversion_enabled !== false;
+  const receiptFee = Number(receiptControls.receipt_fee ?? 2);
+  const receiptLanguage = receiptControls.receipt_language === "english" ? "english" : "hindi";
+  const senderAddressEnabled = receiptControls.sender_address_enabled !== false;
+  const receiverAddressEnabled = receiptControls.receiver_address_enabled !== false;
+
+  useEffect(() => {
+    if (page === "dashboard" && previousPage.current !== "dashboard") {
+      setSelectedDate(todayISO());
+    }
+    previousPage.current = page;
+  }, [page]);
 
   const refreshTrips = useCallback(async (dateValue = selectedDate, targetSite = siteId) => {
     if (!targetSite) { setTrips([]); return; }
@@ -615,6 +639,7 @@ export default function Booking({ user }) {
       if (response.data.site_id !== siteId) return;
       setSelectedTrip(response.data);
       setSelectedDate(response.data.operating_date);
+      setReceiptFormOpen(response.data.status === "open" && can("lrs:create"));
     }).catch(() => {
       localStorage.removeItem("booking_trip_id");
       restoredTripId.current = "";
@@ -644,6 +669,9 @@ export default function Booking({ user }) {
 
   const selectSite = (value) => {
     setSiteId(value);
+    setLedgerTripId("");
+    setLedgerTrips([]);
+    setLedgerRows([]);
     setTrips(tripsCache.current.get(`${value}:${selectedDate}`) || []);
     setTripError("");
     setSelectedTrip(null);
@@ -652,8 +680,9 @@ export default function Booking({ user }) {
   };
   const openTrip = async (trip) => {
     setSelectedTrip(trip);
+    setSelectedDate(trip.operating_date);
     localStorage.setItem("booking_trip_id", trip.id);
-    setReceiptFormOpen(false);
+    setReceiptFormOpen(trip.status === "open" && can("lrs:create"));
     setEditingReceipt(null);
     setSuccess("");
     navigate("/booking/receipts");
@@ -672,6 +701,7 @@ export default function Booking({ user }) {
       setTripFormOpen(false);
       setSelectedDate(trip.operating_date);
       setSelectedTrip(trip);
+      setReceiptFormOpen(trip.status === "open" && can("lrs:create"));
       localStorage.setItem("booking_trip_id", trip.id);
       await refreshTrips(trip.operating_date, siteId);
       navigate("/booking/receipts");
@@ -701,8 +731,16 @@ export default function Booking({ user }) {
     } catch (requestError) { setTripError(errMsg(requestError)); }
   };
   const receiptSaved = async (receipt, printAfter) => {
-    setReceiptFormOpen(false);
+    const creating = !editingReceipt;
+    setReceiptFormOpen(creating && selectedTrip?.status === "open" && can("lrs:create"));
     setEditingReceipt(null);
+    if (creating) {
+      setReceiptFormVersion((version) => version + 1);
+      window.requestAnimationFrame(() => {
+        const form = document.getElementById("receipt-entry-form");
+        form?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+      });
+    }
     setSuccess(`Saved ${receipt.lr_ref || "receipt"} successfully.`);
     const cacheKey = `${selectedTrip.site_id}:${selectedTrip.id}`;
     receiptsRequestVersions.current.set(cacheKey, (receiptsRequestVersions.current.get(cacheKey) || 0) + 1);
@@ -728,18 +766,45 @@ export default function Booking({ user }) {
     setPrintMode("ledger");
   };
 
+  useEffect(() => {
+    if (page !== "ledger" || !siteId) return undefined;
+    const requestId = ledgerTripsRequest.current + 1;
+    ledgerTripsRequest.current = requestId;
+    setLedgerTripId("");
+    setLedgerTrips([]);
+    setLedgerRows([]);
+    setLedgerError("");
+    api.get(`/sites/${siteId}/trips`, {
+      params: { from_date: ledgerDate, to_date: ledgerDate, limit: 100, offset: 0 },
+    }).then((response) => {
+      if (requestId !== ledgerTripsRequest.current) return;
+      const rows = response.data.rows || [];
+      setLedgerTrips(rows);
+      setLedgerTripId(rows[0]?.id || "");
+    }).catch((requestError) => {
+      if (requestId === ledgerTripsRequest.current) setLedgerError(errMsg(requestError));
+    });
+    return () => {
+      if (ledgerTripsRequest.current === requestId) ledgerTripsRequest.current += 1;
+    };
+  }, [page, siteId, ledgerDate]);
+
   const loadLedger = useCallback(async () => {
-    if (!siteId) { setLedgerRows([]); return; }
     const requestId = activeLedgerRequest.current + 1;
     activeLedgerRequest.current = requestId;
+    if (!siteId || !ledgerTripId) {
+      setLedgerRows([]);
+      setLedgerBusy(false);
+      return;
+    }
     setLedgerBusy(true);
     setLedgerError("");
     try {
       const params = {
         limit: 1000, offset: 0,
-        ...(allDates ? {} : { from_date: ledgerDate, to_date: ledgerDate }),
-        ...(tripSearch ? { trip_ref: tripSearch } : {}),
-        ...(partySearch ? { search: partySearch } : {}),
+        from_date: ledgerDate,
+        to_date: ledgerDate,
+        trip_id: ledgerTripId,
       };
       const first = await api.get(`/sites/${siteId}/ledger/entries`, { params });
       let rows = first.data.rows || [];
@@ -749,7 +814,6 @@ export default function Booking({ user }) {
           if (row.updated_at) rowVersions.current[row.id] = row.updated_at;
         });
         setLedgerRows(nextRows.map((row) => ({ ...row, ...(dirtyRows.current[row.id] || {}) })));
-        if (!tripSearch) setTripOptions([...new Set(nextRows.map((row) => row.trip_ref).filter(Boolean))]);
       };
       applyRows(rows);
       if (requestId === activeLedgerRequest.current) setLedgerBusy(false);
@@ -767,7 +831,7 @@ export default function Booking({ user }) {
     } finally {
       if (requestId === activeLedgerRequest.current) setLedgerBusy(false);
     }
-  }, [siteId, ledgerDate, allDates, tripSearch, partySearch]);
+  }, [siteId, ledgerDate, ledgerTripId]);
 
   useEffect(() => {
     if (page !== "ledger") return undefined;
@@ -797,20 +861,6 @@ export default function Booking({ user }) {
     }
     for (const key of ["rent", "hamali"]) {
       if (snapshot[key] === "") snapshot[key] = "0";
-    }
-    const protectedCorrection = owner && (
-      row.trip_status !== "open"
-      || (row.reconciled && ("rent" in snapshot || "hamali" in snapshot))
-      || (("receiver_name" in snapshot || "receiver_identifier" in snapshot)
-        && (row.reconciled || Number(row.rent) > 0 || Number(row.paid_total) > 0))
-    );
-    if (protectedCorrection) {
-      const reason = window.prompt(`Why are you correcting ${row.lr_ref}?`);
-      if (!reason?.trim()) {
-        setLedgerStatus((current) => ({ ...current, [rowId]: "Not saved: owner correction reason required" }));
-        return;
-      }
-      snapshot.owner_correction_reason = reason.trim();
     }
     const revision = revisions.current[rowId] || 0;
     savingRows.current.add(rowId);
@@ -846,6 +896,7 @@ export default function Booking({ user }) {
   };
 
   const editLedgerCell = (rowId, key, value) => {
+    if (isLedgerLocked(ledgerTrip)) return;
     const row = ledgerRows.find((item) => item.id === rowId);
     if (!row) return;
     const patch = { [key]: value };
@@ -892,12 +943,14 @@ export default function Booking({ user }) {
   };
 
   const downloadLedger = async () => {
+    if (!ledgerTripId) return;
     setLedgerError("");
     try {
       const response = await api.get(`/sites/${siteId}/ledger/export.xlsx`, {
         params: {
-          from_date: allDates ? "1900-01-01" : ledgerDate,
-          to_date: allDates ? "9999-12-31" : ledgerDate,
+          from_date: ledgerDate,
+          to_date: ledgerDate,
+          trip_id: ledgerTripId,
         },
         responseType: "blob",
       });
@@ -908,6 +961,52 @@ export default function Booking({ user }) {
       link.click();
       URL.revokeObjectURL(url);
     } catch (requestError) { setLedgerError(errMsg(requestError)); }
+  };
+
+  const setLedgerRowPaid = async (row, received) => {
+    if (!owner || isLedgerLocked(ledgerTrip) || paidRowsUpdating.has(row.id)) return;
+    setPaidRowsUpdating((current) => new Set(current).add(row.id));
+    setLedgerError("");
+    try {
+      await api.post(`/sites/${siteId}/trips/${ledgerTripId}/lrs/${row.id}/settlement`, {
+        received,
+        idempotency_key: keyForRequest(),
+      });
+      await loadLedger();
+    } catch (requestError) {
+      setLedgerError(errMsg(requestError));
+    } finally {
+      setPaidRowsUpdating((current) => {
+        const next = new Set(current);
+        next.delete(row.id);
+        return next;
+      });
+    }
+  };
+
+  const completeTripLedger = async () => {
+    if (!owner || !ledgerTripId || ledgerTrip?.ledger_completed_at) return;
+    if (Object.keys(dirtyRows.current).some((id) => Object.keys(dirtyRows.current[id] || {}).length)
+      || savingRows.current.size) {
+      setLedgerError("Save or discard pending ledger edits before completing this trip.");
+      return;
+    }
+    if (!window.confirm(
+      "Complete this trip ledger? This records every outstanding Bhada as received and permanently locks receipt, ledger, and payment changes for this trip.",
+    )) return;
+    setLedgerCompleting(true);
+    setLedgerError("");
+    try {
+      const response = await api.post(`/sites/${siteId}/trips/${ledgerTripId}/ledger/complete`);
+      const updatedTrip = { ...ledgerTrip, ...response.data };
+      setLedgerTrips((current) => current.map((trip) => trip.id === ledgerTripId
+        ? { ...trip, ...updatedTrip } : trip));
+      await loadLedger();
+    } catch (requestError) {
+      setLedgerError(errMsg(requestError));
+    } finally {
+      setLedgerCompleting(false);
+    }
   };
 
   const voidReceipt = async (receipt) => {
@@ -935,32 +1034,6 @@ export default function Booking({ user }) {
     } catch (requestError) { setTripError(errMsg(requestError)); }
   };
 
-  const setReceiptSettlement = async (row, received) => {
-    setSettlementBusy((current) => ({ ...current, [row.id]: true }));
-    setLedgerStatus((current) => ({ ...current, [row.id]: "Saving payment…" }));
-    try {
-      const response = await api.post(
-        `/sites/${row.site_id}/trips/${row.trip_id}/lrs/${row.id}/settlement`,
-        { received, idempotency_key: keyForRequest() },
-      );
-      const saved = {
-        ...row,
-        paid_total: response.data.paid_total,
-        outstanding: response.data.outstanding,
-        payment_status: response.data.received ? "paid"
-          : Number(response.data.paid_total) > 0 ? "partial" : "unpaid",
-        ledger_settlement_created: received,
-      };
-      ledgerRowCache.current[row.id] = saved;
-      setLedgerRows((current) => current.map((item) => item.id === row.id ? saved : item));
-      setLedgerStatus((current) => ({ ...current, [row.id]: "Saved" }));
-    } catch (requestError) {
-      setLedgerStatus((current) => ({ ...current, [row.id]: `Failed to save: ${errMsg(requestError)}` }));
-    } finally {
-      setSettlementBusy((current) => ({ ...current, [row.id]: false }));
-    }
-  };
-
   const title = page === "dashboard" ? "Dashboard" : page === "receipts" ? "Receipts"
     : page === "finance" ? "Booking Finance" : page === "audit" ? "Booking Audit" : "Ledger";
   const tripSelector = useMemo(() => trips, [trips]);
@@ -972,62 +1045,10 @@ export default function Booking({ user }) {
     aria-label={`${row.lr_ref} ${label}`} className={`${field} ${className}`} type={type}
     value={value ?? ""}
     {...(type === "number" ? { min: 0, step: "0.01", inputMode: "decimal" } : {})}
-    disabled={row.voided || (row.trip_status === "closed" && !owner)
+    disabled={isLedgerLocked(ledgerTrip) || row.voided || (row.trip_status === "closed" && !owner)
       || (key === "rent" || key === "hamali" ? !canEditFinance : !can("lrs:update"))}
     onChange={(event) => editLedgerCell(row.id, key, event.target.value)}
     onBlur={() => flushLedgerRow(row.id)} />;
-  const chargeEditorBadge = (marker, name = "") => marker
-    ? <span aria-label={`Last charge edit by ${marker === "A" ? "admin" : "manager"}${name ? `: ${name}` : ""}`}
-      title={marker === "A"
-        ? `Admin${name ? `: ${name}` : ""}`
-        : `Manager${name ? `: ${name}` : ""}`}
-      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-line font-bold">{marker}</span>
-    : <span className="text-muted">—</span>;
-  const conciseLedgerStatus = (status) => status.startsWith("Failed to save:")
-    ? "Save failed" : status.startsWith("Failed to reload:") ? "Reload failed" : status;
-  const ledgerGoodsEditors = (row, goodsRows, compact = false) => goodsRows.map((line, index) => {
-    const updateLine = (changes) => editLedgerCell(row.id, "goods_rows", goodsRows.map((item, itemIndex) =>
-      itemIndex === index ? { ...item, ...changes } : item));
-    const inputClass = `${field} min-w-0 text-xs px-1.5 py-1.5`;
-    return <div key={`${row.id}-goods-${index}`} className={compact
-      ? "grid grid-cols-2 gap-2 rounded-lg border border-line p-3"
-      : "grid min-w-0 grid-cols-[minmax(0,1.15fr)_minmax(0,1.15fr)_minmax(4rem,0.45fr)_1.5rem] gap-1"}>
-      <label className="min-w-0 space-y-1">
-        {compact && <span className="lbl">Goods type / माल</span>}
-        <input className={inputClass} aria-label={`${row.lr_ref} goods type ${index + 1}`} value={line.type}
-          placeholder="Goods type" disabled={!can("lrs:update")}
-          onChange={(event) => updateLine({ type: event.target.value, type_hindi: romanHindi(event.target.value) })}
-          onBlur={() => flushLedgerRow(row.id)} />
-        <input className={`${inputClass} font-semibold`} aria-label={`${row.lr_ref} goods Hindi ${index + 1}`}
-          lang="hi" dir="auto" value={line.type_hindi} placeholder="हिंदी"
-          disabled={!can("lrs:update")} onChange={(event) => updateLine({ type_hindi: event.target.value })}
-          onBlur={() => flushLedgerRow(row.id)} />
-      </label>
-      <label className={`min-w-0 ${compact ? "col-span-2" : ""}`}>
-        {compact && <span className="lbl">Goods description</span>}
-        <input className={inputClass} aria-label={`${row.lr_ref} goods description ${index + 1}`}
-          value={line.description || ""} placeholder="Goods description"
-          disabled={!can("lrs:update")} onChange={(event) => updateLine({ description: event.target.value })}
-          onBlur={() => flushLedgerRow(row.id)} />
-      </label>
-      <label className="min-w-0">
-        {compact && <span className="lbl">Quantity</span>}
-        <input className={`${inputClass} min-h-11 min-w-16 text-center text-base font-semibold`}
-          aria-label={`${row.lr_ref} quantity ${index + 1}`} type="number" min="1"
-          step="1" inputMode="numeric" value={line.quantity ?? ""} placeholder="Qty"
-          disabled={!can("lrs:update")}
-          onChange={(event) => updateLine({ quantity: event.target.value === "" ? "" : Number(event.target.value) })}
-          onBlur={() => flushLedgerRow(row.id)} />
-      </label>
-      <button type="button" className="flex min-w-0 items-center justify-center rounded-lg text-red-700 hover:bg-red-50"
-        style={!compact ? { order: 1 } : undefined}
-        aria-label={`Remove ${row.lr_ref} goods row ${index + 1}`}
-        disabled={!can("lrs:update") || goodsRows.length === 1}
-        onClick={() => editLedgerCell(row.id, "goods_rows", goodsRows.filter((_, itemIndex) => itemIndex !== index))}>
-        <X size={17} />
-      </button>
-    </div>;
-  });
   if (siteError && !sites.length) return <ErrorState text={siteError} onRetry={() => api.get("/sites").then((response) => setSites(response.data || []))} />;
   if (!sites.length) return <div className="space-y-3"><PageHead title="Booking" /><Card className="p-6 text-center">
     <p className="text-lg font-semibold">No booking site is assigned to this account.</p>
@@ -1039,36 +1060,46 @@ export default function Booking({ user }) {
   return (
     <>
       <style>{`
+        .booking-print-portal { display:none; }
         .booking-print-target { display:none; }
-        @page { size:A4 ${printMode === "ledger" ? "landscape" : "portrait"}; margin:12mm; }
+        @page { size:A4 ${printMode === "ledger" ? "landscape" : "portrait"}; margin:8mm; }
         @media print {
-          html, body, #root { height:auto !important; overflow:visible !important; background:#fff !important; }
-          body * { visibility:hidden !important; }
-          .booking-print-target, .booking-print-target * { visibility:visible !important; }
-          .booking-print-target[data-active="true"] { display:block !important; position:fixed; inset:0; z-index:99999; width:100%; color:#111; background:#fff; font-family:"Noto Sans Devanagari","Mangal",sans-serif; font-size:12pt; }
-          .receipt-print-header { display:grid; grid-template-columns:1fr 2fr 1fr; align-items:center; gap:8px; border-bottom:1px solid #111; padding-bottom:8px; text-align:center; }
-          .receipt-print-logo { max-width:70px; max-height:55px; object-fit:contain; }
+          html, body { height:auto !important; margin:0 !important; overflow:visible !important; background:#fff !important; }
+          body > :not(.booking-print-portal) { display:none !important; }
+          body > .booking-print-portal { display:block !important; position:static !important; width:100% !important; }
+          .booking-print-portal, .booking-print-portal * { visibility:visible !important; }
+          .booking-print-target[data-active="true"] { display:block !important; position:static !important; width:100%; color:#111; background:#fff; font-family:"Noto Sans Devanagari","Mangal",sans-serif; font-size:10pt; }
+          .receipt-print-header { position:relative; display:flex; min-height:64px; align-items:center; justify-content:center; border-bottom:1px solid #111; padding:0 82px 8px; text-align:center; }
+          .receipt-print-logo { position:absolute; top:0; left:0; max-width:70px; max-height:55px; object-fit:contain; }
+          .receipt-print-company { width:100%; text-align:center; }
           .receipt-print-company h1 { margin:0; font-size:23pt; font-weight:700; }
           .receipt-print-company p { margin:2px 0; font-size:14pt; font-weight:600; }
           .receipt-print-company span, .receipt-print-contact { font-size:9pt; }
-          .receipt-print-contact { text-align:right; }
-          .receipt-print-meta { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #777; font-size:10pt; }
-          .receipt-print-parties { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:12px 0; }
+          .receipt-print-contact { position:absolute; top:0; right:0; text-align:right; }
+          .receipt-print-meta { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px solid #777; font-size:9pt; }
+          .receipt-print-parties { display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:8px 0; }
           .receipt-print-parties div { display:grid; gap:3px; }
           .receipt-print-goods { width:100%; border-collapse:collapse; table-layout:fixed; }
-          .receipt-print-goods th, .receipt-print-goods td { border:1px solid #222; padding:8px; text-align:left; vertical-align:top; }
-          .receipt-print-goods th:first-child, .receipt-print-goods td:first-child { width:22%; text-align:center; }
+          .receipt-print-goods th, .receipt-print-goods td { border:1px solid #222; padding:5px; text-align:left; vertical-align:top; }
+          .receipt-print-goods th:first-child, .receipt-print-goods td:first-child { width:100%; text-align:left; }
           .receipt-print-description { display:block; margin-top:3px; font-size:10pt; }
-          .receipt-print-charges { width:55%; margin:12px 0 0 auto; border-collapse:collapse; }
-          .receipt-print-charges th, .receipt-print-charges td { border:1px solid #222; padding:6px 8px; text-align:right; }
+          .receipt-print-charges { width:55%; margin:8px 0 0 auto; border-collapse:collapse; }
+          .receipt-print-charges th, .receipt-print-charges td { border:1px solid #222; padding:4px 6px; text-align:right; }
           .receipt-print-charges th { text-align:left; }
           .receipt-print-total-row { font-weight:700; font-size:13pt; }
-          .receipt-print-total { margin:12px 0 0; padding:8px; border:1px solid #111; text-align:right; font-size:15pt; font-weight:700; }
-          .receipt-print-footer { margin-top:16px; border-top:1px solid #888; padding-top:6px; font-size:9pt; }
-          .booking-print-target table { break-inside:avoid; }
-          .booking-print-target tr { break-inside:avoid; }
-          .booking-ledger-print { display:${printMode === "ledger" ? "block" : "none"} !important; position:absolute; left:0; top:0; z-index:99999; visibility:visible !important; width:100%; color:#111; background:#fff; font:9pt Arial,sans-serif; }
-          .booking-ledger-print * { visibility:visible !important; }
+          .receipt-print-total { margin:8px 0 0; padding:6px; border:1px solid #111; text-align:right; font-size:13pt; font-weight:700; }
+          .receipt-print-footer { margin-top:10px; border-top:1px solid #888; padding-top:6px; font-size:9pt; }
+          .booking-print-target table { break-inside:avoid; page-break-inside:avoid; }
+          .booking-print-target tr { break-inside:avoid; page-break-inside:avoid; }
+          .booking-ledger-print { display:none; }
+          .booking-print-portal[data-mode="ledger"] .booking-ledger-print { display:block !important; width:100%; color:#111; background:#fff; font:9pt "Noto Sans Devanagari","Mangal",sans-serif; }
+          .booking-ledger-print h1 { margin:0 0 4px; font-size:16pt; }
+          .booking-ledger-print p { margin:0 0 10px; }
+          .booking-ledger-print table { width:100%; border-collapse:collapse; table-layout:fixed; }
+          .booking-ledger-print thead { display:table-header-group; }
+          .booking-ledger-print tr { break-inside:avoid; page-break-inside:avoid; }
+          .booking-ledger-print th, .booking-ledger-print td { border:1px solid #444; padding:4px; overflow-wrap:anywhere; text-align:left; vertical-align:top; }
+          .booking-ledger-print th { background:#e9efed !important; }
           .booking-ledger-print h1 { margin:0 0 4px; font-size:16pt; }
           .booking-ledger-print p { margin:0 0 10px; }
           .booking-ledger-print table { width:100%; border-collapse:collapse; table-layout:fixed; }
@@ -1101,7 +1132,7 @@ export default function Booking({ user }) {
 
         {page === "dashboard" && <div className="space-y-4">
           <Card className="flex flex-wrap items-center justify-between gap-4 p-4">
-            <label className="min-w-52 flex-1"><span className="lbl">Date / तारीख</span>
+            <label className="min-w-52 flex-1"><span className="lbl">Date</span>
               <span className="flex items-center gap-2"><CalendarDays size={18} className="text-brand-600" />
                 <input className={field} type="date" value={selectedDate}
                   onChange={(event) => {
@@ -1120,7 +1151,7 @@ export default function Booking({ user }) {
           {tripFormOpen && <Card className="p-4 sm:p-6">
             <h2 className="mb-4 text-xl font-bold">Create trip</h2>
             <form onSubmit={createTrip} className="grid gap-4 sm:grid-cols-2">
-              <label><span className="lbl">Date / तारीख *</span><input className={field} required type="date" value={tripForm.date}
+              <label><span className="lbl">Date *</span><input className={field} required type="date" value={tripForm.date}
                 onChange={(event) => setTripForm({ ...tripForm, date: event.target.value })} /></label>
               <label><span className="lbl">Vehicle number (optional)</span><input className={field} value={tripForm.truck_no}
                 onChange={(event) => setTripForm({ ...tripForm, truck_no: event.target.value })} /></label>
@@ -1161,19 +1192,8 @@ export default function Booking({ user }) {
                 {selectedTrip.truck_no ? ` · ${selectedTrip.truck_no}` : ""}
                 {selectedTrip.driver_name ? ` · ${selectedTrip.driver_name}` : ""}</p>
             </div>
-            <label className="min-w-52 flex-1 sm:max-w-xs"><span className="lbl">Change trip</span>
-              <select className={field} value={selectedTrip.id} onChange={(event) => {
-                const trip = trips.find((item) => item.id === event.target.value);
-                if (trip) openTrip(trip);
-              }}><option value={selectedTrip.id}>{selectedTrip.trip_ref}</option>
-                {trips.filter((trip) => trip.id !== selectedTrip.id).map((trip) => <option key={trip.id} value={trip.id}>{trip.trip_ref}</option>)}
-              </select></label>
-            {can("lrs:create") && selectedTrip.status === "open" &&
-              <button className="btn-p min-h-12 w-full sm:w-auto" onClick={() => {
-                setEditingReceipt(null); setReceiptFormOpen(true); setTripError("");
-              }}><Plus size={19} /> Create New Receipt</button>}
             {selectedTrip.status === "closed" && <span className="rounded-lg bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">Trip closed · receipts locked</span>}
-            {selectedTrip.status === "open" && can("trips:close") &&
+            {selectedTrip.status === "open" && owner &&
               <button className="btn-s" onClick={() => changeTripStatus(false)}>Close Trip</button>}
             {selectedTrip.status === "closed" && owner &&
               <button className="btn-s" onClick={() => changeTripStatus(true)}>Reopen Trip</button>}
@@ -1181,26 +1201,42 @@ export default function Booking({ user }) {
             <p className="text-lg font-semibold">Choose a trip before creating a receipt.</p>
             <Link className="btn-p mt-3" to="/booking/dashboard">Open Dashboard</Link>
           </Card>}
-          {receiptFormOpen && selectedTrip && <ReceiptForm key={editingReceipt?.id || "new"} trip={selectedTrip}
-            receipt={editingReceipt}
-            canEditFinance={canEditFinance || (!editingReceipt && can("lrs:create"))}
-            owner={owner}
-            addressSuggestions={addressSuggestions}
-            onCancel={() => { setReceiptFormOpen(false); setEditingReceipt(null); }}
-            onSaved={receiptSaved} />}
+          {receiptFormOpen && selectedTrip && (selectedTrip.status === "open" || owner)
+            && !isLedgerLocked(selectedTrip) && <>
+            <div id="receipt-entry-form">
+              <ReceiptForm key={editingReceipt?.id || `new-${receiptFormVersion}`} trip={selectedTrip}
+                receipt={editingReceipt}
+                canEditFinance={canEditFinance || (!editingReceipt && can("lrs:create"))}
+                addressSuggestions={addressSuggestions}
+                convertHindi={convertHindi}
+                receiptFee={receiptFee}
+                senderAddressEnabled={senderAddressEnabled}
+                receiverAddressEnabled={receiverAddressEnabled}
+                onCancel={() => { setReceiptFormOpen(false); setEditingReceipt(null); }}
+                onSaved={receiptSaved} />
+            </div>
+          </>}
+          {!receiptFormOpen && selectedTrip?.status === "open" && !isLedgerLocked(selectedTrip) && can("lrs:create") &&
+            <button className="btn-p" onClick={() => {
+              setEditingReceipt(null); setReceiptFormOpen(true); setTripError("");
+            }}><Plus size={18} /> New receipt</button>}
           <section>
             <h2 className="mb-3 text-xl font-bold">Receipts {selectedTrip ? `· ${selectedTrip.trip_ref}` : ""}</h2>
             {!selectedTrip ? null : receipts.length ? <div className="space-y-2">
               {receipts.map((receipt) => <Card key={receipt.id} className={`flex flex-wrap items-center justify-between gap-3 p-4 ${receipt.voided ? "opacity-70" : ""}`}>
                 <div className="min-w-48 flex-1"><h3 className="font-bold">{receipt.lr_ref}</h3>
                   <p className="mt-1 text-sm">{receipt.sender_name} → {receipt.receiver_name}</p>
-                  <p className="mt-1 text-sm text-muted">{getGoodsRows(receipt).map((line) => `${line.type} × ${line.quantity}`).join(" · ")}</p>
+                  {receipt.receiver_phone && <p className="mt-1 flex items-center gap-1 text-sm text-muted">
+                    <Phone size={14} aria-hidden="true" />{receipt.receiver_phone}
+                  </p>}
+                  <p className="mt-1 text-sm text-muted">{getGoodsRows(receipt).map((line) =>
+                    [line.type, line.description, `× ${line.quantity}`].filter(Boolean).join(" - ")).join(" · ")}</p>
                   {receipt.voided && <p className="mt-1 font-semibold text-red-700">VOID · kept in history</p>}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {!receipt.voided && <button className="btn-s" onClick={() => queuePrint(receipt)}><Printer size={17} /> Print</button>}
-                  {owner && receipt.voided && <button className="btn-s" onClick={() => restoreReceipt(receipt)}>Restore receipt</button>}
-                  {!receipt.voided && can("lrs:update") && (selectedTrip.status === "open" || owner) && <>
+                  {owner && receipt.voided && !isLedgerLocked(selectedTrip) && <button className="btn-s" onClick={() => restoreReceipt(receipt)}>Restore receipt</button>}
+                  {!isLedgerLocked(selectedTrip) && !receipt.voided && can("lrs:update") && (selectedTrip.status === "open" || owner) && <>
                     <button className="btn-s" onClick={() => { setEditingReceipt(receipt); setReceiptFormOpen(true); }}>Edit</button>
                     <button className="btn-s text-red-700" onClick={() => voidReceipt(receipt)}>Void</button>
                   </>}
@@ -1210,214 +1246,133 @@ export default function Booking({ user }) {
           </section>
         </div>}
 
-        {page === "ledger" && <div className="space-y-4">
-          <Card className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto]">
+        {page === "ledger" && <div className="space-y-3">
+          <div className="grid gap-3 border border-gray-400 bg-white p-3 sm:grid-cols-2">
             <label><span className="lbl">Date</span><input className={field} type="date" value={ledgerDate}
-              disabled={allDates} onChange={(event) => setLedgerDate(event.target.value)} /></label>
-            <label><span className="lbl">Trip number</span><select className={field} value={tripSearch}
-              onChange={(event) => setTripSearch(event.target.value)}>
-              <option value="">All trips</option>
-              {[...new Set([...tripOptions, ...(tripSearch ? [tripSearch] : [])])].map((tripRef) =>
-                <option key={tripRef} value={tripRef}>{tripRef}</option>)}
+              onChange={(event) => {
+                setLedgerTripId("");
+                setLedgerTrips([]);
+                setLedgerRows([]);
+                setLedgerDate(event.target.value);
+              }} /></label>
+            <label><span className="lbl">Select trip</span><select className={field} value={ledgerTripId}
+              onChange={(event) => setLedgerTripId(event.target.value)} disabled={!ledgerTrips.length}>
+              <option value="">Select trip</option>
+              {ledgerTrips.map((trip) =>
+                <option key={trip.id} value={trip.id}>{trip.trip_ref}</option>)}
             </select></label>
-            <label><span className="lbl">Sender / receiver</span><input className={field} list="ledger-party-suggestions" value={partySearch}
-              placeholder="Search name" onChange={(event) => setPartySearch(event.target.value)} />
-              <datalist id="ledger-party-suggestions">{[...new Set(ledgerRows.flatMap((row) =>
-                [row.sender_name, row.receiver_name]).filter(Boolean))].map((name) =>
-                <option key={name} value={name} />)}</datalist>
-            </label>
-            <div className="flex flex-wrap items-end gap-2">
-              <button className="btn-s" onClick={() => setAllDates((value) => !value)}>{allDates ? "Selected date" : "All dates"}</button>
-              <button className="btn-s" onClick={() => { setAllDates(false); setLedgerDate(todayISO()); setTripSearch(""); setPartySearch(""); }}>Reset</button>
+          </div>
+          {ledgerError && <div role="alert" className="border border-red-700 bg-red-50 p-2 text-sm text-red-800">{ledgerError}</div>}
+          <div className="flex flex-wrap items-center justify-between gap-2 border border-gray-400 bg-white p-3">
+            <div>
+              <h2 className="text-lg font-bold">Selected trip: {ledgerTrip?.trip_ref || "—"}</h2>
+              <p className="text-sm">{ledgerDate}</p>
             </div>
-          </Card>
-          {ledgerError && <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{ledgerError}</div>}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div><h2 className="text-xl font-bold">Receipt ledger</h2><p className="text-sm text-muted">{ledgerRows.length} receipt(s) · {Object.values(ledgerStatus).includes("Saving") ? "Saving…" : "Changes save automatically"}</p></div>
             <div className="flex gap-2">
-              <button className="btn-s" onClick={printLedger}><Printer size={17} /> Print Ledger</button>
-              <button className="btn-p" onClick={downloadLedger}><Download size={17} /> Download Excel</button>
+              <button className="btn-s" disabled={!ledgerTripId} onClick={printLedger}><Printer size={16} /> Print ledger</button>
+              <button className="btn-p" disabled={!ledgerTripId} onClick={downloadLedger}><Download size={16} /> Download Excel</button>
+              {owner && ledgerTripId && !ledgerTrip?.ledger_completed_at && <button
+                className="btn-p" disabled={ledgerCompleting || ledgerBusy || !ledgerRows.length}
+                onClick={completeTripLedger}>
+                {ledgerCompleting ? "Completing ledger…" : ledgerTrip?.ledger_completion_started_at
+                  ? "Resume ledger completion" : "Complete trip ledger"}
+                </button>}
             </div>
           </div>
-          {ledgerBusy ? <Loader label="Loading ledger…" /> : <>
-            <div className="space-y-3 lg:hidden">
+          {isLedgerLocked(ledgerTrip) && <p className="border border-gray-500 bg-gray-100 p-2 text-sm">
+            {ledgerTrip.ledger_completed_at ? "Ledger completed and locked" : "Ledger completion in progress and locked"} · Admin: {ledgerTrip.ledger_completed_by || ledgerTrip.ledger_completion_started_by || "—"}
+            {" · "}{ledgerTrip.ledger_completed_at || ledgerTrip.ledger_completion_started_at}
+          </p>}
+          {ledgerBusy ? <Loader label="Loading ledger…" /> : ledgerTripId ? (
+            <div className="overflow-auto border border-gray-500 bg-white">
+              <table className="min-w-[1050px] border-collapse text-sm">
+                <thead className="bg-gray-200">
+                  <tr>{["Date", "Receipt no.", "Sender", "Receiver", "Goods & quantity", "Bhada", "Hamali", "Receipt fee", "Entered by", ...(owner ? ["Amount paid"] : [])].map((label) =>
+                    <th key={label} className="border border-gray-500 px-2 py-2 text-left font-bold">{label}</th>)}</tr>
+                </thead>
+                <tbody>{ledgerRows.map((row) => {
+                  const goodsRows = getGoodsRows(row);
+                  const status = ledgerStatus[row.id] || "Saved";
+                  const cell = "border border-gray-400 px-2 py-1 align-middle";
+                  const hindiGoods = goodsRows.map(hindiGoodsLine).join(", ");
+                  return <tr key={row.id} className={row.voided ? "bg-gray-100 text-gray-500" : ""}>
+                    <td className={cell}>{row.receipt_date || row.operating_date}</td>
+                    <td className={cell}>{row.lr_ref}{row.voided ? " · VOID" : ""}</td>
+                    <td className={cell} lang="hi">{hindiText(row.sender_name_hindi, row.sender_name)}</td>
+                    <td className={cell} lang="hi">{hindiText(row.receiver_name_hindi, row.receiver_name)}</td>
+                    <td className={cell} lang="hi">{hindiGoods}</td>
+                    <td className={`${cell} min-w-28`}>
+                      {canFinanceRead ? ledgerField(row, "rent", amountInput(row.rent), "number", "Bhada", "min-h-8 border border-gray-400 bg-white px-2 py-1")
+                        : "—"}
+                    </td>
+                    <td className={`${cell} min-w-28`}>
+                      {canFinanceRead ? ledgerField(row, "hamali", amountInput(row.hamali), "number", "Hamali", "min-h-8 border border-gray-400 bg-white px-2 py-1")
+                        : "—"}
+                    </td>
+                    <td className={cell}>{money(row.receipt_fee ?? 2)}</td>
+                    <td className={cell}>{row.entry_by || "—"}</td>
+                    {owner && <td className={cell}>
+                      <input type="checkbox" aria-label={`${row.lr_ref} Amount paid`}
+                          checked={Boolean(row.amount_paid)}
+                          disabled={row.voided || isLedgerLocked(ledgerTrip) || paidRowsUpdating.has(row.id)}
+                          onChange={(event) => setLedgerRowPaid(row, event.target.checked)} />
+                    </td>}
+                  </tr>;
+                })}</tbody>
+              </table>
+              {!ledgerRows.length && <p className="border-t border-gray-400 p-4 text-center">No receipts in this trip.</p>}
               {ledgerRows.map((row) => {
-                const goodsRows = getGoodsRows(row);
                 const status = ledgerStatus[row.id] || "Saved";
-                return <Card key={row.id} className="space-y-4 p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <h3 className="break-all text-xl font-bold">{row.lr_ref}{row.voided && <span className="ml-2 text-sm text-red-700">VOID</span>}</h3>
-                      <p className="mt-1 break-all text-base font-semibold">Trip: {row.trip_ref}</p>
-                      <label className="mt-2 block"><span className="lbl">Date</span>
-                        {ledgerField(row, "receipt_date", row.receipt_date || row.operating_date, "date", "date", "min-h-11")}
-                      </label>
-                    </div>
-                    <button className="btn-s shrink-0" disabled={row.voided} onClick={() => queuePrint(row)}
-                      aria-label={`Print ${row.lr_ref}`}><Printer size={17} /><span>Print</span></button>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <label><span className="lbl">Sender</span>
-                      {ledgerField(row, "sender_name", row.sender_name, "text", "sender", "min-h-11")}
-                      {ledgerField(row, "sender_name_hindi", row.sender_name_hindi, "text", "sender Hindi", "mt-1 min-h-11 font-semibold")}
-                    </label>
-                    <label><span className="lbl">Receiver</span>
-                      {ledgerField(row, "receiver_name", row.receiver_name, "text", "receiver", "min-h-11")}
-                      {ledgerField(row, "receiver_name_hindi", row.receiver_name_hindi, "text", "receiver Hindi", "mt-1 min-h-11 font-semibold")}
-                    </label>
-                  </div>
-                  <section className="space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <h4 className="font-bold">Goods / माल</h4>
-                      {can("lrs:update") && <button type="button" className="text-sm font-semibold text-brand-700"
-                        onClick={() => editLedgerCell(row.id, "goods_rows", [
-                          ...goodsRows, { type: "", type_hindi: "", description: "", quantity: "" },
-                        ])}>+ Add goods row</button>}
-                    </div>
-                    {ledgerGoodsEditors(row, goodsRows, true)}
-                  </section>
-                  {canFinanceRead ? <div className="grid grid-cols-2 gap-3 rounded-lg bg-canvas p-3">
-                    <label><span className="lbl">Bhada (₹)</span>
-                      {ledgerField(row, "rent", amountInput(row.rent), "number", "Bhada", "min-h-11")}
-                    </label>
-                    <label><span className="lbl">Hamali (₹)</span>
-                      {ledgerField(row, "hamali", amountInput(row.hamali), "number", "Hamali", "min-h-11")}
-                    </label>
-                  </div> : <p className="rounded-lg bg-canvas p-3 text-sm text-muted">Charges are not available for this account.</p>}
-                  {owner && <label className="flex min-h-11 items-center gap-3 rounded-lg border border-line p-3 font-semibold">
-                    <input type="checkbox" className="h-5 w-5 accent-brand-700"
-                      aria-label={`${row.lr_ref} payment received`}
-                      checked={row.payment_status === "paid"} disabled={row.voided || settlementBusy[row.id]
-                        || (row.payment_status === "paid" && !row.ledger_settlement_created)}
-                      onChange={(event) => setReceiptSettlement(row, event.target.checked)} />
-                    <span>Payment received · {row.payment_status === "paid" ? "Paid" : "Unpaid"}</span>
-                  </label>}
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
-                    <span title={status} className={`text-sm font-semibold ${status.startsWith("Failed") || status.startsWith("Unsaved") ? "text-red-700" : status === "Saved" ? "text-green-700" : "text-amber-800"}`}>
-                      {conciseLedgerStatus(status)}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      {status.startsWith("Failed") && <button type="button" className="text-sm font-semibold underline"
-                        onClick={() => status.includes("changed elsewhere")
-                          ? reloadLedgerRow(row) : flushLedgerRow(row.id)}>
-                        {status.includes("changed elsewhere") ? "Reload row" : "Retry save"}
-                      </button>}
-                      {status.startsWith("Failed") && <details className="text-xs">
-                        <summary className="cursor-pointer underline">Details</summary>
-                        <p className="max-w-56 break-words">{status}</p>
-                      </details>}
-                      <span className="text-xs text-muted">Charge editor</span>
-                      {chargeEditorBadge(row.charge_editor_marker, row.charge_editor_name)}
-                      {owner && row.voided && <button className="btn-s" onClick={() => restoreReceipt(row)}>Restore</button>}
-                    </div>
-                  </div>
-                </Card>;
+                return status.startsWith("Failed") ? <div key={`${row.id}-status`} className="border-t border-red-400 bg-red-50 p-2 text-sm">
+                  <span>{row.lr_ref}: {status}</span>
+                  <button type="button" className="ml-3 underline"
+                    onClick={() => status.includes("changed elsewhere")
+                      ? reloadLedgerRow(row) : flushLedgerRow(row.id)}>
+                    {status.includes("changed elsewhere") ? "Reload" : "Retry"}
+                  </button>
+                </div> : null;
               })}
-              {!ledgerRows.length && <Card className="p-8 text-center text-muted">No receipts found for these filters.</Card>}
             </div>
-            <Card className="hidden min-w-0 overflow-hidden lg:block">
-              <div className="max-h-[70vh] overflow-y-auto overflow-x-hidden">
-                <table className="w-full table-fixed border-collapse text-[11px]">
-                  <colgroup>{["6%", "7%", "9%", "6%", "6%", "35%", "6%", "6%", "7%", "2%", "5%", "5%"].map((width, index) =>
-                    <col key={index} style={{ width }} />)}</colgroup>
-                  <thead><tr>{["Date", "Trip number", "LR number", "Sender", "Receiver", "Goods type · Hindi · description · qty",
-                    "Bhada", "Hamali", "Payment received", "Print", "Save", "By"].map((label) =>
-                    <th key={label} className="th whitespace-normal !px-1 !py-2 text-[9px] leading-tight">{label}</th>)}</tr></thead>
-                  <tbody>{ledgerRows.map((row) => {
-                    const goodsRows = getGoodsRows(row);
-                    const status = ledgerStatus[row.id] || "Saved";
-                    const cell = "td whitespace-normal !px-1 !py-2 align-top text-[11px]";
-                    const nameInput = "min-w-0 text-[11px] px-1 py-1";
-                    return <tr key={row.id} className="border-b border-line align-top hover:bg-canvas/60">
-                      <td className={cell}>{ledgerField(row, "receipt_date", row.receipt_date || row.operating_date, "date", "date", `${nameInput} min-h-9`)}</td>
-                      <td className={`${cell} break-all text-xs font-bold leading-tight`}>{row.trip_ref}</td>
-                      <td className={`${cell} break-all text-xs font-bold leading-tight`}>{row.lr_ref}{row.voided && <span className="block text-red-700">VOID</span>}</td>
-                      <td className={cell}><div className="min-w-0 space-y-1">
-                        {ledgerField(row, "sender_name", row.sender_name, "text", "sender", nameInput)}
-                        {ledgerField(row, "sender_name_hindi", row.sender_name_hindi, "text", "sender Hindi", `${nameInput} font-semibold`)}
-                      </div></td>
-                      <td className={cell}><div className="min-w-0 space-y-1">
-                        {ledgerField(row, "receiver_name", row.receiver_name, "text", "receiver", nameInput)}
-                        {ledgerField(row, "receiver_name_hindi", row.receiver_name_hindi, "text", "receiver Hindi", `${nameInput} font-semibold`)}
-                      </div></td>
-                      <td className={cell}><div className="min-w-0 space-y-2">
-                        {ledgerGoodsEditors(row, goodsRows)}
-                        {can("lrs:update") && <button type="button" className="text-xs font-semibold text-brand-700"
-                          onClick={() => editLedgerCell(row.id, "goods_rows", [
-                            ...goodsRows, { type: "", type_hindi: "", description: "", quantity: "" },
-                          ])}>+ Add goods row</button>}
-                      </div></td>
-                      {canFinanceRead ? <>
-                          <td className={cell}>{ledgerField(row, "rent", amountInput(row.rent), "number", "Bhada", "min-h-9 px-1 py-1 text-[11px]")}</td>
-                          <td className={cell}>{ledgerField(row, "hamali", amountInput(row.hamali), "number", "Hamali", "min-h-9 px-1 py-1 text-[11px]")}</td>
-                      </> : <td className={`${cell} text-muted`} colSpan="2">—</td>}
-                      <td className={cell}>{owner
-                        ? <label className="flex items-center justify-center gap-1">
-                          <input type="checkbox" className="h-4 w-4 accent-brand-700"
-                            aria-label={`${row.lr_ref} payment received`}
-                            checked={row.payment_status === "paid"} disabled={row.voided || settlementBusy[row.id]
-                              || (row.payment_status === "paid" && !row.ledger_settlement_created)}
-                            onChange={(event) => setReceiptSettlement(row, event.target.checked)} />
-                          <span>{row.payment_status === "paid" ? "Paid" : "Unpaid"}</span>
-                        </label>
-                        : canFinanceRead ? row.payment_status : "—"}
-                        {owner && row.voided && <button type="button" className="mt-1 text-[10px] font-semibold text-brand-700 underline"
-                          onClick={() => restoreReceipt(row)}>Restore</button>}
-                      </td>
-                      <td className={cell}><button className="btn-s min-h-8 min-w-0 px-1 py-1" disabled={row.voided} onClick={() => queuePrint(row)}
-                        aria-label={`Print ${row.lr_ref}`}><Printer size={16} /></button></td>
-                      <td className={cell}><span title={status} className={status.startsWith("Failed") || status.startsWith("Unsaved")
-                        ? "text-red-700" : status === "Saved" ? "text-green-700" : "text-amber-800"}>{conciseLedgerStatus(status)}</span>
-                        {status.startsWith("Failed") && <button type="button" className="block underline"
-                          onClick={() => status.includes("changed elsewhere")
-                            ? reloadLedgerRow(row) : flushLedgerRow(row.id)}>
-                          {status.includes("changed elsewhere") ? "Reload row" : "Retry"}
-                        </button>}
-                        {status.startsWith("Failed") && <details className="text-[10px]">
-                          <summary className="cursor-pointer underline">Details</summary>
-                          <p className="break-words">{status}</p>
-                        </details>}
-                      </td>
-                      <td className={`${cell} text-center`}>{chargeEditorBadge(row.charge_editor_marker, row.charge_editor_name)}</td>
-                    </tr>;
-                  })}</tbody>
-                </table>
-                {!ledgerRows.length && <p className="p-8 text-center text-muted">No receipts found for these filters.</p>}
-              </div>
-            </Card>
-          </>}
-          <div className="booking-ledger-print hidden">
-            <h1>{user?.branding?.name || user?.tenant_name || site?.name} · Receipt Ledger</h1>
+          ) : <p className="border border-gray-400 bg-white p-4 text-center">No trips for this date.</p>}
+        </div>}
+      </div>
+      {(printReceipt || printMode === "ledger") && createPortal(
+        <div className="booking-print-portal" data-mode={printMode}>
+          {printMode === "ledger" && <div className="booking-ledger-print">
+            <h1>{romanHindi(user?.branding?.name || user?.tenant_name || site?.name)} · रसीद बही</h1>
             <p>{[user?.branding?.address, user?.branding?.city, user?.branding?.state,
-              user?.branding?.mobile].filter(Boolean).join(" · ")}</p>
-            <p>Period: {allDates ? "All dates" : ledgerDate} · Receipts: {ledgerRows.length}</p>
+              user?.branding?.mobile].filter(Boolean).map(romanHindi).join(" · ")}</p>
+            <p>ट्रिप: {ledgerTrip?.trip_ref || ""} · दिनांक: {ledgerDate}</p>
             <table>
-              <thead><tr>{["Date", "Trip number", "LR number", "Sender", "Receiver",
-                "Goods type · description · quantity", "Bhada", "Hamali", "Payment received", "Charge editor"].map((name) =>
+              <thead><tr>{["दिनांक", "रसीद क्रमांक", "भेजने वाला", "प्राप्तकर्ता",
+                "माल एवं मात्रा", "भाड़ा", "हमाली", "रसीद शुल्क", "प्रविष्टि करने वाला",
+                ...(owner ? ["Amount paid"] : [])].map((name) =>
                 <th className="border border-black p-1 text-left" key={name}>{name}</th>)}</tr></thead>
               <tbody>{ledgerRows.map((row) => <tr key={row.id}>
                 <td className="border border-black p-1">{row.receipt_date || row.operating_date}</td>
-                <td className="border border-black p-1">{row.trip_ref}</td>
                 <td className="border border-black p-1">{row.lr_ref}</td>
-                <td className="border border-black p-1">{row.sender_name}<br />{row.sender_name_hindi}</td>
-                <td className="border border-black p-1">{row.receiver_name}<br />{row.receiver_name_hindi}</td>
-                <td className="border border-black p-1">{getGoodsRows(row).map((line) =>
-                  <div key={`${row.id}-${line.type}-${line.quantity}`}>
-                    {line.type}<br />{line.type_hindi}
-                    {line.description ? <><br />{line.description}</> : ""} × {line.quantity}
-                  </div>)}</td>
+                <td className="border border-black p-1">{hindiText(row.sender_name_hindi, row.sender_name)}</td>
+                <td className="border border-black p-1">{hindiText(row.receiver_name_hindi, row.receiver_name)}</td>
+                <td className="border border-black p-1">{getGoodsRows(row).map(hindiGoodsLine).join(", ")}</td>
                 <td className="border border-black p-1">{canFinanceRead ? money(row.rent) : ""}</td>
                 <td className="border border-black p-1">{canFinanceRead ? money(row.hamali) : ""}</td>
-                <td className="border border-black p-1">{canFinanceRead
-                  ? row.voided ? "VOID" : row.payment_status === "paid" ? "Paid" : "Unpaid" : ""}</td>
-                <td className="border border-black p-1">{row.charge_editor_marker || ""}</td>
+                <td className="border border-black p-1">{money(row.receipt_fee ?? 2)}</td>
+                <td className="border border-black p-1">{row.entry_by || "—"}</td>
+                {owner && <td className="border border-black p-1">{row.amount_paid ? "✓" : ""}</td>}
               </tr>)}</tbody>
             </table>
-          </div>
-        </div>}
-      </div>
-      {printReceipt && <ReceiptPrint receipt={printReceipt} trip={selectedTrip} site={site}
-        branding={user?.branding} showCharges={canFinanceRead} active />}
+          </div>}
+          {printReceipt && <ReceiptPrint receipt={printReceipt} trip={selectedTrip} site={site}
+            branding={user?.branding} showCharges={canFinanceRead}
+            controls={{
+              receipt_language: receiptLanguage,
+              sender_address_enabled: senderAddressEnabled,
+              receiver_address_enabled: receiverAddressEnabled,
+            }}
+            active />}
+        </div>,
+        document.body,
+      )}
     </>
   );
 }

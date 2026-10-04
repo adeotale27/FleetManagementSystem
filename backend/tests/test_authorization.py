@@ -19,6 +19,57 @@ def test_password_hash_supports_long_inputs_and_legacy_bcrypt_hashes():
     assert auth.verify_pw("legacy-password", legacy_hash)
 
 
+def test_seed_owner_normalizes_configured_usernames(monkeypatch):
+    inserted_users = []
+    tenant_updates = []
+
+    class Users:
+        async def find_one(self, query):
+            return next(
+                (user for user in inserted_users if user["_id"] == query["_id"]),
+                None,
+            )
+
+        async def insert_one(self, user):
+            inserted_users.append(user)
+
+    class Tenants:
+        async def find_one(self, _query):
+            return {"_id": "naidu"}
+
+        async def update_one(self, query, update):
+            tenant_updates.append((query, update))
+
+    monkeypatch.setattr(auth, "platform_db", SimpleNamespace(
+        users=Users(), tenants=Tenants(),
+    ))
+    monkeypatch.setattr(auth, "hash_pw", lambda _password: "hashed")
+    monkeypatch.setenv("OWNER_USERNAME", " PNaidu ")
+    monkeypatch.setenv("OWNER_PASSWORD", "configured-password")
+    monkeypatch.setenv("PLATFORM_USERNAME", "SuperAdmin")
+    monkeypatch.setenv("PLATFORM_PASSWORD", "configured-platform-password")
+
+    asyncio.run(auth.seed_owner())
+
+    assert [user["_id"] for user in inserted_users] == [
+        "superadmin", "pnaidu", "priyanshu",
+    ]
+    assert tenant_updates == [
+        ({"_id": "naidu"}, {"$set": {"owner_username": "pnaidu"}}),
+    ]
+
+
+def test_upsert_user_rejects_case_normalized_username_conflict(monkeypatch):
+    class Users:
+        async def find_one(self, _query):
+            return {"_id": "pnaidu", "role": "owner", "tenant_id": "different-tenant"}
+
+    monkeypatch.setattr(auth, "platform_db", SimpleNamespace(users=Users()))
+
+    with pytest.raises(RuntimeError, match="conflicts with an existing account"):
+        asyncio.run(auth.upsert_user("PNaidu", "Owner", "password", "owner", "naidu"))
+
+
 def test_business_api_requires_owner(monkeypatch):
     async def resolve_owner(_credentials):
         return {"role": "owner", "username": "owner"}

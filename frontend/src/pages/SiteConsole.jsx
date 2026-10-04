@@ -38,7 +38,6 @@ const permissionGroups = [
       ["trips:read", "View trips"],
       ["trips:create", "Create trips"],
       ["trips:update", "Edit trips"],
-      ["trips:close", "Close trips"],
     ],
   },
   {
@@ -257,6 +256,10 @@ export default function SiteConsole({ user, adminOnly = false }) {
   siteIdRef.current = siteId;
   const [siteForm, setSiteForm] = useState({ name: "", code: "", location: "", timezone: "Asia/Kolkata" });
   const [siteEdit, setSiteEdit] = useState({ name: "", location: "", city: "", timezone: "" });
+  const [receiptControls, setReceiptControls] = useState({
+    hindi_conversion_enabled: true, receipt_language: "hindi",
+    sender_address_enabled: true, receiver_address_enabled: true, receipt_fee: "2.00",
+  });
   const [categoryForm, setCategoryForm] = useState({ goods: "", containers: "" });
   const [migration, setMigration] = useState(null);
   const [tripForm, setTripForm] = useState({ truck_no: "", driver_name: "", vehicle_id: "", driver_id: "" });
@@ -360,6 +363,14 @@ export default function SiteConsole({ user, adminOnly = false }) {
             Object.keys(siteEditDirtyFields.current).map((key) => [key, current[key]]),
           ) }
           : nextSiteEdit);
+        const configuredReceiptControls = selected.config?.receipt_controls || {};
+        setReceiptControls({
+          hindi_conversion_enabled: configuredReceiptControls.hindi_conversion_enabled !== false,
+          receipt_language: configuredReceiptControls.receipt_language === "english" ? "english" : "hindi",
+          sender_address_enabled: configuredReceiptControls.sender_address_enabled !== false,
+          receiver_address_enabled: configuredReceiptControls.receiver_address_enabled !== false,
+          receipt_fee: configuredReceiptControls.receipt_fee ?? "2.00",
+        });
         if (!preserveDrafts) siteEditDirtyFields.current = {};
         else if (Object.keys(siteEditDirtyFields.current).length) {
           setMessage("Latest data loaded. Your unsaved site edits were kept; review before saving.");
@@ -414,6 +425,16 @@ export default function SiteConsole({ user, adminOnly = false }) {
       name: selected.name, location: selected.location || "",
       city: selected.city || "", timezone: selected.timezone || "Asia/Kolkata",
     });
+    if (selected) {
+      const configuredReceiptControls = selected.config?.receipt_controls || {};
+      setReceiptControls({
+        hindi_conversion_enabled: configuredReceiptControls.hindi_conversion_enabled !== false,
+        receipt_language: configuredReceiptControls.receipt_language === "english" ? "english" : "hindi",
+        sender_address_enabled: configuredReceiptControls.sender_address_enabled !== false,
+        receiver_address_enabled: configuredReceiptControls.receiver_address_enabled !== false,
+        receipt_fee: configuredReceiptControls.receipt_fee ?? "2.00",
+      });
+    }
     if (adminOnly) return;
     await loadSiteWorkspace(id);
   };
@@ -458,6 +479,28 @@ export default function SiteConsole({ user, adminOnly = false }) {
       await api.put(`/sites/${siteId}`, siteEdit);
       siteEditDirtyFields.current = {};
       setMessage("Site details updated.");
+      await refresh(siteId);
+    } catch (e) { setError(errMsg(e)); }
+  };
+
+  const saveReceiptControls = async (event) => {
+    event.preventDefault();
+    const selected = sites.find((site) => site.id === siteId);
+    if (!selected) return;
+    try {
+      await api.put(`/sites/${siteId}`, {
+        config: {
+          ...(selected.config || {}),
+          receipt_controls: {
+            hindi_conversion_enabled: receiptControls.hindi_conversion_enabled,
+            receipt_language: receiptControls.receipt_language,
+            sender_address_enabled: receiptControls.sender_address_enabled,
+            receiver_address_enabled: receiptControls.receiver_address_enabled,
+            receipt_fee: receiptControls.receipt_fee,
+          },
+        },
+      });
+      setMessage("Booking settings updated.");
       await refresh(siteId);
     } catch (e) { setError(errMsg(e)); }
   };
@@ -775,6 +818,56 @@ export default function SiteConsole({ user, adminOnly = false }) {
             </div>}
           </Card>}
         </div>
+      </details>
+
+      <details className="rounded-xl border border-line bg-white p-4">
+        <summary className="min-h-11 cursor-pointer content-center font-semibold text-brand-700">Booking settings</summary>
+        {siteId ? <form onSubmit={saveReceiptControls} className="mt-3 space-y-4">
+          <Card className="space-y-4 p-4">
+            <h2 className="text-lg font-semibold">Receipt controls</h2>
+            <label className="flex items-start gap-3 text-sm">
+              <input type="checkbox" className="mt-1 h-4 w-4 accent-brand-700"
+                checked={receiptControls.hindi_conversion_enabled}
+                onChange={(event) => setReceiptControls((current) => ({
+                  ...current, hindi_conversion_enabled: event.target.checked,
+                }))} />
+              <span><strong>Convert English entry to Hindi for ledger and printing</strong>
+                <span className="mt-1 block text-muted">Receipt entry and editing remain in English. Disabling conversion applies to new and edited receipts.</span>
+              </span>
+            </label>
+            <label className="block max-w-xs text-sm">Receipt print language
+              <select className={field} value={receiptControls.receipt_language}
+                onChange={(event) => setReceiptControls((current) => ({
+                  ...current, receipt_language: event.target.value,
+                }))}>
+                <option value="hindi">Hindi</option>
+                <option value="english">English</option>
+              </select>
+            </label>
+            <label className="block max-w-xs text-sm">Receipt fee (₹)
+              <input className={field} type="number" min="0" step="0.01" required
+                value={receiptControls.receipt_fee}
+                onChange={(event) => setReceiptControls((current) => ({
+                  ...current, receipt_fee: event.target.value,
+                }))} />
+              <span className="mt-1 block text-muted">Applies to receipts created after this setting is saved. Existing receipts keep their recorded fee.</span>
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {[
+                ["sender_address_enabled", "Show sender address on receipt"],
+                ["receiver_address_enabled", "Show receiver address on receipt"],
+              ].map(([key, label]) => <label key={key} className="flex items-center gap-3 text-sm">
+                <input type="checkbox" className="h-4 w-4 accent-brand-700"
+                  checked={receiptControls[key]}
+                  onChange={(event) => setReceiptControls((current) => ({
+                    ...current, [key]: event.target.checked,
+                  }))} />
+                <span>{label} (entry and printing)</span>
+              </label>)}
+            </div>
+            <Btn type="submit">Save booking settings</Btn>
+          </Card>
+        </form> : <p className="mt-3 text-sm text-muted">Select a site to manage receipt controls.</p>}
       </details>
 
       <details data-testid="booking-access-management" open={Boolean(temporaryCredential) || undefined}

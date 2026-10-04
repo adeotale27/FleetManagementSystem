@@ -3,8 +3,10 @@
 Transport office software for one or many logistics businesses.
 
 - **Business owner** operates three simple booking screens—Dashboard, Receipts, and Ledger—alongside separate industrial Trips & LRs, Fleet, Parties, Team, Industrial Finance, and Industrial Reports.
-- **Business owner** can administer multiple sites, assign site managers, review site operations and reconcile per-trip ledgers.
-- **Site manager** operates only assigned site bookings and granted actions; industrial business routes are owner-only.
+- **Business owner** can administer multiple sites, assign site managers, configure per-site receipt conversion, print language and address visibility, review site operations, reconcile per-trip ledgers, record LR payments, and complete/lock a trip ledger.
+- **Site manager** operates only assigned site bookings and granted actions; closing or reopening trips is owner-only, and industrial business routes are owner-only.
+- Receipt data is entered and edited in English in one combined goods/description field per row (three rows are shown by default); receiver city defaults to Hinganghat. Receipt conversion and address visibility are configurable per site. Admins configure the receipt fee under Booking settings; each receipt retains the fee recorded when it was created, and that fee is included in Booking Finance and payment balances. Older receipts without a stored fee retain the ₹2 legacy fallback.
+- Only the business owner can mark an LR as paid or complete a trip ledger. Completion records any outstanding Bhada as a payment and locks receipt, ledger, and payment changes for that trip.
 - **Platform owner** issues licences, suspends businesses, resets owner passwords, and turns modules on/off per business; platform access does not grant business-owner access.
 
 Current application version: **v1.18.1**. See [VERSION.md](VERSION.md) for the release policy and changelog.
@@ -168,7 +170,7 @@ Business-owner tokens get **403** on these routes.
 |------|------|
 | `/booking/dashboard` | Choose a date, create an open trip, and select a trip for its receipts |
 | `/booking/receipts` | Create/edit/print branded Hindi receipts; sender is optional and goods rows include descriptions |
-| `/booking/ledger` | Inline-edit receipts and goods rows; print a landscape ledger or download a formatted `.xlsx` workbook |
+| `/booking/ledger` | Select one trip for a date and view its plain spreadsheet-style ledger. Sender/receiver and comma-separated goods/quantities are Hindi and read-only; only Bhada and Hamali are editable. Creator names are shown. Print or export that trip's ledger to `.xlsx`. |
 | `/sites` | Legacy browser path redirects to `/booking/dashboard` |
 | `/booking-finance`, `/booking-reports` | Legacy browser paths redirect to `/booking/ledger` |
 | `/booking-setup` | Owner-only site, manager-access and booking-category administration |
@@ -211,13 +213,13 @@ Users collection id = username. Roles include `superadmin` (no tenant), `owner` 
 3. Assign a site manager with a unique username and a strong initial password. The password is bcrypt-hashed; managers access only explicitly assigned sites and permitted actions.
 4. Use manager access controls to grant/revoke per-site actions, reset credentials, replace a manager, or deactivate access. Deactivation preserves audit history and does not rewrite historical trip/LR creators.
 5. Open Dashboard, choose the trip date, and create a trip. Vehicle and driver details are optional.
-6. Select the trip and open Receipts. Each receipt is linked to that trip; its first five goods rows are ready immediately, with additional rows available if needed. Sender/receiver addresses are optional. English names/goods get an offline Hindi suggestion that can be corrected before saving.
-7. Use **Save & print** or print a saved receipt again. The A4 LR shows Hindi names/goods and the combined total rent; it does not show the bhada/hamali breakdown or signature lines.
-8. Use **Ledger** to edit supported fields and goods rows in place. Changes autosave through the scoped, audited site-LR endpoint. The trip number filter is a dropdown; date and sender/receiver search remain simple filters. Print the visible ledger or download the saved selected-period CSV.
+6. Select the trip and open Receipts. Each receipt is linked to that trip; its first three goods rows are ready immediately, with additional rows available if needed. Enter each good, its optional description, and quantity in English; configured Hindi conversion supplies Hindi goods/description output. The receiver's 10-digit phone number is saved and printed. Owners configure Hindi conversion, print language, address visibility, and the receipt fee under **Booking settings**.
+7. Use **Save & print** or print a saved receipt again. The compact A4 LR prints Hindi goods, descriptions, and quantities inline and shows Bhada, Hamali, the recorded receipt fee, and the total. When editing, **Cancel editing** discards the form changes without saving.
+8. Use **Ledger** to select one trip for the chosen date. Sender, receiver, goods/quantity, date, and receipt number are read-only; only Bhada and Hamali are editable. The sheet, print view, and `.xlsx` export are scoped to that selected trip and display goods/quantities in Hindi.
 
 ### Site manager: trips, LRs and collections
 
-Site managers use the normal login and see only Dashboard, Receipts and Ledger for assigned sites. They can create a trip without a vehicle or driver, add multiple receipts under the selected trip, and close trips when authorized. The selected vehicle/driver remain attached to the trip and are not re-entered on each receipt. The operating date uses the site's timezone. Trip/LR numbering is server-generated and atomic; truck number is descriptive, not an identifier. Owners can reopen a closed trip with a recorded reason.
+Site managers use the normal login and see only Dashboard, Receipts and Ledger for assigned sites. They can create a trip without a vehicle or driver and add multiple receipts under the selected trip. Only the business owner can close or reopen trips. The selected vehicle/driver remain attached to the trip and are not re-entered on each receipt. The operating date uses the site's timezone. Trip/LR numbering is server-generated and atomic; truck number is descriptive, not an identifier. Owners can reopen a closed trip with a recorded reason.
 
 Sender/receiver addresses and phone numbers are optional. Printing uses the browser print dialog and can also save to PDF. Financial fields/actions follow the manager's existing site permissions; charge editing still requires `finance:update` as well as receipt-update permission.
 

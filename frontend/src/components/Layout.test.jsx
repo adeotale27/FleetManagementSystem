@@ -85,9 +85,9 @@ describe("owner quick actions", () => {
     expect(container.querySelector('[data-testid="mobile-quick-btn"]')).toBeNull();
   });
 
-  it("keeps setup outside the three primary booking navigation options", async () => {
+  it("shows booking settings only to the owner", async () => {
     await renderAt("/booking-setup");
-    expect(container.querySelector('[data-testid="nav-booking-setup---access"]')).toBeNull();
+    expect(container.querySelector('[data-testid="nav-booking-settings"]')).not.toBeNull();
 
     await act(async () => {
       root.render(
@@ -98,6 +98,6 @@ describe("owner quick actions", () => {
         </MemoryRouter>,
       );
     });
-    expect(container.querySelector('[data-testid="nav-booking-setup---access"]')).toBeNull();
+    expect(container.querySelector('[data-testid="nav-booking-settings"]')).toBeNull();
   });
 });

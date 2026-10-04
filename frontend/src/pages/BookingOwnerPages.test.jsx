@@ -72,7 +72,7 @@ describe("owner-only booking pages", () => {
 
   it("groups Finance by receiver and settles a receipt's pending Bhada", async () => {
     await render(BookingFinance);
-    expect(container.textContent).toContain("Bhada by receiver");
+    expect(container.textContent).toContain("Receivable by receiver");
     expect(container.textContent).toContain("Suresh");
     expect(container.textContent).toContain("₹100");
     await act(async () => {
