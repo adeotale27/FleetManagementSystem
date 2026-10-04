@@ -70,7 +70,7 @@ def test_site_manager_trip_lr_ledger_and_payment_workflow():
 
         permissions = [
             "dashboard:read", "trips:read", "trips:create", "trips:update",
-            "trips:close", "lrs:read", "lrs:create", "lrs:update",
+            "lrs:read", "lrs:create", "lrs:update",
             "finance:read", "finance:update", "payments:read", "payments:create",
         ]
         _request("POST", f"/sites/{site_id}/manager", owner, json={
@@ -130,8 +130,9 @@ def test_site_manager_trip_lr_ledger_and_payment_workflow():
             "PATCH", f"/sites/{site_id}/trips/{trip_id}/lrs/{first_lr['id']}",
             manager_token, json={
                 "sender_name": "E2E Sender Corrected",
-                "containers": [{"type": "E2E Box", "quantity": 4}],
+                "goods_rows": [{"type": "E2E Box", "quantity": 4}],
                 "rent": "120.00", "hamali": "15.00",
+                "expected_updated_at": first_lr["updated_at"],
                 "idempotency_key": f"lr-update-{stamp}",
             },
         ).json()

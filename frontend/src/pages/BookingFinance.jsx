@@ -115,14 +115,15 @@ export default function BookingFinance({ user }) {
       </header>
       {error && <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}</div>}
       {busy ? <Loader label="Loading booking finance…" /> : data && <>
-        <div className="grid gap-3 grid-cols-2 xl:grid-cols-6">
+        <div className="grid gap-3 grid-cols-2 xl:grid-cols-7">
           {[
-            ["Grand total · Bhada + Hamali", totals.grand_total],
+            ["Grand total · Bhada + Hamali + fees", totals.grand_total],
             ["Bhada recorded", totals.recorded_bhada],
+            ["Receipt fees recorded", totals.recorded_receipt_fees],
             ["Hamali recorded", totals.recorded_hamali],
-            ["Bhada collected", totals.collected_bhada],
-            ["Bhada pending", totals.outstanding_bhada],
-            ["Collectible after reconciliation", totals.collectible_outstanding_bhada],
+            ["Collected · Bhada + fee", totals.collected_bhada],
+            ["Pending · Bhada + fee", totals.outstanding_bhada],
+            ["Collectible · Bhada + fee", totals.collectible_outstanding_bhada],
           ].map(([label, value], index) => <Card key={label} className={`p-4 ${index === 0 ? "border-brand-700" : ""}`}>
             <p className="text-xs font-semibold text-muted">{label}</p>
             <p className="mt-2 text-lg font-bold sm:text-xl">{money(value)}</p>
@@ -133,15 +134,15 @@ export default function BookingFinance({ user }) {
             {" "}{totals.unpaid_receipts || 0} unpaid · {totals.pending_orders || 0} awaiting reconciliation</span>
         </Card>
         <Card className="p-4">
-          <div className="mb-3"><h2 className="text-lg font-bold">Bhada by receiver</h2>
-            <p className="text-sm text-muted">Outstanding balance is grouped by the receiver’s party account.</p></div>
+          <div className="mb-3"><h2 className="text-lg font-bold">Receivable by receiver</h2>
+            <p className="text-sm text-muted">Bhada and receipt fees are grouped by the receiver’s party account.</p></div>
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {(data.receiver_balances || []).map((receiver) => <article key={`${receiver.receiver_label}-${receiver.receiver_name}`}
               className="rounded-lg border border-line p-3">
               <strong>{receiver.receiver_label || receiver.receiver_name || "Receiver"}</strong>
               <p className="mt-1 text-xs text-muted">{receiver.receipt_count} receipt(s)</p>
               <div className="mt-2 grid grid-cols-3 gap-1 text-xs">
-                <span>Bhada <b className="block">{money(receiver.bhada)}</b></span>
+                <span>Charges <b className="block">{money(receiver.charges)}</b></span>
                 <span>Paid <b className="block">{money(receiver.collected)}</b></span>
                 <span>Due <b className="block">{money(receiver.outstanding)}</b></span>
               </div>
@@ -160,7 +161,7 @@ export default function BookingFinance({ user }) {
           <div className="max-h-[65vh] overflow-auto">
             <table className="w-full table-fixed text-sm">
               <thead className="sticky top-0 bg-canvas"><tr>
-                {["Date / LR", "Receiver · goods", "Bhada", "Hamali", "Total", "Paid", "Pending Bhada", "Payment", "Promised date", "Follow-up note", "Save"].map((label) =>
+                {["Date / LR", "Receiver · goods", "Bhada", "Hamali", "Receipt fee", "Total", "Paid", "Pending · Bhada + fee", "Payment", "Promised date", "Follow-up note", "Save"].map((label) =>
                   <th key={label} className="px-2 py-3 text-left text-xs">{label}</th>)}
               </tr></thead>
               <tbody>{rows.map((row) => <tr key={row.id} className="border-t border-line align-top">
@@ -169,6 +170,7 @@ export default function BookingFinance({ user }) {
                 <td className="break-words px-2 py-3">{row.receiver_name || "Receiver missing"}
                   <span className="block text-xs text-muted">{row.goods}</span></td>
                 <td className="px-2 py-3">{money(row.rent)}</td><td className="px-2 py-3">{money(row.hamali)}</td>
+                <td className="px-2 py-3">{money(row.receipt_fee)}</td>
                 <td className="px-2 py-3 font-bold">{money(row.total)}</td><td className="px-2 py-3">{money(row.paid)}</td>
                 <td className="px-2 py-3 font-semibold">{money(row.outstanding)}</td>
                 <td className="px-2 py-3"><button className="btn-s px-2 py-1"
@@ -197,9 +199,10 @@ export default function BookingFinance({ user }) {
               <strong>{money(row.outstanding)} pending</strong></div>
             <div className="grid grid-cols-2 gap-2 text-sm">
               <p>Bhada: {money(row.rent)}</p><p>Hamali: {money(row.hamali)}</p>
-              <p>Total: {money(row.total)}</p><p>Paid: {money(row.paid)}</p></div>
+              <p>Receipt fee: {money(row.receipt_fee)}</p><p>Total: {money(row.total)}</p>
+              <p>Paid: {money(row.paid)}</p></div>
             <button className="btn-p min-h-11 w-full" disabled={Number(row.outstanding) <= 0}
-              onClick={() => settleReceipt(row)}>Settle full pending Bhada</button>
+              onClick={() => settleReceipt(row)}>Settle full pending amount</button>
             <p className="text-xs text-muted">{settlementStatus[row.id] || ""}</p>
             <label><span className="lbl">Promised payment date</span>
               <input className={field} type="date" value={drafts[row.id]?.promised_date ?? row.promised_date ?? ""}

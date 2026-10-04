@@ -273,4 +273,53 @@ describe("SiteConsole fetch cycles", () => {
     expect(container.querySelector('[aria-label="Download daily ledger"]')).not.toBeNull();
     expect(container.textContent).toContain("Unticked actions are unavailable to this manager at this site.");
   });
+
+  it("saves receipt language, address visibility and receipt fee settings", async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <SiteConsole user={{ role: "owner" }} adminOnly />
+        </MemoryRouter>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const controls = Array.from(container.querySelectorAll("details"))
+      .find((details) => details.querySelector("summary")?.textContent === "Booking settings");
+    await act(async () => { controls.open = true; });
+
+    const feeInput = controls.querySelector('input[type="number"]');
+    expect(feeInput.value).toBe("2.00");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(feeInput, "5.00");
+      feeInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const printLanguage = Array.from(controls.querySelectorAll("select"))
+      .find((select) => Array.from(select.options).some((option) => option.value === "english"));
+    printLanguage.value = "english";
+    await act(async () => {
+      printLanguage.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const senderAddress = Array.from(controls.querySelectorAll('input[type="checkbox"]'))
+      .find((input) => input.closest("label").textContent.includes("sender address"));
+    await act(async () => { senderAddress.click(); });
+
+    const saveButton = Array.from(controls.querySelectorAll("button"))
+      .find((button) => button.textContent.includes("Save booking settings"));
+    await act(async () => {
+      saveButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.put).toHaveBeenCalledWith("/sites/site-a", expect.objectContaining({
+      config: expect.objectContaining({
+        receipt_controls: expect.objectContaining({
+          receipt_language: "english",
+          sender_address_enabled: false,
+          receiver_address_enabled: true,
+          receipt_fee: "5.00",
+        }),
+      }),
+    }));
+  });
 });

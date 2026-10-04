@@ -18,6 +18,10 @@ def hash_pw(pw: str) -> str:
     return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
 
 
+def normalize_username(username: str) -> str:
+    return username.strip().lower()
+
+
 def hash_manager_pw(pw: str) -> str:
     digest = hashlib.sha256(pw.encode("utf-8")).hexdigest().encode("ascii")
     return f"bcrypt-sha256${bcrypt.hashpw(digest, bcrypt.gensalt()).decode()}"
@@ -40,7 +44,13 @@ def make_token(username: str) -> str:
 
 
 async def upsert_user(username, name, password, role, tenant_id):
+    username = normalize_username(username)
     existing = await platform_db.users.find_one({"_id": username})
+    if existing and (
+        existing.get("role", "owner") != role
+        or existing.get("tenant_id") != tenant_id
+    ):
+        raise RuntimeError("Configured username conflicts with an existing account")
     fields = {"name": name, "role": role, "tenant_id": tenant_id, "active": True}
     if existing:
         stored = existing.get("password") or ""
@@ -60,23 +70,28 @@ async def upsert_user(username, name, password, role, tenant_id):
 
 async def seed_owner():
     """Platform super admin + the first business (New Naidu Transport) and its owner."""
+    owner_username = normalize_username(os.environ["OWNER_USERNAME"])
     tenant = await platform_db.tenants.find_one({"_id": PRIMARY_TENANT})
     if not tenant:
         await platform_db.tenants.insert_one({
             "_id": PRIMARY_TENANT,
             "name": "New Naidu Transport",
             "owner_name": "Priyanshu Naidu",
-            "owner_username": os.environ["OWNER_USERNAME"],
+            "owner_username": owner_username,
             "city": "Hinganghat", "state": "Maharashtra", "mobile": "",
             "plan": "Business", "license_status": "Active",
             "license_start": datetime.now(timezone.utc).date().isoformat(),
             "license_expiry": (datetime.now(timezone.utc) + timedelta(days=365)).date().isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
+    else:
+        await platform_db.tenants.update_one(
+            {"_id": PRIMARY_TENANT}, {"$set": {"owner_username": owner_username}},
+        )
 
-    await upsert_user(os.environ["PLATFORM_USERNAME"], "Platform Owner",
+    await upsert_user(normalize_username(os.environ["PLATFORM_USERNAME"]), "Platform Owner",
                       os.environ["PLATFORM_PASSWORD"], "superadmin", None)
-    await upsert_user(os.environ["OWNER_USERNAME"], "Priyanshu Naidu",
+    await upsert_user(owner_username, "Priyanshu Naidu",
                       os.environ["OWNER_PASSWORD"], "owner", PRIMARY_TENANT)
     await upsert_user("priyanshu", "Priyanshu Naidu",
                       os.environ["OWNER_PASSWORD"], "owner", PRIMARY_TENANT)
