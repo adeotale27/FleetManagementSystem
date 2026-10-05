@@ -48,6 +48,10 @@ def test_creation_metadata_records_login_identity_and_role():
     }) == "Admin - Owner Name"
     assert site_ops._ledger_hindi_text("AUTO") == "ऑटो"
     assert site_ops._ledger_hindi_text("Cement bag") == "सीमेंट बोरा"
+    assert site_ops._ledger_hindi_text("gadi bhada") == "गाड़ी भाड़ा"
+    assert site_ops._ledger_hindi_text("gaadi bhaada") == "गाड़ी भाड़ा"
+    assert site_ops._ledger_hindi_text("गाड़ी bhada") == "गाड़ी भाड़ा"
+    assert site_ops._ledger_hindi_text("vehicle rent") == "गाड़ी भाड़ा"
     assert "created_by_id" not in site_ops._doc_for_user(
         {"_id": "trip-1", **metadata}, {"role": "site_manager"},
     )
@@ -422,7 +426,7 @@ def test_site_receipt_controls_keep_fee_configurable_and_validate_display_option
     assert default_config["receipt_controls"] == {
         "hindi_conversion_enabled": True, "receipt_language": "hindi",
         "sender_address_enabled": True, "receiver_address_enabled": True,
-        "receipt_fee": "2.00",
+        "receipt_fee": "2.00", "overdue_after_days": 30,
     }
     updated_config = site_ops._site_config_with_receipt_controls(
         {"receipt_controls": {
@@ -435,7 +439,7 @@ def test_site_receipt_controls_keep_fee_configurable_and_validate_display_option
     assert updated_config["receipt_controls"] == {
         "hindi_conversion_enabled": True, "receipt_language": "english",
         "sender_address_enabled": False, "receiver_address_enabled": True,
-        "receipt_fee": "5.00",
+        "receipt_fee": "5.00", "overdue_after_days": 30,
     }
     with pytest.raises(ValidationError):
         site_ops._site_config_with_receipt_controls({
@@ -444,6 +448,10 @@ def test_site_receipt_controls_keep_fee_configurable_and_validate_display_option
     with pytest.raises(ValidationError):
         site_ops._site_config_with_receipt_controls({
             "receipt_controls": {"receipt_language": "marathi"},
+        })
+    with pytest.raises(ValidationError):
+        site_ops._site_config_with_receipt_controls({
+            "receipt_controls": {"overdue_after_days": 0},
         })
 
 
@@ -458,7 +466,7 @@ def test_booking_receipt_accepts_multiple_hindi_goods_rows_and_preserves_legacy_
                 "type": "Cement", "type_hindi": "सीमेंट", "description": "Cement bags",
                 "description_hindi": "सीमेंट की बोरियाँ", "quantity": 2,
             },
-            {"type": "Food Grains", "type_hindi": "खाद्यान्न", "quantity": 3},
+            {"type": "Food Grains", "type_hindi": "अनाज", "quantity": 3},
         ],
         rent="100.25", hamali="10.50",
     )
@@ -837,6 +845,11 @@ def test_site_ledger_xlsx_omits_addresses_and_exports_hindi_ledger_values(monkey
             "type": "Grain box", "type_hindi": "अनाज डिब्बा", "quantity": 30,
         }],
     }
+    voided_lr = {
+        **lr, "_id": "lr-voided", "lr_ref": "NGPLR29092026-VOID",
+        "rent": Decimal("500.00"), "hamali": Decimal("50.00"),
+        "receipt_fee": Decimal("10.00"), "voided": True, "goods_rows": [],
+    }
     captured_query = {}
 
     class LRCursor:
@@ -847,7 +860,7 @@ def test_site_ledger_xlsx_omits_addresses_and_exports_hindi_ledger_values(monkey
             return self
 
         async def to_list(self, _limit):
-            return [lr]
+            return [lr, voided_lr]
 
     class LRs:
         def find(self, query):
@@ -881,12 +894,16 @@ def test_site_ledger_xlsx_omits_addresses_and_exports_hindi_ledger_values(monkey
     ]
     assert sheet["D5"].value == "भेजने वाला"
     assert sheet["E5"].value == "प्राप्तकर्ता"
-    assert sheet["F5"].value == "हार्डवेयर - औज़ार - २, सीमेंट बोरी - १०, अनाज डिब्बा - ३०"
+    assert sheet["F5"].value == "२ - हार्डवेयर/औज़ार, १० - सीमेंट बोरी, ३० - अनाज डिब्बा"
     assert sheet["G5"].value == 100
     assert sheet["H5"].value == 10
     assert sheet["I5"].value == 2
     assert sheet["J5"].value == "Manager - Saoji"
     assert sheet["K5"].value is None
+    assert sheet["G7"].value == 100
+    assert sheet["H7"].value == 10
+    assert sheet["I7"].value == 2
+    assert sheet["J7"].value == "Grand total: ₹112.00"
     assert captured_query["trip_id"] == "trip-1"
     all_values = "\n".join(
         str(value) for row in sheet.iter_rows(values_only=True) for value in row
@@ -914,7 +931,7 @@ def test_lr_models_allow_optional_sender_and_goods_descriptions():
     created = site_ops.LRCreate(
         sender_name="", receiver_name="Receiver",
         goods_rows=[{
-            "type": "Food grains", "type_hindi": "खाद्यान्न",
+            "type": "Food grains", "type_hindi": "अनाज",
             "description": "Two sacks", "description_hindi": "दो बोरियाँ", "quantity": 2,
         }],
         city="Nagpur",
@@ -1595,13 +1612,18 @@ def test_lr_update_calculates_receipt_totals_from_per_goods_charges(monkeypatch)
 
 
 def test_booking_finance_uses_active_receipts_and_posted_bhada_payments(monkeypatch):
-    site = {"_id": "site-1", "business_id": "business-1", "name": "Mama Garage", "code": "NGP"}
+    site = {
+        "_id": "site-1", "business_id": "business-1", "name": "Mama Garage",
+        "code": "NGP", "config": {"receipt_controls": {"overdue_after_days": 5}},
+    }
     receipts = [
         {
             "_id": "lr-1", "trip_id": "trip-1", "lr_ref": "NGP-LR-01",
             "operating_date": "2026-09-29", "receipt_date": "2026-09-29",
             "sender_name": "Sender", "receiver_name": "Receiver", "rent": Decimal("100.00"),
             "hamali": Decimal("10.00"), "receipt_fee": Decimal128("5.00"),
+            "payment_next_contact_date": "2026-10-02",
+            "payment_followup_outcome": "Called; promised transfer",
             "reconciled": True,
             "goods_rows": [{"type": "Cement", "quantity": 2}],
         },
@@ -1658,9 +1680,12 @@ def test_booking_finance_uses_active_receipts_and_posted_bhada_payments(monkeypa
         "collectible_outstanding_bhada": "65.00",
     }
     assert result["rows"][0]["trip_ref"] == "NGP29092026-01"
+    assert result["overdue_after_days"] == 5
     assert result["rows"][0]["receipt_fee"] == "5.00"
     assert result["rows"][0]["total"] == "115.00"
     assert result["rows"][0]["outstanding"] == "65.00"
+    assert result["rows"][0]["next_contact_date"] == "2026-10-02"
+    assert result["rows"][0]["followup_outcome"] == "Called; promised transfer"
     assert result["receiver_balances"][0] == {
         "receiver_name": "Receiver", "receiver_label": "Receiver",
         "receipt_count": 1, "charges": "105.00", "collected": "40.00",
@@ -1675,6 +1700,57 @@ def test_booking_finance_is_restricted_to_business_owners():
         ))
 
     assert exc.value.status_code == 403
+
+
+def test_owner_followup_saves_next_contact_and_outcome_and_audits_changes(monkeypatch):
+    site = {"_id": "site-1", "business_id": "business-1"}
+    trip = {"_id": "trip-1"}
+    lr = {
+        "_id": "lr-1", "payment_promised_date": "2026-10-01",
+        "payment_followup_note": "Call again",
+    }
+    saved = []
+    audits = []
+
+    class SiteLRs:
+        async def update_one(self, query, update):
+            saved.append((query, update))
+
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(site_lrs=SiteLRs()))
+    monkeypatch.setattr(site_ops, "_site_for_user", _async_value(site))
+    monkeypatch.setattr(site_ops, "_trip", _async_value(trip))
+    monkeypatch.setattr(site_ops, "_lr", _async_value(lr))
+
+    async def audit(*args, **kwargs):
+        audits.append((args, kwargs))
+
+    monkeypatch.setattr(site_ops, "_audit", audit)
+    result = asyncio.run(site_ops.update_site_lr_followup(
+        "site-1", "trip-1", "lr-1",
+        site_ops.BookingFollowupUpdate(
+            promised_date="2026-10-03", note="  Call   again ",
+            next_contact_date="2026-10-04", outcome="  No   answer ",
+        ),
+        {"role": "owner", "username": "owner"},
+    ))
+
+    expected = {
+        "payment_promised_date": "2026-10-03",
+        "payment_followup_note": "Call again",
+        "payment_next_contact_date": "2026-10-04",
+        "payment_followup_outcome": "No answer",
+    }
+    assert saved[0][1]["$set"] | {"updated_at": None} == expected | {"updated_at": None}
+    assert result == {
+        "id": "lr-1", "promised_date": "2026-10-03", "note": "Call again",
+        "next_contact_date": "2026-10-04", "outcome": "No answer",
+        "updated_at": saved[0][1]["$set"]["updated_at"],
+    }
+    assert audits[0][1]["old"] == {
+        "payment_promised_date": "2026-10-01", "payment_followup_note": "Call again",
+        "payment_next_contact_date": "", "payment_followup_outcome": "",
+    }
+    assert audits[0][1]["new"] == expected
 
 
 def _report_fixtures():

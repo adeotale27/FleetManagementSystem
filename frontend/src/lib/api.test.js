@@ -64,12 +64,33 @@ describe("API mutation notices", () => {
   });
 
   it("shows a global error toast for each failed write", async () => {
+    const statusListener = jest.fn();
+    window.addEventListener("fms:mutation-status", statusListener);
     const error = {
       config: { method: "put", url: "/trips/1" },
       response: { status: 400, data: { detail: "Trip date is required" } },
     };
     await expect(responseInterceptor.rejected(error)).rejects.toBe(error);
     expect(toast).toHaveBeenCalledWith("Trip date is required", "err", { apiError: true });
+    expect(statusListener.mock.calls[0][0].detail).toEqual({
+      state: "failed",
+      key: "put:/trips/1",
+      title: "Save failed · Trip updated",
+      reason: "Trip date is required",
+    });
+    window.removeEventListener("fms:mutation-status", statusListener);
+  });
+
+  it("clears a persistent write failure after that same endpoint saves", () => {
+    const statusListener = jest.fn();
+    window.addEventListener("fms:mutation-status", statusListener);
+    responseInterceptor.fulfilled({ config: { method: "put", url: "/trips/1" } });
+
+    expect(statusListener.mock.calls[0][0].detail).toEqual({
+      state: "saved",
+      key: "put:/trips/1",
+    });
+    window.removeEventListener("fms:mutation-status", statusListener);
   });
 
   it("keeps validation messages useful and makes 5xx text safe and referenceable", () => {

@@ -30,6 +30,7 @@ const Booking = lazy(() => import("./pages/Booking"));
 export default function App() {
   const [state, setState] = useState("checking");
   const [user, setUser] = useState(null);
+  const [syncStatus, setSyncStatus] = useState("checking");
 
   const applyMe = (r) => {
     setUser({ ...r.data.user, features: r.data.features, tenant: r.data.tenant, branding: r.data.branding });
@@ -48,13 +49,20 @@ export default function App() {
 
   useEffect(() => {
     if (state !== "in" || !user) return undefined;
+    let unavailable = false;
     return startDataSync(
       user.tenant_id,
       async () => (await api.get("/sync/revision")).data.revision,
-      (error) => toast(
-        error ? "Live updates are temporarily unavailable; retrying automatically." : "Live updates restored.",
-        error ? "err" : "ok",
-      ),
+      (error) => {
+        setSyncStatus(error ? "reconnecting" : "connected");
+        if (error) {
+          unavailable = true;
+          toast("Live updates are temporarily unavailable; retrying automatically.", "err");
+        } else if (unavailable) {
+          unavailable = false;
+          toast("Live updates restored.", "ok");
+        }
+      },
     );
   }, [state, user]);
 
@@ -71,7 +79,7 @@ export default function App() {
           </Routes>
         </Suspense>
       ) : (
-        <Layout user={user}>
+        <Layout user={user} syncStatus={syncStatus}>
           <Suspense fallback={<div className="grid min-h-[40vh] place-items-center"><Loader label="Loading…" /></div>}>
             <Routes>
               {user?.role === "superadmin" ? (

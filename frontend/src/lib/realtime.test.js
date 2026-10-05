@@ -59,4 +59,15 @@ describe("tenant data synchronization", () => {
     stop();
     window.removeEventListener(DATA_CHANGE_EVENT, onRefresh);
   });
+
+  it("reports when the first live-update check succeeds", async () => {
+    const onStatus = jest.fn();
+    const stop = startDataSync("tenant-initial-status-test", async () => 1, onStatus);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onStatus).toHaveBeenCalledWith(null);
+
+    stop();
+  });
 });

@@ -8,6 +8,7 @@ import {
 import { api, errMsg } from "../lib/api";
 import { Btn, Card, ErrorState, Loader, PageHead } from "../components/ui";
 import { todayISO } from "../lib/format";
+import { DEFAULT_BOOKING_GOODS } from "../lib/bookingGoods";
 import BookingAudit from "./BookingAudit";
 import BookingFinance from "./BookingFinance";
 
@@ -23,7 +24,14 @@ const keyForRequest = () => window.crypto?.randomUUID?.()
 const isHindi = (value) => /[\u0900-\u097f]/.test(value || "");
 const commonGoodsHindi = {
   auto: "ऑटो", truck: "ट्रक", nagpur: "नागपुर", pune: "पुणे", mumbai: "मुंबई",
-  cement: "सीमेंट", "food grains": "खाद्यान्न", rice: "चावल", wheat: "गेहूँ",
+  gadi: "गाड़ी", gaadi: "गाड़ी", bhada: "भाड़ा", bhaada: "भाड़ा",
+  "gadi bhada": "गाड़ी भाड़ा", "gaadi bhada": "गाड़ी भाड़ा",
+  "gadi bhaada": "गाड़ी भाड़ा", "gaadi bhaada": "गाड़ी भाड़ा",
+  "vehicle rent": "गाड़ी भाड़ा", "vehicle rental": "गाड़ी भाड़ा",
+  "truck rent": "ट्रक भाड़ा", "truck bhada": "ट्रक भाड़ा",
+  "lorry rent": "ट्रक भाड़ा", "lorry bhada": "ट्रक भाड़ा",
+  hamali: "हमाली", "receipt charge": "रसीद शुल्क", "receipt charges": "रसीद शुल्क",
+  cement: "सीमेंट", "food grains": "अनाज", rice: "चावल", wheat: "गेहूँ",
   flour: "आटा", sugar: "चीनी", salt: "नमक", steel: "लोहा", iron: "लोहा",
   bricks: "ईंट", brick: "ईंट", sand: "रेत", stone: "पत्थर", wood: "लकड़ी",
   fertilizer: "खाद", clothes: "कपड़े", cloth: "कपड़ा", oil: "तेल", vegetables: "सब्ज़ियाँ",
@@ -38,7 +46,7 @@ const commonGoodsHindi = {
 };
 export const romanHindi = (source) => {
   const input = source.trim();
-  if (!input || isHindi(input)) return input;
+  if (!input) return input;
   if (commonGoodsHindi[input.toLowerCase()]) return commonGoodsHindi[input.toLowerCase()];
   const consonants = [
     ["ksh", "क्ष"], ["chh", "छ"], ["sh", "श"], ["ch", "च"], ["kh", "ख"], ["gh", "घ"],
@@ -52,7 +60,7 @@ export const romanHindi = (source) => {
     ["ai", "ै"], ["au", "ौ"], ["a", ""], ["i", "ि"], ["u", "ु"],
     ["e", "े"], ["o", "ो"]];
   return input.split(/(\s+|[-/])/).map((part) => {
-    if (!part || /^\s+$|[-/]/.test(part)) return part;
+    if (!part || /^\s+$|[-/]/.test(part) || isHindi(part)) return part;
     const lower = part.toLowerCase();
     if (commonGoodsHindi[lower]) return commonGoodsHindi[lower];
     let output = "";
@@ -145,13 +153,17 @@ function hindiDigits(value) {
   return String(value ?? "").replace(/[0-9]/g, (digit) => "०१२३४५६७८९"[Number(digit)]);
 }
 
-function hindiGoodsLine(line) {
-  const parts = [
+function hindiLedgerGoodsLine(line) {
+  const goods = [
     hindiText(line.type_hindi, line.type),
     line.description && hindiText(line.description_hindi, line.description),
-    hindiDigits(line.quantity),
   ].filter(Boolean);
-  return parts.join(" - ");
+  return [hindiDigits(line.quantity), goods.join("/")].filter(Boolean).join(" - ");
+}
+
+function englishLedgerGoodsLine(line) {
+  const goods = [line.type, line.description].filter(Boolean);
+  return [line.quantity, goods.join("/")].filter(Boolean).join(" - ");
 }
 
 function ReceiptPrint({ receipt, trip, site, branding, showCharges, controls, active }) {
@@ -208,8 +220,8 @@ function ReceiptPrint({ receipt, trip, site, branding, showCharges, controls, ac
       <table className="receipt-print-goods">
         <thead><tr><th>{label("माल का विवरण", "Goods description")}</th></tr></thead>
         <tbody><tr><td>{rows.map((line) => hindi
-          ? hindiGoodsLine(line)
-          : [line.type, line.description, line.quantity].filter(Boolean).join(" - ")).join(", ")}</td></tr></tbody>
+          ? hindiLedgerGoodsLine(line)
+          : englishLedgerGoodsLine(line)).join(", ")}</td></tr></tbody>
       </table>
       {showCharges ? <table className="receipt-print-charges">
         <tbody>
@@ -232,7 +244,7 @@ function ReceiptPrint({ receipt, trip, site, branding, showCharges, controls, ac
 
 function ReceiptForm({
   trip, receipt, canEditFinance, addressSuggestions, convertHindi, receiptFee,
-  senderAddressEnabled, receiverAddressEnabled, onCancel, onSaved,
+  goodsSuggestions, senderAddressEnabled, receiverAddressEnabled, onCancel, onSaved,
 }) {
   const [form, setForm] = useState(() => receipt ? {
     receipt_date: receipt.receipt_date || receipt.operating_date || trip.operating_date,
@@ -270,6 +282,10 @@ function ReceiptForm({
     const goods = form.goods_rows.filter((line) => line.type.trim() && Number(line.quantity) > 0);
     if (!form.receiver_name.trim() || !goods.length) {
       setError("Enter the receiver and at least one goods row.");
+      return;
+    }
+    if (window.navigator.onLine === false) {
+      setError("Offline — receipt not saved. Keep this form open and tap Save when you’re back online.");
       return;
     }
     if (goods.some((line) => !Number.isInteger(Number(line.quantity)) || Number(line.quantity) <= 0)) {
@@ -329,6 +345,8 @@ function ReceiptForm({
       if (detail?.code === "receiver_match_confirmation_required") {
         setReceiverMatch(detail);
         setError(detail.message || "Choose whether this is the same receiver or a different receiver.");
+      } else if (window.navigator.onLine === false) {
+        setError("Offline — receipt not saved. Keep this form open and tap Save when you’re back online.");
       } else {
         setError(errMsg(requestError));
       }
@@ -376,25 +394,27 @@ function ReceiptForm({
           <label><span className="lbl flex items-center gap-2"><UserRound size={16} aria-hidden="true" />Receiver *</span><input className={field} required aria-label="Receiver name in English"
             value={form.receiver_name} onChange={(event) => patch({ receiver_name: event.target.value })} /></label>
         </div>
-        {(senderAddressEnabled || receiverAddressEnabled) && <div className="grid gap-4 md:grid-cols-2">
-          {senderAddressEnabled && <label><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />Sender address (optional)</span><input className={field} list="sender-address-options"
-            value={form.sender_address} onChange={(event) => patch({ sender_address: event.target.value })} />
-            <datalist id="sender-address-options">{addressSuggestions.sender.map((address) =>
-              <option key={address} value={address} />)}</datalist></label>}
-          {receiverAddressEnabled && <label><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />Receiver address (optional)</span><input className={field} list="receiver-address-options"
+        {senderAddressEnabled && <label className="block"><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />Sender address (optional)</span><input className={field} aria-label="Sender address (optional)" list="sender-address-options"
+          value={form.sender_address} onChange={(event) => patch({ sender_address: event.target.value })} />
+          <datalist id="sender-address-options">{addressSuggestions.sender.map((address) =>
+            <option key={address} value={address} />)}</datalist></label>}
+        <div className="grid gap-4 md:grid-cols-2">
+          {receiverAddressEnabled && <label><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />Receiver address (optional)</span><input className={field} aria-label="Receiver address (optional)" list="receiver-address-options"
             value={form.receiver_address} onChange={(event) => patch({ receiver_address: event.target.value })} />
             <datalist id="receiver-address-options">{addressSuggestions.receiver.map((address) =>
               <option key={address} value={address} />)}</datalist></label>}
-        </div>}
+          <label className={receiverAddressEnabled ? "" : "md:col-start-1"}>
+            <span className="lbl flex items-center gap-2"><Phone size={16} aria-hidden="true" />Receiver phone (10 digits, optional)</span>
+            <input className={field} type="tel" inputMode="numeric" maxLength={10} pattern="[0-9]{10}"
+              value={form.receiver_phone} aria-label="Receiver phone (10 digits, optional)"
+              onChange={(event) => patch({ receiver_phone: event.target.value.replace(/\D/g, "").slice(0, 10) })} />
+          </label>
+        </div>
         <div className="grid gap-4 md:grid-cols-2">
           <label><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />Receiver city</span>
             <select className={field} value="Hinganghat" disabled>
               <option value="Hinganghat">Hinganghat</option>
             </select></label>
-          <label><span className="lbl flex items-center gap-2"><Phone size={16} aria-hidden="true" />Receiver phone (10 digits, optional)</span><input className={field} type="tel"
-            inputMode="numeric" maxLength={10} pattern="[0-9]{10}" value={form.receiver_phone}
-            aria-label="Receiver phone (10 digits, optional)"
-            onChange={(event) => patch({ receiver_phone: event.target.value.replace(/\D/g, "").slice(0, 10) })} /></label>
         </div>
         <section>
           <div className="mb-2 flex items-center justify-between gap-3">
@@ -407,22 +427,29 @@ function ReceiptForm({
           </div>
           <div className="space-y-2">
             {form.goods_rows.map((line, index) => <div key={index}
-              className="grid grid-cols-[2rem_minmax(0,1fr)_10rem_2.25rem] items-start gap-2 rounded-xl border border-line p-2">
-              <span className="pt-3 text-center font-semibold">{index + 1}</span>
-              <label className="relative block">
-                <span className="sr-only">Good and description</span>
-                <Package size={16} aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-                <input className={`${field} min-h-12 pl-9`} list="booking-goods-suggestions" value={line.type}
-                  placeholder="Good and description" aria-label={`Good and description row ${index + 1}`}
-                  onChange={(event) => changeGoods(index, "type", event.target.value)} />
+              className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-start gap-2 rounded-xl border border-line p-2 sm:grid-cols-[2rem_minmax(0,1fr)_10rem_2.25rem]">
+              <span className="hidden pt-3 text-center font-semibold sm:block">{index + 1}</span>
+              <label className="relative col-start-1 row-start-1 block min-w-0 sm:col-start-2">
+                <span className="lbl">Goods and description · {index + 1}</span>
+                <span className="relative block">
+                  <Package size={16} aria-hidden="true"
+                    className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-muted" />
+                  <input className={`${field} min-h-12 pl-9`} list="booking-goods-suggestions" value={line.type}
+                    placeholder="Goods and description" aria-label={`Goods and description row ${index + 1}`}
+                    onChange={(event) => changeGoods(index, "type", event.target.value)} />
+                </span>
               </label>
-              <label className="relative block">
-                <Hash size={16} aria-hidden="true" className="pointer-events-none absolute left-2 top-3 text-muted" />
-                <input className={`${field} min-h-12 pl-8`} type="number" min="1" step="1" inputMode="numeric" placeholder="Qty"
-                  aria-label={`Quantity row ${index + 1}`} value={line.quantity}
-                  onChange={(event) => changeGoods(index, "quantity", event.target.value)} />
+              <label className="relative col-start-1 row-start-2 block sm:col-start-3 sm:row-start-1">
+                <span className="lbl">Quantity</span>
+                <span className="relative block">
+                  <Hash size={16} aria-hidden="true"
+                    className="pointer-events-none absolute left-2 top-1/2 z-10 -translate-y-1/2 text-muted" />
+                  <input className={`${field} min-h-12 pl-8`} type="number" min="1" step="1" inputMode="numeric" placeholder="Enter quantity"
+                    aria-label={`Quantity row ${index + 1}`} value={line.quantity}
+                    onChange={(event) => changeGoods(index, "quantity", event.target.value)} />
+                </span>
               </label>
-              <button type="button" aria-label={`Remove goods row ${index + 1}`} className="rounded-lg p-2 text-muted hover:bg-red-50 hover:text-red-700 lg:order-last"
+              <button type="button" aria-label={`Remove goods row ${index + 1}`} className="col-start-2 row-start-1 self-end rounded-lg p-2 text-muted hover:bg-red-50 hover:text-red-700 sm:col-start-4 sm:row-start-1"
                 onClick={() => {
                   setForm((current) => ({
                     ...current,
@@ -436,7 +463,7 @@ function ReceiptForm({
             </div>)}
           </div>
           <datalist id="booking-goods-suggestions">
-            {["General Goods", "Food Grains", "Cement", "Steel", "Fertilizer", "Rice", "Wheat", "Bricks"].map((value) => <option key={value} value={value} />)}
+            {goodsSuggestions.map((value) => <option key={value} value={value} />)}
           </datalist>
         </section>
         {canEditFinance && <section className="grid gap-3 rounded-xl border border-line p-4 sm:grid-cols-2">
@@ -456,7 +483,7 @@ function ReceiptForm({
           </div>
           <p className="mt-2 flex justify-between text-xl font-bold"><span>Total</span><span>{money(total)}</span></p>
         </section>
-        <div className="flex flex-col gap-3 sm:flex-row">
+        <div className="sticky bottom-0 z-10 -mx-4 flex flex-col gap-2 border-t border-line bg-white/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-8px_20px_rgba(16,24,40,0.08)] backdrop-blur sm:static sm:mx-0 sm:flex-row sm:gap-3 sm:border-0 sm:bg-transparent sm:p-0 sm:pt-0 sm:shadow-none sm:backdrop-blur-none">
           <button type="button" disabled={saving} onClick={onCancel} className="btn-s min-h-12 flex-1 text-base">
             Cancel {receipt ? "editing" : "receipt"}
           </button>
@@ -510,6 +537,7 @@ export default function Booking({ user }) {
   const saveTimers = useRef({});
   const savingRows = useRef(new Set());
   const queuedRows = useRef(new Set());
+  const flushLedgerRowRef = useRef(null);
   const revisions = useRef({});
   const rowVersions = useRef({});
   const ledgerRowCache = useRef({});
@@ -525,11 +553,28 @@ export default function Booking({ user }) {
   const previousPage = useRef(page);
   const site = sites.find((item) => item.id === siteId);
   const ledgerTrip = ledgerTrips.find((trip) => trip.id === ledgerTripId);
+  const ledgerTotals = useMemo(() => {
+    const cents = ledgerRows.reduce((totals, row) => {
+      if (row.voided) return totals;
+      totals.bhada += Math.round((Number(row.rent) || 0) * 100);
+      totals.hamali += Math.round((Number(row.hamali) || 0) * 100);
+      totals.receiptFee += Math.round((Number(row.receipt_fee ?? 2) || 0) * 100);
+      return totals;
+    }, { bhada: 0, hamali: 0, receiptFee: 0 });
+    return {
+      bhada: cents.bhada / 100,
+      hamali: cents.hamali / 100,
+      receiptFee: cents.receiptFee / 100,
+      total: (cents.bhada + cents.hamali + cents.receiptFee) / 100,
+    };
+  }, [ledgerRows]);
   const permissions = user?.site_permissions?.[siteId] || [];
   const can = (permission) => owner || permissions.includes(permission);
   const canFinanceRead = can("finance:read") || can("finance:update") || can("lrs:create") || can("lrs:update");
   const canEditFinance = can("lrs:update");
   const receiptControls = site?.config?.receipt_controls || {};
+  const goodsSuggestions = Array.isArray(site?.config?.goods_suggestions)
+    ? site.config.goods_suggestions : DEFAULT_BOOKING_GOODS;
   const convertHindi = receiptControls.hindi_conversion_enabled !== false;
   const receiptFee = Number(receiptControls.receipt_fee ?? 2);
   const receiptLanguage = receiptControls.receipt_language === "english" ? "english" : "hindi";
@@ -848,6 +893,10 @@ export default function Booking({ user }) {
       setLedgerStatus((current) => ({ ...current, [rowId]: "Unsaved goods row" }));
       return;
     }
+    if (window.navigator.onLine === false) {
+      setLedgerStatus((current) => ({ ...current, [rowId]: "Waiting to sync · keep this page open" }));
+      return;
+    }
     const row = ledgerRows.find((item) => item.id === rowId) || ledgerRowCache.current[rowId];
     if (!row) return;
     const snapshot = { ...dirty };
@@ -895,6 +944,20 @@ export default function Booking({ user }) {
     }
   };
 
+  flushLedgerRowRef.current = flushLedgerRow;
+  useEffect(() => {
+    const retryPendingLedgerRows = () => {
+      if (window.navigator.onLine === false) return;
+      Object.keys(dirtyRows.current).forEach((rowId) => {
+        if (Object.keys(dirtyRows.current[rowId] || {}).length) {
+          void flushLedgerRowRef.current?.(rowId);
+        }
+      });
+    };
+    window.addEventListener("online", retryPendingLedgerRows);
+    return () => window.removeEventListener("online", retryPendingLedgerRows);
+  }, []);
+
   const editLedgerCell = (rowId, key, value) => {
     if (isLedgerLocked(ledgerTrip)) return;
     const row = ledgerRows.find((item) => item.id === rowId);
@@ -914,7 +977,10 @@ export default function Booking({ user }) {
     }
     ledgerRowCache.current[rowId] = next;
     setLedgerRows((current) => current.map((item) => item.id === rowId ? next : item));
-    setLedgerStatus((current) => ({ ...current, [rowId]: "Saving" }));
+    setLedgerStatus((current) => ({
+      ...current,
+      [rowId]: window.navigator.onLine === false ? "Waiting to sync · keep this page open" : "Saving",
+    }));
     if (patch.goods_rows?.some((line) => !line.type.trim() || !Number.isInteger(Number(line.quantity)) || Number(line.quantity) < 1)) {
       clearTimeout(saveTimers.current[rowId]);
       setLedgerStatus((current) => ({ ...current, [rowId]: "Unsaved goods row" }));
@@ -1069,8 +1135,8 @@ export default function Booking({ user }) {
           body > .booking-print-portal { display:block !important; position:static !important; width:100% !important; }
           .booking-print-portal, .booking-print-portal * { visibility:visible !important; }
           .booking-print-target[data-active="true"] { display:block !important; position:static !important; width:100%; color:#111; background:#fff; font-family:"Noto Sans Devanagari","Mangal",sans-serif; font-size:10pt; }
-          .receipt-print-header { position:relative; display:flex; min-height:64px; align-items:center; justify-content:center; border-bottom:1px solid #111; padding:0 82px 8px; text-align:center; }
-          .receipt-print-logo { position:absolute; top:0; left:0; max-width:70px; max-height:55px; object-fit:contain; }
+          .receipt-print-header { position:relative; display:flex; min-height:200px; align-items:center; justify-content:center; border-bottom:1px solid #111; padding:0 126px 8px 290px; text-align:center; }
+          .receipt-print-logo { position:absolute; top:50%; left:0; width:270px; height:190px; max-width:270px; max-height:190px; transform:translateY(-50%); object-fit:contain; object-position:left center; }
           .receipt-print-company { width:100%; text-align:center; }
           .receipt-print-company h1 { margin:0; font-size:23pt; font-weight:700; }
           .receipt-print-company p { margin:2px 0; font-size:14pt; font-weight:600; }
@@ -1111,21 +1177,13 @@ export default function Booking({ user }) {
       `}</style>
       <div className="booking-workspace space-y-5">
         <PageHead title={title} subtitle={site?.name || "Goods transport"} />
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(10rem,auto)]">
-          {owner && <label><span className="lbl">Site / Garage</span><select className={field} value={siteId}
+        <div>
+          {owner && <label className="block max-w-md"><span className="lbl">Site / Garage</span><select className={field} value={siteId}
             onChange={(event) => selectSite(event.target.value)}>{sites.map((item) =>
               <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
-          {!owner && <div className="rounded-lg bg-white px-3 py-2 text-sm"><span className="lbl">Site / Garage</span><strong>{site?.name || "Loading…"}</strong></div>}
-          <div className="flex rounded-xl bg-white p-1 shadow-sm" aria-label="Booking navigation">
-            {[
-              ["dashboard", "Dashboard"], ["receipts", "Receipts"], ["ledger", "Ledger"],
-              ...(owner ? [["finance", "Booking Finance"], ["audit", "Booking Audit"]] : []),
-            ].map(([target, label]) =>
-              <Link key={target} to={`/booking/${target}`} aria-current={page === target ? "page" : undefined}
-                className={`flex min-h-11 flex-1 items-center justify-center rounded-lg px-3 text-sm font-semibold ${page === target ? "bg-brand-600 text-white" : "text-ink hover:bg-canvas"}`}>
-                {label}
-              </Link>)}
-          </div>
+          {!owner && <div className="inline-flex rounded-lg border border-line bg-white px-3 py-2 text-sm">
+            <span className="mr-2 text-muted">Site / Garage</span><strong>{site?.name || "Loading…"}</strong>
+          </div>}
         </div>
         {success && <div role="status" className="flex items-center gap-2 rounded-xl bg-green-50 p-4 text-lg font-semibold text-green-900"><Check />{success}</div>}
         {tripError && <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{tripError}</div>}
@@ -1157,8 +1215,10 @@ export default function Booking({ user }) {
                 onChange={(event) => setTripForm({ ...tripForm, truck_no: event.target.value })} /></label>
               <label><span className="lbl">Driver name (optional)</span><input className={field} value={tripForm.driver_name}
                 onChange={(event) => setTripForm({ ...tripForm, driver_name: event.target.value })} /></label>
-              <div className="flex items-end gap-2"><Btn type="submit" className="min-h-12 flex-1">Create trip</Btn>
-                <button type="button" className="btn-s" onClick={() => setTripFormOpen(false)}>Cancel</button></div>
+              <div className="sticky bottom-0 -mx-4 flex items-center gap-2 border-t border-line bg-white/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:static sm:mx-0 sm:border-0 sm:bg-transparent sm:p-0">
+                <button type="button" className="btn-s min-h-12" onClick={() => setTripFormOpen(false)}>Cancel</button>
+                <Btn type="submit" className="min-h-12 flex-1">Create trip</Btn>
+              </div>
             </form>
           </Card>}
           <div><h2 className="mb-3 text-xl font-bold">Trips for {selectedDate}</h2>
@@ -1210,6 +1270,7 @@ export default function Booking({ user }) {
                 addressSuggestions={addressSuggestions}
                 convertHindi={convertHindi}
                 receiptFee={receiptFee}
+                goodsSuggestions={goodsSuggestions}
                 senderAddressEnabled={senderAddressEnabled}
                 receiverAddressEnabled={receiverAddressEnabled}
                 onCancel={() => { setReceiptFormOpen(false); setEditingReceipt(null); }}
@@ -1217,13 +1278,13 @@ export default function Booking({ user }) {
             </div>
           </>}
           {!receiptFormOpen && selectedTrip?.status === "open" && !isLedgerLocked(selectedTrip) && can("lrs:create") &&
-            <button className="btn-p" onClick={() => {
+            <button className="btn-p min-h-12 w-full sm:w-auto" onClick={() => {
               setEditingReceipt(null); setReceiptFormOpen(true); setTripError("");
             }}><Plus size={18} /> New receipt</button>}
           <section>
             <h2 className="mb-3 text-xl font-bold">Receipts {selectedTrip ? `· ${selectedTrip.trip_ref}` : ""}</h2>
             {!selectedTrip ? null : receipts.length ? <div className="space-y-2">
-              {receipts.map((receipt) => <Card key={receipt.id} className={`flex flex-wrap items-center justify-between gap-3 p-4 ${receipt.voided ? "opacity-70" : ""}`}>
+              {receipts.map((receipt) =>               <Card key={receipt.id} className={`flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between sm:p-4 ${receipt.voided ? "opacity-70" : ""}`}>
                 <div className="min-w-48 flex-1"><h3 className="font-bold">{receipt.lr_ref}</h3>
                   <p className="mt-1 text-sm">{receipt.sender_name} → {receipt.receiver_name}</p>
                   {receipt.receiver_phone && <p className="mt-1 flex items-center gap-1 text-sm text-muted">
@@ -1233,11 +1294,11 @@ export default function Booking({ user }) {
                     [line.type, line.description, `× ${line.quantity}`].filter(Boolean).join(" - ")).join(" · ")}</p>
                   {receipt.voided && <p className="mt-1 font-semibold text-red-700">VOID · kept in history</p>}
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                   {!receipt.voided && <button className="btn-s" onClick={() => queuePrint(receipt)}><Printer size={17} /> Print</button>}
                   {owner && receipt.voided && !isLedgerLocked(selectedTrip) && <button className="btn-s" onClick={() => restoreReceipt(receipt)}>Restore receipt</button>}
                   {!isLedgerLocked(selectedTrip) && !receipt.voided && can("lrs:update") && (selectedTrip.status === "open" || owner) && <>
-                    <button className="btn-s" onClick={() => { setEditingReceipt(receipt); setReceiptFormOpen(true); }}>Edit</button>
+                    <button className="btn-s min-h-11" onClick={() => { setEditingReceipt(receipt); setReceiptFormOpen(true); }}>Edit</button>
                     <button className="btn-s text-red-700" onClick={() => voidReceipt(receipt)}>Void</button>
                   </>}
                 </div>
@@ -1263,16 +1324,17 @@ export default function Booking({ user }) {
             </select></label>
           </div>
           {ledgerError && <div role="alert" className="border border-red-700 bg-red-50 p-2 text-sm text-red-800">{ledgerError}</div>}
-          <div className="flex flex-wrap items-center justify-between gap-2 border border-gray-400 bg-white p-3">
+          <div className="flex flex-col gap-3 border border-gray-400 bg-white p-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <div>
-              <h2 className="text-lg font-bold">Selected trip: {ledgerTrip?.trip_ref || "—"}</h2>
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted">Selected trip</p>
+              <h2 className="text-lg font-bold">{ledgerTrip?.trip_ref || "—"}</h2>
               <p className="text-sm">{ledgerDate}</p>
             </div>
-            <div className="flex gap-2">
-              <button className="btn-s" disabled={!ledgerTripId} onClick={printLedger}><Printer size={16} /> Print ledger</button>
-              <button className="btn-p" disabled={!ledgerTripId} onClick={downloadLedger}><Download size={16} /> Download Excel</button>
+            <div className="grid grid-cols-2 gap-2 sm:flex">
+              <button className="btn-s min-h-11" disabled={!ledgerTripId} onClick={printLedger}><Printer size={16} /> Print</button>
+              <button className="btn-p min-h-11" disabled={!ledgerTripId} onClick={downloadLedger}><Download size={16} /> Excel</button>
               {owner && ledgerTripId && !ledgerTrip?.ledger_completed_at && <button
-                className="btn-p" disabled={ledgerCompleting || ledgerBusy || !ledgerRows.length}
+                className="btn-p col-span-2 min-h-11 sm:col-span-1" disabled={ledgerCompleting || ledgerBusy || !ledgerRows.length}
                 onClick={completeTripLedger}>
                 {ledgerCompleting ? "Completing ledger…" : ledgerTrip?.ledger_completion_started_at
                   ? "Resume ledger completion" : "Complete trip ledger"}
@@ -1285,7 +1347,7 @@ export default function Booking({ user }) {
           </p>}
           {ledgerBusy ? <Loader label="Loading ledger…" /> : ledgerTripId ? (
             <div className="overflow-auto border border-gray-500 bg-white">
-              <table className="min-w-[1050px] border-collapse text-sm">
+              <table aria-label="Selected ledger totals" className="hidden min-w-[1050px] border-collapse text-sm lg:table">
                 <thead className="bg-gray-200">
                   <tr>{["Date", "Receipt no.", "Sender", "Receiver", "Goods & quantity", "Bhada", "Hamali", "Receipt fee", "Entered by", ...(owner ? ["Amount paid"] : [])].map((label) =>
                     <th key={label} className="border border-gray-500 px-2 py-2 text-left font-bold">{label}</th>)}</tr>
@@ -1294,10 +1356,15 @@ export default function Booking({ user }) {
                   const goodsRows = getGoodsRows(row);
                   const status = ledgerStatus[row.id] || "Saved";
                   const cell = "border border-gray-400 px-2 py-1 align-middle";
-                  const hindiGoods = goodsRows.map(hindiGoodsLine).join(", ");
+                  const hindiGoods = goodsRows.map(hindiLedgerGoodsLine).join(", ");
                   return <tr key={row.id} className={row.voided ? "bg-gray-100 text-gray-500" : ""}>
                     <td className={cell}>{row.receipt_date || row.operating_date}</td>
-                    <td className={cell}>{row.lr_ref}{row.voided ? " · VOID" : ""}</td>
+                    <td className={cell}>{row.lr_ref}{row.voided ? " · VOID" : ""}
+                      <span role="status" aria-live="polite" className={`mt-1 block text-xs ${
+                        status.startsWith("Failed") || status.startsWith("Unsaved") ? "text-red-700"
+                          : status.startsWith("Waiting") ? "text-amber-800" : "text-muted"
+                      }`}>{status}</span>
+                    </td>
                     <td className={cell} lang="hi">{hindiText(row.sender_name_hindi, row.sender_name)}</td>
                     <td className={cell} lang="hi">{hindiText(row.receiver_name_hindi, row.receiver_name)}</td>
                     <td className={cell} lang="hi">{hindiGoods}</td>
@@ -1319,8 +1386,66 @@ export default function Booking({ user }) {
                     </td>}
                   </tr>;
                 })}</tbody>
+                {canFinanceRead && <tfoot><tr className="bg-gray-50">
+                  <td className="border border-gray-400 px-2 py-2 text-xs text-muted" colSpan={5}>
+                    Totals exclude voided receipts.
+                  </td>
+                  <td className="border border-gray-400 px-2 py-2">Bhada total: <strong>{money(ledgerTotals.bhada)}</strong></td>
+                  <td className="border border-gray-400 px-2 py-2">Hamali total: <strong>{money(ledgerTotals.hamali)}</strong></td>
+                  <td className="border border-gray-400 px-2 py-2">Receipt fee total: <strong>{money(ledgerTotals.receiptFee)}</strong></td>
+                  <td className="border border-gray-400 px-2 py-2 font-bold">Grand total: {money(ledgerTotals.total)}</td>
+                  {owner && <td className="border border-gray-400 px-2 py-2" />}
+                </tr></tfoot>}
               </table>
               {!ledgerRows.length && <p className="border-t border-gray-400 p-4 text-center">No receipts in this trip.</p>}
+              <div className="space-y-3 p-2 lg:hidden">
+                {ledgerRows.map((row) => {
+                  const goods = getGoodsRows(row).map(hindiLedgerGoodsLine).join(", ");
+                  const rowStatus = ledgerStatus[row.id] || "Saved";
+                  return <article key={`mobile-${row.id}`} aria-label={`${row.lr_ref} mobile ledger receipt`}
+                    className={`rounded-xl border border-line bg-white p-3 ${row.voided ? "opacity-60" : ""}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h3 className="break-all font-bold">{row.lr_ref}{row.voided ? " · VOID" : ""}</h3>
+                        <p className="mt-1 text-xs text-muted">{row.receipt_date || row.operating_date}</p>
+                      </div>
+                      {owner && <label className="flex shrink-0 items-center gap-2 rounded-lg bg-canvas px-3 py-2 text-sm font-medium">
+                        Paid
+                        <input type="checkbox" aria-label={`${row.lr_ref} mobile amount paid`}
+                          checked={Boolean(row.amount_paid)}
+                          disabled={row.voided || isLedgerLocked(ledgerTrip) || paidRowsUpdating.has(row.id)}
+                          onChange={(event) => setLedgerRowPaid(row, event.target.checked)} />
+                      </label>}
+                    </div>
+                    <p className="mt-2 text-sm" lang="hi">
+                      {hindiText(row.sender_name_hindi, row.sender_name)} → {hindiText(row.receiver_name_hindi, row.receiver_name)}
+                    </p>
+                    <p className="mt-1 text-sm font-medium" lang="hi">{goods || "Goods not entered"}</p>
+                    {canFinanceRead ? <div className="mt-3 grid grid-cols-2 gap-2">
+                      <label><span className="lbl">Bhada (₹)</span>
+                        {ledgerField(row, "rent", amountInput(row.rent), "number", "mobile Bhada", "min-h-11 border border-line bg-white px-2")}
+                      </label>
+                      <label><span className="lbl">Hamali (₹)</span>
+                        {ledgerField(row, "hamali", amountInput(row.hamali), "number", "mobile Hamali", "min-h-11 border border-line bg-white px-2")}
+                      </label>
+                      <p className="rounded-lg bg-canvas p-2 text-sm">Receipt fee <strong className="block">{money(row.receipt_fee ?? 2)}</strong></p>
+                      <p className="rounded-lg bg-canvas p-2 text-sm">Entered by <strong className="block">{row.entry_by || "—"}</strong></p>
+                    </div> : <p className="mt-2 text-xs text-muted">Entered by {row.entry_by || "—"}</p>}
+                    <p role="status" aria-live="polite" className={`mt-2 text-xs ${
+                      rowStatus.startsWith("Failed") || rowStatus.startsWith("Unsaved") ? "text-red-700"
+                        : rowStatus.startsWith("Waiting") ? "text-amber-800" : "text-muted"
+                    }`}>{rowStatus}</p>
+                  </article>;
+                })}
+                {canFinanceRead && ledgerRows.length > 0 && <section aria-label="Mobile selected ledger totals"
+                  className="grid grid-cols-2 gap-2 rounded-xl border border-brand-200 bg-brand-50 p-3 text-sm">
+                  <p>Bhada total <strong className="block">{money(ledgerTotals.bhada)}</strong></p>
+                  <p>Hamali total <strong className="block">{money(ledgerTotals.hamali)}</strong></p>
+                  <p>Receipt fee total <strong className="block">{money(ledgerTotals.receiptFee)}</strong></p>
+                  <p className="font-bold">Grand total <strong className="block">{money(ledgerTotals.total)}</strong></p>
+                  <p className="col-span-2 text-xs text-muted">Totals exclude voided receipts.</p>
+                </section>}
+              </div>
               {ledgerRows.map((row) => {
                 const status = ledgerStatus[row.id] || "Saved";
                 return status.startsWith("Failed") ? <div key={`${row.id}-status`} className="border-t border-red-400 bg-red-50 p-2 text-sm">
@@ -1353,14 +1478,25 @@ export default function Booking({ user }) {
                 <td className="border border-black p-1">{row.lr_ref}</td>
                 <td className="border border-black p-1">{hindiText(row.sender_name_hindi, row.sender_name)}</td>
                 <td className="border border-black p-1">{hindiText(row.receiver_name_hindi, row.receiver_name)}</td>
-                <td className="border border-black p-1">{getGoodsRows(row).map(hindiGoodsLine).join(", ")}</td>
+                <td className="border border-black p-1">{getGoodsRows(row).map(hindiLedgerGoodsLine).join(", ")}</td>
                 <td className="border border-black p-1">{canFinanceRead ? money(row.rent) : ""}</td>
                 <td className="border border-black p-1">{canFinanceRead ? money(row.hamali) : ""}</td>
                 <td className="border border-black p-1">{money(row.receipt_fee ?? 2)}</td>
                 <td className="border border-black p-1">{row.entry_by || "—"}</td>
                 {owner && <td className="border border-black p-1">{row.amount_paid ? "✓" : ""}</td>}
               </tr>)}</tbody>
+              {canFinanceRead && <tfoot><tr>
+                <td className="border border-black p-1 font-bold" colSpan={5}>कुल (रद्द रसीद छोड़कर)</td>
+                <td className="border border-black p-1 font-bold">{money(ledgerTotals.bhada)}</td>
+                <td className="border border-black p-1 font-bold">{money(ledgerTotals.hamali)}</td>
+                <td className="border border-black p-1 font-bold">{money(ledgerTotals.receiptFee)}</td>
+                <td className="border border-black p-1" />
+                {owner && <td className="border border-black p-1" />}
+              </tr></tfoot>}
             </table>
+            {canFinanceRead && <p className="mt-2 text-right font-bold">
+              कुल योग (भाड़ा + हमाली + रसीद शुल्क): {money(ledgerTotals.total)}
+            </p>}
           </div>}
           {printReceipt && <ReceiptPrint receipt={printReceipt} trip={selectedTrip} site={site}
             branding={user?.branding} showCharges={canFinanceRead}

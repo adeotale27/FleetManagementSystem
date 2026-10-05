@@ -47,15 +47,45 @@ export const scheduleMutationSuccess = (msg = "Changes saved successfully.") => 
 
 export function ToastHost() {
   const [items, setItems] = useState([]);
+  const [mutationFailures, setMutationFailures] = useState([]);
   useEffect(() => {
     pushToast = (msg, tone) => {
       const id = Math.random();
       setItems((s) => [...s, { id, msg, tone }]);
       setTimeout(() => setItems((s) => s.filter((i) => i.id !== id)), 3600);
     };
+    const onMutationStatus = (event) => {
+      const status = event.detail;
+      if (!status?.key) return;
+      if (status.state === "saved") {
+        setMutationFailures((current) => current.filter((failure) => failure.key !== status.key));
+      } else if (status.state === "failed") {
+        setMutationFailures((current) => [
+          { key: status.key, title: status.title, reason: status.reason },
+          ...current.filter((failure) => failure.key !== status.key),
+        ].slice(0, 5));
+      }
+    };
+    window.addEventListener("fms:mutation-status", onMutationStatus);
+    return () => window.removeEventListener("fms:mutation-status", onMutationStatus);
   }, []);
   return (
     <div className="fixed right-4 top-4 z-[100] flex w-[min(92vw,420px)] flex-col gap-2 md:right-6 md:top-6">
+      {mutationFailures.map((failure) => (
+        <div key={failure.key} role="alert" data-testid="persistent-save-error"
+          className="row-anim flex items-start gap-2.5 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-[14px] text-red-900 shadow-lg">
+          <AlertTriangle size={17} className="mt-0.5 shrink-0 text-red-700" />
+          <div className="min-w-0 flex-1">
+            <p className="font-bold">{failure.title}</p>
+            <p className="mt-1 break-words text-sm">{failure.reason}</p>
+          </div>
+          <button type="button" aria-label="Dismiss save error"
+            className="shrink-0 rounded p-1 text-red-800 hover:bg-red-100"
+            onClick={() => setMutationFailures((current) => current.filter((item) => item.key !== failure.key))}>
+            <X size={17} />
+          </button>
+        </div>
+      ))}
       {items.map((i) => (
         <div
           key={i.id}

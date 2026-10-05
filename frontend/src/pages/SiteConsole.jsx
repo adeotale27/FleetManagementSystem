@@ -12,6 +12,7 @@ import { Btn, Card, ErrorState, Loader, PageHead } from "../components/ui";
 import { DATA_CHANGE_EVENT } from "../lib/realtime";
 import { money0 } from "../lib/format";
 import { useMaster } from "../lib/hooks";
+import { DEFAULT_BOOKING_GOODS } from "../lib/bookingGoods";
 
 const field = "fld w-full";
 const isoDay = (offset = 0) => {
@@ -259,7 +260,10 @@ export default function SiteConsole({ user, adminOnly = false }) {
   const [receiptControls, setReceiptControls] = useState({
     hindi_conversion_enabled: true, receipt_language: "hindi",
     sender_address_enabled: true, receiver_address_enabled: true, receipt_fee: "2.00",
+    overdue_after_days: "30",
   });
+  const [goodsSuggestions, setGoodsSuggestions] = useState(DEFAULT_BOOKING_GOODS);
+  const [goodsSuggestionDraft, setGoodsSuggestionDraft] = useState("");
   const [categoryForm, setCategoryForm] = useState({ goods: "", containers: "" });
   const [migration, setMigration] = useState(null);
   const [tripForm, setTripForm] = useState({ truck_no: "", driver_name: "", vehicle_id: "", driver_id: "" });
@@ -370,7 +374,10 @@ export default function SiteConsole({ user, adminOnly = false }) {
           sender_address_enabled: configuredReceiptControls.sender_address_enabled !== false,
           receiver_address_enabled: configuredReceiptControls.receiver_address_enabled !== false,
           receipt_fee: configuredReceiptControls.receipt_fee ?? "2.00",
+          overdue_after_days: String(configuredReceiptControls.overdue_after_days ?? 30),
         });
+        setGoodsSuggestions(Array.isArray(selected.config?.goods_suggestions)
+          ? selected.config.goods_suggestions : DEFAULT_BOOKING_GOODS);
         if (!preserveDrafts) siteEditDirtyFields.current = {};
         else if (Object.keys(siteEditDirtyFields.current).length) {
           setMessage("Latest data loaded. Your unsaved site edits were kept; review before saving.");
@@ -433,7 +440,10 @@ export default function SiteConsole({ user, adminOnly = false }) {
         sender_address_enabled: configuredReceiptControls.sender_address_enabled !== false,
         receiver_address_enabled: configuredReceiptControls.receiver_address_enabled !== false,
         receipt_fee: configuredReceiptControls.receipt_fee ?? "2.00",
+        overdue_after_days: String(configuredReceiptControls.overdue_after_days ?? 30),
       });
+      setGoodsSuggestions(Array.isArray(selected.config?.goods_suggestions)
+        ? selected.config.goods_suggestions : DEFAULT_BOOKING_GOODS);
     }
     if (adminOnly) return;
     await loadSiteWorkspace(id);
@@ -491,12 +501,14 @@ export default function SiteConsole({ user, adminOnly = false }) {
       await api.put(`/sites/${siteId}`, {
         config: {
           ...(selected.config || {}),
+          goods_suggestions: goodsSuggestions,
           receipt_controls: {
             hindi_conversion_enabled: receiptControls.hindi_conversion_enabled,
             receipt_language: receiptControls.receipt_language,
             sender_address_enabled: receiptControls.sender_address_enabled,
             receiver_address_enabled: receiptControls.receiver_address_enabled,
             receipt_fee: receiptControls.receipt_fee,
+            overdue_after_days: Number(receiptControls.overdue_after_days),
           },
         },
       });
@@ -514,6 +526,14 @@ export default function SiteConsole({ user, adminOnly = false }) {
       setCategoryForm((current) => ({ ...current, [kind]: "" }));
       setMessage("Category added.");
     } catch (e) { setError(errMsg(e)); }
+  };
+
+  const addGoodsSuggestion = (event) => {
+    event.preventDefault();
+    const value = goodsSuggestionDraft.trim();
+    if (!value || goodsSuggestions.some((item) => item.toLocaleLowerCase() === value.toLocaleLowerCase())) return;
+    setGoodsSuggestions((current) => [...current, value]);
+    setGoodsSuggestionDraft("");
   };
 
   const previewMigration = async () => {
@@ -852,19 +872,70 @@ export default function SiteConsole({ user, adminOnly = false }) {
                 }))} />
               <span className="mt-1 block text-muted">Applies to receipts created after this setting is saved. Existing receipts keep their recorded fee.</span>
             </label>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {[
-                ["sender_address_enabled", "Show sender address on receipt"],
-                ["receiver_address_enabled", "Show receiver address on receipt"],
-              ].map(([key, label]) => <label key={key} className="flex items-center gap-3 text-sm">
-                <input type="checkbox" className="h-4 w-4 accent-brand-700"
+            <label className="block max-w-xs text-sm">Overdue after (days)
+              <input className={field} type="number" min="1" max="3650" step="1" required
+                value={receiptControls.overdue_after_days}
+                onChange={(event) => setReceiptControls((current) => ({
+                  ...current, overdue_after_days: event.target.value,
+                }))} />
+              <span className="mt-1 block text-muted">Outstanding booking payments are overdue when they are unpaid for this many days or more.</span>
+            </label>
+            <section className="space-y-3 border-t border-line pt-4">
+              <div>
+                <h3 className="font-semibold">Addresses on the printed receipt</h3>
+                <p className="mt-1 text-sm text-muted">
+                  Choose independently whether each address field can be entered and appears on printed receipts.
+                </p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {[
+                  ["sender_address_enabled", "Include sender address in receipt", "Collects the optional sender address during entry and prints it on the receipt."],
+                  ["receiver_address_enabled", "Include receiver address in receipt", "Collects the optional receiver address during entry and prints it on the receipt."],
+                ].map(([key, label, hint]) => <label key={key} className="flex items-start gap-3 rounded-lg border border-line p-3 text-sm">
+                <input type="checkbox" aria-label={label} className="mt-0.5 h-4 w-4 accent-brand-700"
                   checked={receiptControls[key]}
                   onChange={(event) => setReceiptControls((current) => ({
                     ...current, [key]: event.target.checked,
                   }))} />
-                <span>{label} (entry and printing)</span>
+                <span><strong className="block">{label}</strong><span className="mt-1 block text-xs text-muted">{hint}</span></span>
               </label>)}
-            </div>
+              </div>
+            </section>
+            <section className="space-y-3 border-t border-line pt-4">
+              <div>
+                <h3 className="font-semibold">Goods suggestions</h3>
+                <p className="mt-1 text-sm text-muted">
+                  Manage the options shown while entering a receipt. Staff can still type any goods description.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input className={field} aria-label="New goods suggestion" maxLength={80}
+                  placeholder="Add a goods name, e.g. स्थानीय अनाज"
+                  value={goodsSuggestionDraft}
+                  onChange={(event) => setGoodsSuggestionDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") addGoodsSuggestion(event);
+                  }} />
+                <Btn type="button" onClick={addGoodsSuggestion} disabled={!goodsSuggestionDraft.trim()
+                  || goodsSuggestions.some((item) =>
+                    item.toLocaleLowerCase() === goodsSuggestionDraft.trim().toLocaleLowerCase())}>
+                  Add goods
+                </Btn>
+              </div>
+              {goodsSuggestions.length ? <ul className="flex flex-wrap gap-2" aria-label="Goods suggestions">
+                {goodsSuggestions.map((name, index) => <li key={`${name}-${index}`}>
+                  <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-line bg-canvas px-3 py-1.5 text-sm">
+                    <span className="break-words">{name}</span>
+                    <button type="button" className="rounded-full p-1 text-muted hover:bg-red-50 hover:text-red-700"
+                      aria-label={`Remove goods suggestion ${name}`}
+                      onClick={() => setGoodsSuggestions((current) =>
+                        current.filter((_item, itemIndex) => itemIndex !== index))}>
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </span>
+                </li>)}
+              </ul> : <p className="text-sm text-muted">No suggestions. Staff can still enter goods descriptions manually.</p>}
+            </section>
             <Btn type="submit">Save booking settings</Btn>
           </Card>
         </form> : <p className="mt-3 text-sm text-muted">Select a site to manage receipt controls.</p>}
