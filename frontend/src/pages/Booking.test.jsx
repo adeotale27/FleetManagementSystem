@@ -8,7 +8,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 jest.mock("../lib/api", () => ({
   api: { get: jest.fn(), post: jest.fn(), patch: jest.fn() },
-  errMsg: () => "Request failed",
+  errMsg: (error) => error?.response?.data?.detail || "Request failed",
 }));
 
 describe("simple booking workflow", () => {
@@ -294,6 +294,42 @@ describe("simple booking workflow", () => {
     expect(firstCard.textContent).toContain("Closed");
     expect(firstCard.textContent).toContain("4 receipts");
     expect(secondCard.textContent).toContain("Open");
+  });
+
+  it("lets a manager add vehicle and driver details to a closed trip", async () => {
+    const closedTrip = { ...trip, status: "closed" };
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [site] });
+      if (path === `/sites/${site.id}/trips`) return Promise.resolve({ data: { rows: [closedTrip], total: 1 } });
+      if (path === `/sites/${site.id}/trips/${trip.id}/lrs`) return Promise.resolve({ data: { rows: [], total: 0 } });
+      return Promise.resolve({ data: closedTrip });
+    });
+    api.patch.mockResolvedValue({ data: {
+      ...closedTrip, truck_no: "MH 31 AB 1234", driver_name: "Ramesh",
+    } });
+    await renderBooking("dashboard");
+    await act(async () => {
+      container.querySelector("button.card").click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent.includes("Edit trip details")).click();
+    });
+
+    expect(container.querySelector('[aria-label="Edit trip vehicle number"]')).not.toBeNull();
+    await act(async () => {
+      setInput('[aria-label="Edit trip vehicle number"]', "MH 31 AB 1234");
+      setInput('[aria-label="Edit trip driver name"]', "Ramesh");
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent.includes("Save trip details")).click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(api.patch).toHaveBeenCalledWith(`/sites/${site.id}/trips/${trip.id}`, {
+      truck_no: "MH 31 AB 1234", driver_name: "Ramesh",
+    });
+    expect(container.textContent).toContain("MH 31 AB 1234");
+    expect(container.textContent).toContain("Ramesh");
   });
 
   it("creates a trip without vehicle or driver, then starts with one goods row", async () => {
@@ -749,7 +785,7 @@ describe("simple booking workflow", () => {
     expect(table.querySelector('[aria-label="NGP-LR-01 payment received"]')).toBeNull();
   });
 
-  it("lets an owner mark an LR paid or unpaid without asking for a reason", async () => {
+  it("saves paid ticks immediately and restores them with an error if the save fails", async () => {
     const row = {
       id: "lr-1", site_id: site.id, trip_id: trip.id, trip_ref: trip.trip_ref,
       trip_status: "open", lr_ref: "NGP-LR-01", receipt_date: trip.operating_date,
@@ -763,9 +799,10 @@ describe("simple booking workflow", () => {
       if (path === `/sites/${site.id}/trips`) return Promise.resolve({ data: { rows: [trip], total: 1 } });
       return Promise.resolve({ data: trip });
     });
-    api.post.mockImplementation((_path, body) => {
-      row.amount_paid = body.received;
-      return Promise.resolve({ data: { received: body.received } });
+    api.post.mockResolvedValueOnce({
+      data: { received: false, paid_total: "0.00", outstanding: "102.00" },
+    }).mockRejectedValueOnce({
+      response: { status: 409, data: { detail: "The trip ledger is locked" } },
     });
     const prompt = jest.spyOn(window, "prompt").mockImplementation(() => null);
     await renderBooking("ledger", "owner");
@@ -782,6 +819,14 @@ describe("simple booking workflow", () => {
       expect.objectContaining({ received: false, idempotency_key: expect.any(String) }),
     );
     expect(container.querySelector('[aria-label="NGP-LR-01 Amount paid"]').checked).toBe(false);
+    await act(async () => {
+      container.querySelector('[aria-label="NGP-LR-01 Amount paid"]').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(api.post).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[aria-label="NGP-LR-01 Amount paid"]').checked).toBe(false);
+    expect(container.querySelector('[role="alert"]').textContent)
+      .toContain("NGP-LR-01: Paid status was not saved. The trip ledger is locked");
     prompt.mockRestore();
   });
 

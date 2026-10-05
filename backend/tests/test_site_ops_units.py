@@ -153,6 +153,69 @@ def test_closing_a_trip_updates_only_that_open_trip_and_audits_once(monkeypatch)
     assert len(audit_calls) == 1
 
 
+def test_manager_can_edit_vehicle_and_driver_on_closed_unreconciled_trip(monkeypatch):
+    site = {"_id": "site-1", "business_id": "business-1"}
+    trip = {
+        "_id": "trip-1", "business_id": "business-1", "site_id": "site-1",
+        "status": "closed", "truck_no": "", "driver_name": "",
+    }
+    updates = []
+    audits = []
+
+    class Trips:
+        async def update_one(self, query, update):
+            updates.append((query, update))
+            trip.update(update["$set"])
+            return SimpleNamespace(matched_count=1)
+
+    async def get_trip(_site, _trip_id):
+        return trip
+
+    async def trip_master_values(*_args, **_kwargs):
+        return {}
+
+    async def record_audit(*args, **kwargs):
+        audits.append((args, kwargs))
+
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(site_trips=Trips()))
+    monkeypatch.setattr(site_ops, "_site_for_user", _async_value(site))
+    monkeypatch.setattr(site_ops, "_trip", get_trip)
+    monkeypatch.setattr(site_ops, "_trip_master_values", trip_master_values)
+    monkeypatch.setattr(site_ops, "_audit", record_audit)
+    monkeypatch.setattr(site_ops, "now_iso", lambda: "2026-09-29T12:00:00+00:00")
+
+    result = asyncio.run(site_ops.update_site_trip(
+        "site-1", "trip-1",
+        site_ops.TripUpdate(truck_no="MH 31 AB 1234", driver_name="Ramesh"),
+        {"role": "site_manager", "username": "manager"},
+    ))
+
+    assert result["truck_no"] == "MH 31 AB 1234"
+    assert result["driver_name"] == "Ramesh"
+    assert updates[0][0]["status"] == "closed"
+    assert updates[0][0]["ledger_completed_at"] == {"$exists": False}
+    assert audits[0][0][2] == "trip.updated"
+
+
+def test_trip_details_remain_locked_during_ledger_completion(monkeypatch):
+    site = {"_id": "site-1", "business_id": "business-1"}
+    trip = {
+        "_id": "trip-1", "business_id": "business-1", "site_id": "site-1",
+        "status": "closed", "ledger_completion_started_at": "2026-09-29T12:00:00+00:00",
+    }
+    monkeypatch.setattr(site_ops, "_site_for_user", _async_value(site))
+    monkeypatch.setattr(site_ops, "_trip", _async_value(trip))
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(site_ops.update_site_trip(
+            "site-1", "trip-1", site_ops.TripUpdate(truck_no="MH 31 AB 1234"),
+            {"role": "site_manager", "username": "manager"},
+        ))
+
+    assert error.value.status_code == 409
+    assert "ledger is being completed" in error.value.detail
+
+
 def test_new_manager_login_keeps_owner_creator_metadata(monkeypatch):
     inserted = []
 
@@ -682,13 +745,21 @@ def test_booking_lr_report_query_is_tenant_and_site_scoped_and_escapes_search():
     assert query["$or"][0]["lr_ref"] == {"$regex": r"A\.\*", "$options": "i"}
 
 
-def test_reversal_index_spec_matches_existing_sparse_index(monkeypatch):
+def test_reversal_index_excludes_non_reversal_payments_and_migrates_sparse_index(monkeypatch):
     class Collection:
         def __init__(self):
             self.indexes = []
+            self.existing_indexes = {}
+            self.dropped_indexes = []
 
         async def create_index(self, keys, **options):
             self.indexes.append((keys, options))
+
+        async def index_information(self):
+            return self.existing_indexes
+
+        async def drop_index(self, name):
+            self.dropped_indexes.append(name)
 
     class Database:
         def __init__(self):
@@ -698,6 +769,10 @@ def test_reversal_index_spec_matches_existing_sparse_index(monkeypatch):
             return self.collections.setdefault(name, Collection())
 
     database = Database()
+    database.site_payments.existing_indexes["site_payment_reversal_unique"] = {
+        "unique": True,
+        "sparse": True,
+    }
     monkeypatch.setattr(site_ops, "db", database)
     monkeypatch.setattr(site_ops, "current_db_name", lambda: "test-tenant")
     monkeypatch.setattr(site_ops, "_indexed_databases", set())
@@ -711,8 +786,11 @@ def test_reversal_index_spec_matches_existing_sparse_index(monkeypatch):
         if options.get("name") == "site_payment_reversal_unique"
     )
     assert reversal_index["unique"] is True
-    assert reversal_index["sparse"] is True
-    assert "partialFilterExpression" not in reversal_index
+    assert reversal_index["partialFilterExpression"] == {
+        "kind": "reversal",
+        "reversal_of": {"$exists": True},
+    }
+    assert database.site_payments.dropped_indexes == ["site_payment_reversal_unique"]
     expense_index = next(
         options for _, options in database.expenses.indexes
         if options.get("name") == "site_trip_expense_idempotency_unique"
@@ -1553,6 +1631,55 @@ def test_owner_can_reverse_only_a_ledger_created_settlement(monkeypatch):
     assert result["paid_total"] == "25.00"
     assert result["outstanding"] == "77.00"
     assert lr["booking_ledger_paid"] is False
+
+
+def test_lr_update_preserves_charges_when_editing_receipt_goods_without_finance_access(monkeypatch):
+    site = {"_id": "site-1", "business_id": "business-1"}
+    trip = {"_id": "trip-1", "status": "open", "operating_date": "2026-09-29"}
+    lr = {
+        "_id": "lr-1", "party_id": "party-1", "trip_id": "trip-1",
+        "lr_ref": "N-LR-1", "operating_date": "2026-09-29",
+        "rent": Decimal128("100.00"), "hamali": Decimal128("10.00"),
+        "goods_rows": [{"type": "Box", "quantity": 1}],
+        "containers": [{"type": "Box", "quantity": 1}],
+    }
+
+    class SiteLRs:
+        async def update_one(self, _query, update):
+            lr.update(update["$set"])
+            return SimpleNamespace(matched_count=1)
+
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(site_lrs=SiteLRs()))
+    monkeypatch.setattr(site_ops, "_site_for_user", _async_value(site))
+    monkeypatch.setattr(site_ops, "_trip", _async_value(trip))
+    monkeypatch.setattr(site_ops, "_lr", _async_value(lr))
+    monkeypatch.setattr(site_ops, "_payments_by_lr", _async_value({"lr-1": Decimal("0.00")}))
+    monkeypatch.setattr(site_ops, "_save_category", _async_value(None))
+    monkeypatch.setattr(site_ops, "_audit", _async_value(None))
+    monkeypatch.setattr(site_ops, "_lr_rows", _async_value([lr]))
+
+    result = asyncio.run(site_ops.update_site_lr(
+        "site-1", "trip-1", "lr-1",
+        site_ops.LRUpdate(goods_rows=[{
+            "type": "Crate", "quantity": 2, "description": "Large",
+        }]),
+        {"role": "site_manager", "username": "manager",
+         "site_permissions": {"site-1": ["lrs:update"]}},
+    ))
+
+    assert result["goods_rows"][0]["type"] == "Crate"
+    assert site_ops._decimal_value(result["rent"]) == Decimal("100.00")
+    assert site_ops._decimal_value(result["hamali"]) == Decimal("10.00")
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(site_ops.update_site_lr(
+            "site-1", "trip-1", "lr-1",
+            site_ops.LRUpdate(rent="101.00"),
+            {"role": "site_manager", "username": "manager",
+             "site_permissions": {"site-1": ["lrs:update"]}},
+        ))
+    assert error.value.status_code == 422
+    assert "idempotency key" in error.value.detail
 
 
 def test_lr_update_calculates_receipt_totals_from_per_goods_charges(monkeypatch):

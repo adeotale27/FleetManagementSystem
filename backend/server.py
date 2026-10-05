@@ -25,12 +25,6 @@ from site_ops import initialize_site_storage, router as site_router
 
 app.include_router(site_router, prefix="/api")
 
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
-    expose_headers=["X-Data-Revision", "X-Data-Sync-Status"],
-)
-
 _SENSITIVE_VALUE = re.compile(
     r"(?i)([\"']?[A-Za-z0-9_.-]*(?:password|passwd|token|authorization|secret)"
     r"[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)"
@@ -202,6 +196,14 @@ async def log_failures(request: Request, call_next):
                 "".join(traceback.format_exception(type(e), e, e.__traceback__)),
             )
     return response
+
+
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
+    expose_headers=["X-Data-Revision", "X-Data-Sync-Status", "X-Reference-ID"],
+)
+
 
 DEFAULT_SETTINGS = {
     "_id": "settings",
@@ -1779,6 +1781,12 @@ async def upload_file(kind: str = "misc", file: UploadFile = File(...), u=Depend
     data = await file.read()
     if len(data) > 6 * 1024 * 1024:
         raise HTTPException(400, "Please upload an image under 6 MB")
+    extension = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if kind in {"logo", "owner-photo"} and extension not in {"jpg", "jpeg", "png", "webp", "gif"}:
+        raise HTTPException(
+            415,
+            "Logo and owner photo must be JPG, PNG, WEBP, or GIF. Convert HEIC images before uploading.",
+        )
     path, ctype = S.build_path(u.get("tenant_id") or PRIMARY_TENANT, kind, file.filename or "photo.jpg")
     try:
         res = await run_in_threadpool(S.put_object, path, data, file.content_type or ctype)

@@ -25,11 +25,11 @@ describe("owner quick actions", () => {
     container.remove();
   });
 
-  const renderAt = async (path, syncStatus = "connected") => {
+  const renderAt = async (path, syncStatus = "connected", branding = undefined) => {
     await act(async () => {
       root.render(
         <MemoryRouter initialEntries={[path]}>
-          <Layout user={{ role: "owner", name: "Owner", features: {} }} syncStatus={syncStatus}>
+          <Layout user={{ role: "owner", name: "Owner", features: {}, branding }} syncStatus={syncStatus}>
             <div>Page content</div>
           </Layout>
         </MemoryRouter>,
@@ -71,6 +71,26 @@ describe("owner quick actions", () => {
       window.dispatchEvent(new Event("online"));
     });
     expect(status.textContent).toContain("Live updates on");
+  });
+
+  it("falls back when a business logo cannot load", async () => {
+    await renderAt("/trips?tab=trips", "connected", { name: "Owner", logo: "https://example.test/business-logo.png" });
+
+    const logo = container.querySelector('[data-testid="brand-logo"]');
+    expect(logo.getAttribute("src")).toBe("https://example.test/business-logo.png");
+    expect(logo.className).toContain("h-14");
+
+    await act(async () => {
+      logo.dispatchEvent(new Event("error"));
+    });
+
+    expect(container.querySelector('[data-testid="brand-logo"]').getAttribute("src")).toBe("/app-icon.png");
+
+    await act(async () => {
+      container.querySelector('[data-testid="brand-logo"]').dispatchEvent(new Event("error"));
+    });
+
+    expect(container.querySelector('[aria-label="Owner logo unavailable"]')).not.toBeNull();
   });
 
   it("groups owner navigation into booking and industrial workspaces", async () => {

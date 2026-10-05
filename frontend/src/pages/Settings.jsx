@@ -118,7 +118,7 @@ export default function Settings() {
                     ? <img src={s.company.logo} alt="Business logo preview" className="h-16 w-16 rounded-lg border border-line bg-white object-contain p-1" />
                     : <div className="grid h-16 w-16 place-items-center rounded-lg bg-brand-500 text-white"><Truck size={26} /></div>}
                   <div>
-                    <input type="file" accept="image/*" aria-label="Upload business logo" onChange={logoUpload} data-testid="set-logo"
+                    <input type="file" accept=".jpg,.jpeg,.png,.webp,.gif" aria-label="Upload business logo" onChange={logoUpload} data-testid="set-logo"
                       className="text-[13px] file:mr-3 file:rounded-2xl file:border-0 file:bg-brand-500 file:px-3 file:py-2 file:font-semibold file:text-white" />
                     {s.company.logo && (
                       <button type="button" aria-label="Remove business logo" onClick={() => setS({ ...s, company: { ...s.company, logo: "" } })}
@@ -135,7 +135,7 @@ export default function Settings() {
                     : <div className="grid h-16 w-16 place-items-center rounded-full bg-brand-50 text-brand-600">
                         <User size={26} /></div>}
                   <div>
-                    <input type="file" accept="image/*" capture="environment" aria-label="Upload owner photo" onChange={photoUpload} data-testid="set-owner-photo"
+                    <input type="file" accept=".jpg,.jpeg,.png,.webp,.gif" capture="environment" aria-label="Upload owner photo" onChange={photoUpload} data-testid="set-owner-photo"
                       className="text-[13px] file:mr-3 file:rounded-2xl file:border-0 file:bg-brand-500 file:px-3 file:py-2 file:font-semibold file:text-white" />
                     {s.company.owner_photo && (
                       <button type="button" aria-label="Remove owner photo" onClick={() => setS({ ...s, company: { ...s.company, owner_photo: "" } })}

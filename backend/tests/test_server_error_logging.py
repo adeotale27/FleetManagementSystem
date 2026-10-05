@@ -241,3 +241,54 @@ def test_sync_revision_reads_only_the_authenticated_business(monkeypatch):
 
 async def _return(value):
     return value
+
+
+def test_unhandled_server_errors_keep_cors_headers(monkeypatch):
+    path = "/_test/unhandled-error"
+
+    async def fail():
+        raise RuntimeError("Test server failure")
+
+    async def record_error(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(server, "_record_server_error", record_error)
+    server.app.add_api_route(path, fail, methods=["GET"])
+    route = next(route for route in server.app.router.routes if getattr(route, "path", None) == path)
+
+    async def make_request():
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [(b"origin", b"http://localhost:3000")],
+            "client": ("testclient", 123),
+            "server": ("testserver", 80),
+            "root_path": "",
+        }
+        messages = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        await server.app(scope, receive, send)
+        response_start = next(message for message in messages if message["type"] == "http.response.start")
+        return response_start
+
+    try:
+        response = asyncio.run(make_request())
+    finally:
+        server.app.router.routes.remove(route)
+
+    headers = dict(response["headers"])
+    assert response["status"] == 500
+    assert headers[b"access-control-allow-origin"] in (b"*", b"http://localhost:3000")
+    assert headers[b"access-control-allow-credentials"] == b"true"
