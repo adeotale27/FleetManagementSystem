@@ -7,7 +7,7 @@ import Booking, { romanHindi } from "./Booking";
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 jest.mock("../lib/api", () => ({
-  api: { get: jest.fn(), post: jest.fn(), patch: jest.fn() },
+  api: { get: jest.fn(), post: jest.fn(), patch: jest.fn(), delete: jest.fn() },
   errMsg: (error) => error?.response?.data?.detail || "Request failed",
 }));
 
@@ -30,6 +30,7 @@ describe("simple booking workflow", () => {
       return Promise.resolve({ data: trip });
     });
     api.post.mockResolvedValue({ data: trip });
+    api.delete.mockResolvedValue({ data: { deleted: true, id: trip.id } });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -317,6 +318,7 @@ describe("simple booking workflow", () => {
         .find((button) => button.textContent.includes("Edit trip details")).click();
     });
 
+    expect(container.textContent).not.toContain("Delete empty trip");
     expect(container.querySelector('[aria-label="Edit trip vehicle number"]')).not.toBeNull();
     await act(async () => {
       setInput('[aria-label="Edit trip vehicle number"]', "MH 31 AB 1234");
@@ -330,6 +332,38 @@ describe("simple booking workflow", () => {
     });
     expect(container.textContent).toContain("MH 31 AB 1234");
     expect(container.textContent).toContain("Ramesh");
+    expect(container.textContent).not.toContain("Delete empty trip");
+  });
+
+  it("lets only the owner delete an empty trip from trip editing", async () => {
+    const confirm = jest.spyOn(window, "confirm").mockReturnValue(true);
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [site] });
+      if (path === `/sites/${site.id}/trips`) return Promise.resolve({ data: { rows: [trip], total: 1 } });
+      if (path === `/sites/${site.id}/trips/${trip.id}/lrs`) return Promise.resolve({ data: { rows: [], total: 0 } });
+      return Promise.resolve({ data: trip });
+    });
+
+    await renderBooking("dashboard", "owner");
+    await act(async () => {
+      container.querySelector("button.card").click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent.includes("Edit trip details")).click();
+    });
+    expect(container.textContent).toContain("Delete empty trip");
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent.includes("Delete empty trip")).click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(confirm).toHaveBeenCalled();
+    expect(api.delete).toHaveBeenCalledWith(`/sites/${site.id}/trips/${trip.id}`);
+    expect(localStorage.getItem("booking_trip_id")).toBeNull();
+    confirm.mockRestore();
   });
 
   it("creates a trip without vehicle or driver, then starts with one goods row", async () => {
@@ -744,7 +778,7 @@ describe("simple booking workflow", () => {
       trip_status: "open", lr_ref: "NGP-LR-01", receipt_date: trip.operating_date,
       sender_name: "Sender", receiver_name: "Receiver", rent: "100.00", hamali: "10.00",
       total_rent: "110.00", receipt_fee: "2.00", paid_total: "20.00", outstanding: "80.00",
-      payment_status: "partial", ledger_settlement_created: false,
+      payment_status: "partial", amount_paid: true, ledger_settlement_created: false,
       goods_rows: [{
         type: "Cement", type_hindi: "सीमेंट", description: "Bags",
         description_hindi: "बोरे", quantity: 1, rent: "100.00", hamali: "10.00",
@@ -759,6 +793,8 @@ describe("simple booking workflow", () => {
     });
     await renderBooking("ledger", "owner");
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
+    expect(container.querySelector('[aria-label="NGP-LR-01 Bhada"]').disabled).toBe(true);
+    expect(container.querySelector('[aria-label="NGP-LR-01 Hamali"]').disabled).toBe(true);
     const table = container.querySelector("table");
     expect(table.querySelectorAll("input")).toHaveLength(3);
     expect(table.querySelector('[aria-label="NGP-LR-01 Amount paid"]')).not.toBeNull();

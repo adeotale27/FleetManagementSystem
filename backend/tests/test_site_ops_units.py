@@ -197,6 +197,86 @@ def test_manager_can_edit_vehicle_and_driver_on_closed_unreconciled_trip(monkeyp
     assert audits[0][0][2] == "trip.updated"
 
 
+def test_owner_can_delete_only_empty_site_trip(monkeypatch):
+    site = {"_id": "site-1", "business_id": "business-1"}
+    trip = {
+        "_id": "trip-1", "trip_ref": "NGP29092026-01",
+        "operating_date": "2026-09-29",
+    }
+    deleted_queries = []
+    audit_calls = []
+
+    class EmptyCollection:
+        async def count_documents(self, query):
+            return 0
+
+    class Trips(EmptyCollection):
+        async def delete_one(self, query):
+            deleted_queries.append(query)
+            return SimpleNamespace(deleted_count=1)
+
+    async def audit(*args, **kwargs):
+        audit_calls.append((args, kwargs))
+
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(
+        site_lrs=EmptyCollection(), site_payments=EmptyCollection(),
+        expenses=EmptyCollection(), ledger=EmptyCollection(),
+        cashbook=EmptyCollection(), site_ledger_imports=EmptyCollection(),
+        site_trips=Trips(),
+    ))
+    monkeypatch.setattr(site_ops, "_site_for_user", _async_value(site))
+    monkeypatch.setattr(site_ops, "_trip", _async_value(trip))
+    monkeypatch.setattr(site_ops, "_audit", audit)
+
+    result = asyncio.run(site_ops.delete_site_trip(
+        "site-1", "trip-1", {"role": "owner", "username": "owner"},
+    ))
+
+    assert result == {"deleted": True, "id": "trip-1"}
+    assert deleted_queries == [{
+        "business_id": "business-1", "site_id": "site-1", "_id": "trip-1",
+    }]
+    assert audit_calls[0][0][2:5] == ("trip.deleted", "trip", "trip-1")
+
+
+def test_trip_delete_rejects_linked_receipts_and_non_owners(monkeypatch):
+    class LinkedReceipts:
+        async def count_documents(self, _query):
+            return 1
+
+    class EmptyCollection:
+        async def count_documents(self, _query):
+            return 0
+
+    class Trips:
+        async def delete_one(self, _query):
+            raise AssertionError("A trip with linked receipts must not be deleted")
+
+    site = {"_id": "site-1", "business_id": "business-1"}
+    trip = {"_id": "trip-1"}
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(
+        site_lrs=LinkedReceipts(), site_payments=EmptyCollection(),
+        expenses=EmptyCollection(), ledger=EmptyCollection(),
+        cashbook=EmptyCollection(), site_ledger_imports=EmptyCollection(),
+        site_trips=Trips(),
+    ))
+    monkeypatch.setattr(site_ops, "_site_for_user", _async_value(site))
+    monkeypatch.setattr(site_ops, "_trip", _async_value(trip))
+
+    with pytest.raises(HTTPException) as linked_error:
+        asyncio.run(site_ops.delete_site_trip(
+            "site-1", "trip-1", {"role": "owner", "username": "owner"},
+        ))
+    assert linked_error.value.status_code == 409
+    assert "linked receipts" in linked_error.value.detail
+
+    with pytest.raises(HTTPException) as permission_error:
+        asyncio.run(site_ops.delete_site_trip(
+            "site-1", "trip-1", {"role": "site_manager", "username": "manager"},
+        ))
+    assert permission_error.value.status_code == 403
+
+
 def test_trip_details_remain_locked_during_ledger_completion(monkeypatch):
     site = {"_id": "site-1", "business_id": "business-1"}
     trip = {
@@ -1680,6 +1760,29 @@ def test_lr_update_preserves_charges_when_editing_receipt_goods_without_finance_
         ))
     assert error.value.status_code == 422
     assert "idempotency key" in error.value.detail
+
+
+def test_lr_paid_tick_blocks_bhada_and_hamali_changes(monkeypatch):
+    site = {"_id": "site-1", "business_id": "business-1"}
+    trip = {"_id": "trip-1", "status": "open", "operating_date": "2026-09-29"}
+    lr = {
+        "_id": "lr-1", "trip_id": "trip-1", "lr_ref": "NGP-LR-1",
+        "rent": Decimal128("100.00"), "hamali": Decimal128("10.00"),
+        "booking_ledger_paid": True,
+    }
+    monkeypatch.setattr(site_ops, "_site_for_user", _async_value(site))
+    monkeypatch.setattr(site_ops, "_trip", _async_value(trip))
+    monkeypatch.setattr(site_ops, "_lr", _async_value(lr))
+
+    for changes in ({"rent": "101.00"}, {"hamali": "11.00"}):
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(site_ops.update_site_lr(
+                "site-1", "trip-1", "lr-1", site_ops.LRUpdate(**changes),
+                {"role": "site_manager", "username": "manager",
+                 "site_permissions": {"site-1": ["lrs:update"]}},
+            ))
+        assert error.value.status_code == 409
+        assert "Untick Amount paid" in error.value.detail
 
 
 def test_lr_update_calculates_receipt_totals_from_per_goods_charges(monkeypatch):
