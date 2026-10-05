@@ -1114,7 +1114,10 @@ async def _trip_master_values(
 
 
 async def _trip(site: dict[str, Any], trip_id: str) -> dict[str, Any]:
-    trip = await db.site_trips.find_one(_scoped(str(site["business_id"]), site["_id"], _id=trip_id))
+    trip = await db.site_trips.find_one(_scoped(
+        str(site["business_id"]), site["_id"], _id=trip_id,
+        archived_at={"$exists": False},
+    ))
     if not trip:
         raise HTTPException(404, "Trip not found")
     return trip
@@ -1800,12 +1803,22 @@ async def site_dashboard(site_id: str, u=Depends(site_user)):
     site = await _site_for_user(site_id, u, "dashboard:read", include_inactive_owner=False)
     business_id = str(site["business_id"])
     day, _ = _now_at_site(site)
-    trip_filter = _scoped(business_id, site_id, operating_date=day)
+    trip_filter = _scoped(
+        business_id, site_id, operating_date=day,
+        archived_at={"$exists": False},
+    )
     today_trips = await db.site_trips.count_documents(trip_filter)
-    open_trips = await db.site_trips.count_documents(_scoped(business_id, site_id, status="open"))
-    closed_trips = await db.site_trips.count_documents(_scoped(business_id, site_id, status="closed"))
+    open_trips = await db.site_trips.count_documents(_scoped(
+        business_id, site_id, status="open", archived_at={"$exists": False},
+    ))
+    closed_trips = await db.site_trips.count_documents(_scoped(
+        business_id, site_id, status="closed", archived_at={"$exists": False},
+    ))
     pending_ledgers = await db.site_trips.count_documents(
-        _scoped(business_id, site_id, status="closed", reconciled=False))
+        _scoped(
+            business_id, site_id, status="closed", reconciled=False,
+            archived_at={"$exists": False},
+        ))
     recent = await db.site_audit_events.find(_scoped(business_id, site_id)).sort(
         "created_at", -1).limit(12).to_list(12)
     manager = None
@@ -1932,6 +1945,7 @@ async def system_dashboard(
     if trip_id:
         selected_trip = await db.site_trips.find_one({
             "business_id": business_id, "site_id": {"$in": selected_ids}, "_id": trip_id,
+            "archived_at": {"$exists": False},
         }, {"_id": 1})
         if not selected_trip:
             raise HTTPException(404, "Trip not found in the selected business/site")
@@ -1944,7 +1958,8 @@ async def system_dashboard(
         }
         matching_trip_ids = await db.site_lrs.distinct("trip_id", receiver_query)
     trip_query = {"business_id": business_id, "site_id": {"$in": selected_ids},
-                  "operating_date": {"$gte": start, "$lte": end}}
+                  "operating_date": {"$gte": start, "$lte": end},
+                  "archived_at": {"$exists": False}}
     trip_filters = []
     if trip_status in ("open", "closed"):
         trip_filters.append({"status": trip_status})
@@ -1983,7 +1998,10 @@ async def system_dashboard(
     ]).to_list(1)
     trip_aggregates = trip_aggregates[0] if trip_aggregates else {"by_site": [], "by_date": []}
     trip_by_site = {row["_id"]: row for row in trip_aggregates["by_site"]}
-    today_query = {"business_id": business_id, "$or": today_pairs}
+    today_query = {
+        "business_id": business_id, "$or": today_pairs,
+        "archived_at": {"$exists": False},
+    }
     today_filters = []
     if trip_status in ("open", "closed"):
         today_filters.append({"status": trip_status})
@@ -2010,7 +2028,8 @@ async def system_dashboard(
     if trip_status in ("open", "closed"):
         allowed_trips = await db.site_trips.distinct(
             "_id", {"business_id": business_id, "site_id": {"$in": selected_ids},
-                    "status": trip_status, "operating_date": {"$gte": start, "$lte": end}},
+                    "status": trip_status, "operating_date": {"$gte": start, "$lte": end},
+                    "archived_at": {"$exists": False}},
         )
         lr_query["trip_id"] = {"$in": allowed_trips}
     if trip_id:
@@ -2287,7 +2306,9 @@ async def list_site_trips(
     u=Depends(site_user),
 ):
     site = await _site_for_user(site_id, u, "trips:read")
-    query = _scoped(str(site["business_id"]), site_id)
+    query = _scoped(
+        str(site["business_id"]), site_id, archived_at={"$exists": False},
+    )
     if from_date or to_date:
         query["operating_date"] = {}
         if from_date:
@@ -2473,8 +2494,44 @@ async def delete_site_trip(site_id: str, trip_id: str, u=Depends(site_user)):
     site = await _site_for_user(site_id, u, "trips:update")
     trip = await _trip(site, trip_id)
     business_id = str(site["business_id"])
+    trip_scope = _scoped(business_id, site_id, trip_id=trip_id)
+    receipt_count = await db.site_lrs.count_documents(trip_scope)
+    if receipt_count:
+        active_receipt = await db.site_lrs.find_one({
+            **trip_scope, "voided": {"$ne": True},
+        }, {"_id": 1})
+        if active_receipt:
+            raise HTTPException(
+                409,
+                "This trip cannot be deleted while it has active receipts. Void every receipt first.",
+            )
+        archived_at = now_iso()
+        archived = await db.site_trips.update_one(
+            _scoped(
+                business_id, site_id, _id=trip_id,
+                archived_at={"$exists": False},
+            ),
+            {"$set": {
+                "archived_at": archived_at,
+                "archived_by": u["username"],
+                "updated_at": archived_at,
+            }},
+        )
+        if not archived.matched_count:
+            raise HTTPException(
+                409, "This trip changed before it could be archived. Reload and try again.",
+            )
+        await _audit(
+            site, u, "trip.archived", "trip", trip_id,
+            old={
+                "trip_ref": trip.get("trip_ref"),
+                "operating_date": trip.get("operating_date"),
+            },
+            new={"archived": True, "voided_receipt_count": receipt_count},
+        )
+        return {"deleted": True, "archived": True, "id": trip_id}
+
     linked_records = (
-        ("receipts", db.site_lrs),
         ("payments", db.site_payments),
         ("expenses", db.expenses),
         ("ledger entries", db.ledger),
@@ -3544,13 +3601,48 @@ async def complete_site_trip_ledger(
     await _audit(
         site, u, "trip.ledger_completed", "trip", trip_id,
         new={"ledger_completed": True, "receipt_count": len(active_lrs)},
-        event_id=f"trip-ledger-completed:{trip_id}",
+        event_id=f"trip-ledger-completed:{trip_id}:{completed_at}",
     )
     return {
         "id": trip_id, "ledger_completed": True,
         "ledger_completed_at": completed_at,
         "ledger_completed_by": u["username"],
     }
+
+
+@router.post("/sites/{site_id}/trips/{trip_id}/ledger/uncomplete")
+async def uncomplete_site_trip_ledger(
+    site_id: str, trip_id: str, u=Depends(site_user),
+):
+    _owner(u)
+    site = await _site_for_user(site_id, u)
+    trip = await _trip(site, trip_id)
+    completed_at = trip.get("ledger_completed_at")
+    if not completed_at:
+        raise HTTPException(409, "This trip ledger is not completed.")
+
+    business_id = str(site["business_id"])
+    result = await db.site_trips.update_one(
+        _scoped(
+            business_id, site_id, _id=trip_id,
+            ledger_completed_at=completed_at,
+        ),
+        {"$unset": {
+            "ledger_completed_at": "",
+            "ledger_completed_by": "",
+            "ledger_completion_started_at": "",
+            "ledger_completion_started_by": "",
+            "ledger_completion_date": "",
+        }},
+    )
+    if not result.matched_count:
+        raise HTTPException(409, "The trip ledger changed before it could be unlocked. Reload and try again.")
+    await _audit(
+        site, u, "trip.ledger_completion_undone", "trip", trip_id,
+        old={"ledger_completed": True, "ledger_completed_at": completed_at},
+        new={"ledger_completed": False, "settlements_retained": True},
+    )
+    return {"id": trip_id, "ledger_completed": False}
 
 
 @router.post("/sites/{site_id}/trips/{trip_id}/lrs/{lr_id}/payments/{payment_id}/reverse")
@@ -4335,7 +4427,10 @@ async def export_site_daily_ledger(
 
     day = _validate_iso_date(operating_date).isoformat()
     business_id = str(site["business_id"])
-    trip_query = _scoped(business_id, site_id, operating_date=day)
+    trip_query = _scoped(
+        business_id, site_id, operating_date=day,
+        archived_at={"$exists": False},
+    )
     trips = await db.site_trips.find(trip_query).sort("sequence", 1).limit(2001).to_list(2001)
     if len(trips) > 2000:
         raise HTTPException(413, "This site has more than 2,000 bookings for the selected day")
