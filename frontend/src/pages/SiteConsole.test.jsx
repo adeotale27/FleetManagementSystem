@@ -274,7 +274,7 @@ describe("SiteConsole fetch cycles", () => {
     expect(container.textContent).toContain("Unticked actions are unavailable to this manager at this site.");
   });
 
-  it("saves receipt language, address visibility and receipt fee settings", async () => {
+  it("saves receipt controls, receipt fee and overdue-day settings", async () => {
     await act(async () => {
       root.render(
         <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -288,7 +288,8 @@ describe("SiteConsole fetch cycles", () => {
       .find((details) => details.querySelector("summary")?.textContent === "Booking settings");
     await act(async () => { controls.open = true; });
 
-    const feeInput = controls.querySelector('input[type="number"]');
+    const feeInput = Array.from(controls.querySelectorAll('input[type="number"]'))
+      .find((input) => input.closest("label").textContent.includes("Receipt fee"));
     expect(feeInput.value).toBe("2.00");
     await act(async () => {
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(feeInput, "5.00");
@@ -301,8 +302,31 @@ describe("SiteConsole fetch cycles", () => {
       printLanguage.dispatchEvent(new Event("change", { bubbles: true }));
     });
     const senderAddress = Array.from(controls.querySelectorAll('input[type="checkbox"]'))
-      .find((input) => input.closest("label").textContent.includes("sender address"));
-    await act(async () => { senderAddress.click(); });
+      .find((input) => input.getAttribute("aria-label") === "Include sender address in receipt");
+    await act(async () => {     senderAddress.click();
+    });
+    const overdueDaysInput = Array.from(controls.querySelectorAll('input[type="number"]'))
+    .find((input) => input.closest("label").textContent.includes("Overdue after"));
+    expect(overdueDaysInput.value).toBe("30");
+    await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")
+      .set.call(overdueDaysInput, "5");
+    overdueDaysInput.dispatchEvent(new Event("input", { bubbles: true })); });
+    const goodsInput = controls.querySelector('[aria-label="New goods suggestion"]');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")
+        .set.call(goodsInput, "स्थानीय अनाज");
+      goodsInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {
+      controls.querySelector('[aria-label="New goods suggestion"]')
+        .parentElement.querySelector("button").click();
+    });
+    expect(controls.textContent).toContain("स्थानीय अनाज");
+    await act(async () => {
+      controls.querySelector('[aria-label="Remove goods suggestion अनाज"]').click();
+    });
+    expect(controls.querySelector('[aria-label="Remove goods suggestion अनाज"]')).toBeNull();
 
     const saveButton = Array.from(controls.querySelectorAll("button"))
       .find((button) => button.textContent.includes("Save booking settings"));
@@ -313,13 +337,16 @@ describe("SiteConsole fetch cycles", () => {
     });
     expect(api.put).toHaveBeenCalledWith("/sites/site-a", expect.objectContaining({
       config: expect.objectContaining({
+        goods_suggestions: expect.arrayContaining(["स्थानीय अनाज"]),
         receipt_controls: expect.objectContaining({
           receipt_language: "english",
           sender_address_enabled: false,
           receiver_address_enabled: true,
           receipt_fee: "5.00",
+          overdue_after_days: 5,
         }),
       }),
     }));
+    expect(api.put.mock.calls[0][1].config.goods_suggestions).not.toContain("अनाज");
   });
 });

@@ -72,6 +72,7 @@ export const startDataSync = (businessId, getRevision, onError) => {
   const poll = async () => {
     if (stopped || inFlight || document.visibilityState === "hidden") return;
     inFlight = true;
+    const wasChecking = lastRevision === null;
     try {
       const revision = Number(await getRevision());
       if (!Number.isSafeInteger(revision) || revision < 0) {
@@ -79,7 +80,7 @@ export const startDataSync = (businessId, getRevision, onError) => {
       }
       if (lastRevision !== null && revision > lastRevision) publishDataChange(revision);
       else if (lastRevision === null) lastRevision = revision;
-      if (wasUnavailable) onError?.(null);
+      if (wasUnavailable || wasChecking) onError?.(null);
       wasUnavailable = false;
     } catch (error) {
       if (!wasUnavailable) onError?.(error);

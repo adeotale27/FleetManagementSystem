@@ -84,6 +84,7 @@ class ReceiptControls(StrictModel):
     sender_address_enabled: bool = True
     receiver_address_enabled: bool = True
     receipt_fee: Decimal = Field(default=Decimal("2.00"), ge=0, decimal_places=2)
+    overdue_after_days: int = Field(default=30, ge=1, le=3650)
 
 
 class ManagerAssignment(StrictModel):
@@ -283,6 +284,8 @@ class LRUpdate(StrictModel):
 class BookingFollowupUpdate(StrictModel):
     promised_date: Optional[str] = None
     note: str = Field(default="", max_length=500)
+    next_contact_date: Optional[str] = None
+    outcome: str = Field(default="", max_length=500)
 
 
 class BookingSettlementUpdate(StrictModel):
@@ -507,11 +510,19 @@ def _hindi_digits(value: Any) -> str:
 
 def _ledger_hindi_text(value: Any) -> str:
     text = str(value or "").strip()
-    if not text or any("\u0900" <= character <= "\u097f" for character in text):
+    if not text:
         return text
     common_goods = {
         "auto": "ऑटो", "truck": "ट्रक", "cement": "सीमेंट",
-        "food grains": "खाद्यान्न", "rice": "चावल", "wheat": "गेहूँ",
+        "gadi": "गाड़ी", "gaadi": "गाड़ी", "bhada": "भाड़ा", "bhaada": "भाड़ा",
+        "gadi bhada": "गाड़ी भाड़ा", "gaadi bhada": "गाड़ी भाड़ा",
+        "gadi bhaada": "गाड़ी भाड़ा", "gaadi bhaada": "गाड़ी भाड़ा",
+        "vehicle rent": "गाड़ी भाड़ा", "vehicle rental": "गाड़ी भाड़ा",
+        "truck rent": "ट्रक भाड़ा", "truck bhada": "ट्रक भाड़ा",
+        "lorry rent": "ट्रक भाड़ा", "lorry bhada": "ट्रक भाड़ा",
+        "hamali": "हमाली", "receipt charge": "रसीद शुल्क",
+        "receipt charges": "रसीद शुल्क",
+        "food grains": "अनाज", "rice": "चावल", "wheat": "गेहूँ",
         "flour": "आटा", "sugar": "चीनी", "salt": "नमक", "steel": "लोहा",
         "iron": "लोहा", "bricks": "ईंट", "brick": "ईंट", "sand": "रेत",
         "stone": "पत्थर", "wood": "लकड़ी", "fertilizer": "खाद",
@@ -554,6 +565,8 @@ def _ledger_hindi_text(value: Any) -> str:
         lower = word.lower()
         if lower in common_goods:
             return common_goods[lower]
+        if any("\u0900" <= character <= "\u097f" for character in word):
+            return word
         result = []
         index = 0
         pending_consonant = False
@@ -3677,6 +3690,8 @@ async def site_booking_finance(site_id: str, u=Depends(site_user)):
             "reconciled": reconciled, "age_days": age_days,
             "promised_date": lr.get("payment_promised_date", ""),
             "followup_note": lr.get("payment_followup_note", ""),
+            "next_contact_date": lr.get("payment_next_contact_date", ""),
+            "followup_outcome": lr.get("payment_followup_outcome", ""),
             "created_by_login": lr.get("created_by_login", lr.get("created_by", "")),
             "created_by_role": lr.get("created_by_role", ""),
         })
@@ -3704,6 +3719,7 @@ async def site_booking_finance(site_id: str, u=Depends(site_user)):
     ]
     return {
         "site": {"id": site_id, "name": site.get("name", ""), "code": site.get("code", "")},
+        "overdue_after_days": _receipt_controls(site).overdue_after_days,
         "totals": formatted,
         "receiver_balances": receiver_balances,
         "basis": (
@@ -3730,14 +3746,23 @@ async def update_site_lr_followup(
         _validate_iso_date(body.promised_date).isoformat()
         if body.promised_date else ""
     )
+    next_contact_date = (
+        _validate_iso_date(body.next_contact_date).isoformat()
+        if body.next_contact_date else ""
+    )
     note = " ".join(body.note.split())[:500]
+    outcome = " ".join(body.outcome.split())[:500]
     old = {
         "payment_promised_date": lr.get("payment_promised_date", ""),
         "payment_followup_note": lr.get("payment_followup_note", ""),
+        "payment_next_contact_date": lr.get("payment_next_contact_date", ""),
+        "payment_followup_outcome": lr.get("payment_followup_outcome", ""),
     }
     new = {
         "payment_promised_date": promised_date,
         "payment_followup_note": note,
+        "payment_next_contact_date": next_contact_date,
+        "payment_followup_outcome": outcome,
     }
     updated_at = now_iso()
     await db.site_lrs.update_one(
@@ -3748,7 +3773,11 @@ async def update_site_lr_followup(
         site, u, "lr.payment_followup_updated", "lr", lr["_id"],
         old=old, new=new,
     )
-    return {"id": lr["_id"], **new, "updated_at": updated_at}
+    return {
+        "id": lr["_id"], "promised_date": promised_date, "note": note,
+        "next_contact_date": next_contact_date, "outcome": outcome,
+        "updated_at": updated_at,
+    }
 
 
 LEGACY_COLLECTIONS = (
@@ -4375,6 +4404,8 @@ async def export_site_ledger_xlsx(
                 [row["_id"] for row in lrs if row.get("trip_id") == ledger_trip_id],
             )
     ledger_rows = []
+    totals = {"rent": Decimal("0.00"), "hamali": Decimal("0.00"),
+              "receipt_fee": Decimal("0.00")}
     for lr in lrs:
         trip = trips.get(lr["trip_id"])
         if not trip:
@@ -4383,6 +4414,10 @@ async def export_site_ledger_xlsx(
         rent = _decimal_value(lr.get("rent"))
         hamali = _decimal_value(lr.get("hamali"))
         receipt_fee = _decimal_value(lr.get("receipt_fee", Decimal128(Decimal("2.00"))))
+        if not lr.get("voided"):
+            totals["rent"] += rent
+            totals["hamali"] += hamali
+            totals["receipt_fee"] += receipt_fee
         row_values = (
             lr.get("receipt_date", lr.get("operating_date", "")),
             trip.get("trip_ref", ""), lr.get("lr_ref", ""),
@@ -4390,9 +4425,11 @@ async def export_site_ledger_xlsx(
             _ledger_hindi_text(lr.get("receiver_name_hindi")),
             ", ".join(
                 " - ".join(part for part in (
-                    _ledger_hindi_text(line.get("type_hindi")),
-                    _ledger_hindi_text(line.get("description_hindi") or line.get("description")),
                     _hindi_digits(line.get("quantity", 0)),
+                    "/".join(goods_part for goods_part in (
+                        _ledger_hindi_text(line.get("type_hindi") or line.get("type")),
+                        _ledger_hindi_text(line.get("description_hindi") or line.get("description")),
+                    ) if goods_part),
                 ) if part)
                 for line in goods
             ),
@@ -4408,6 +4445,18 @@ async def export_site_ledger_xlsx(
                 and paid >= rent + receipt_fee else "",
             )
         ledger_rows.append(row_values)
+
+    total_row = (
+        "कुल (रद्द रसीद छोड़कर)", "", "", "", "", "",
+        totals["rent"] if can_read_finances else "",
+        totals["hamali"] if can_read_finances else "",
+        totals["receipt_fee"],
+        f"Grand total: ₹{totals['rent'] + totals['hamali'] + totals['receipt_fee']:.2f}"
+        if can_read_finances else "",
+    )
+    if u.get("role") == "owner":
+        total_row += ("",)
+    ledger_rows.append(total_row)
 
     filename = f"{site.get('code', site_id)}-ledger-{start}-{end}.xlsx"
     columns = (

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { memo, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   BarChart3, Banknote, FileText, Fuel, Gauge, LogOut, Menu, Plus, Receipt,
@@ -36,6 +36,13 @@ const OWNER_BOOKING_NAV = [
   { to: "/booking/finance", label: "Booking Finance", icon: Wallet },
   { to: "/booking/audit", label: "Booking Audit", icon: ShieldCheck },
 ];
+const BOOKING_HEADER_NAV = [
+  SITE_NAV,
+  ...BOOKING_NAV,
+  { to: "/booking/finance", label: "Finance", icon: Wallet },
+  { to: "/booking/audit", label: "Audit", icon: ShieldCheck },
+  { to: "/booking-setup", label: "Settings", icon: Cog },
+];
 
 const QUICK = [
   { kind: "trip", label: "Create Trip", icon: Truck },
@@ -46,6 +53,26 @@ const QUICK = [
   { kind: "fuel", label: "Diesel", icon: Fuel },
 ];
 
+const CurrentTime = memo(function CurrentTime() {
+  const [clockNow, setClockNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <time className="ml-auto shrink-0 text-right text-xs font-semibold text-muted sm:text-sm"
+      aria-label="Current India Standard Time">
+      {new Intl.DateTimeFormat("en-IN", {
+        timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true,
+        timeZoneName: "short",
+      }).format(clockNow)}
+    </time>
+  );
+});
+
 const navIsActive = (item, location) => {
   if (item.activeWhen) return item.activeWhen(location);
   return item.to === "/booking/dashboard"
@@ -53,29 +80,57 @@ const navIsActive = (item, location) => {
     : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
 };
 
-export default function Layout({ user, children }) {
+export default function Layout({ user, children, syncStatus = "checking" }) {
   const [menu, setMenu] = useState(false);
-  const [clockNow, setClockNow] = useState(() => new Date());
+  const [isOnline, setIsOnline] = useState(() => window.navigator.onLine);
   const [sheet, setSheet] = useState(false);
   const [entry, setEntry] = useState(null);
   const [q, setQ] = useState("");
   const [res, setRes] = useState([]);
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchError, setSearchError] = useState("");
   const loc = useLocation();
   const nav = useNavigate();
 
   useEffect(() => {
-    const timer = window.setInterval(() => setClockNow(new Date()), 1000);
-    return () => window.clearInterval(timer);
+    const updateOnlineStatus = () => setIsOnline(window.navigator.onLine);
+    window.addEventListener("online", updateOnlineStatus);
+    window.addEventListener("offline", updateOnlineStatus);
+    return () => {
+      window.removeEventListener("online", updateOnlineStatus);
+      window.removeEventListener("offline", updateOnlineStatus);
+    };
   }, []);
 
   useEffect(() => { setMenu(false); setSheet(false); }, [loc.pathname, loc.search]);
 
   useEffect(() => {
-    if (q.length < 2) return setRes([]);
-    const t = setTimeout(async () => {
-      try { setRes((await api.get("/search", { params: { q } })).data); } catch { /* ignore */ }
+    let active = true;
+    const query = q.trim();
+    if (query.length < 2) {
+      setRes([]);
+      setSearchBusy(false);
+      setSearchError("");
+      return () => { active = false; };
+    }
+    setSearchBusy(true);
+    setSearchError("");
+    const timer = window.setTimeout(() => {
+      api.get("/search", { params: { q: query } })
+        .then((response) => {
+          if (active) setRes(response.data || []);
+        })
+        .catch(() => {
+          if (active) setSearchError("Search is temporarily unavailable. Try again in a moment.");
+        })
+        .finally(() => {
+          if (active) setSearchBusy(false);
+        });
     }, 250);
-    return () => clearTimeout(t);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [q]);
 
   const logout = () => { localStorage.removeItem("fms_token"); window.location.href = "/login"; };
@@ -100,7 +155,13 @@ export default function Layout({ user, children }) {
       : [SITE_NAV, ...BOOKING_NAV, ...OWNER_BOOKING_NAV, ...NAV.filter((n) => !n.key || user?.features?.[n.key] !== false)];
   const mobileNav = user?.role === "superadmin" ? PLATFORM_NAV
     : user?.role === "site_manager" ? [SITE_NAV, ...BOOKING_NAV]
-      : [SITE_NAV, ...BOOKING_NAV, ...OWNER_BOOKING_NAV, ...NAV.filter((n) => n.key === "trips" || n.key === "finance")];
+      : showIndustrialTools
+        ? [NAV[0], NAV[2], NAV[5], NAV[6]].filter((item) => user?.features?.[item.key] !== false)
+        : [SITE_NAV, ...BOOKING_NAV, OWNER_BOOKING_NAV[1]];
+  const navGroups = user?.role === "owner" ? [
+    { label: "Site booking", items: [SITE_NAV, ...BOOKING_NAV, ...OWNER_BOOKING_NAV] },
+    { label: "Industrial operations", items: NAV.filter((n) => !n.key || user?.features?.[n.key] !== false) },
+  ] : [{ label: user?.role === "superadmin" ? "Administration" : "Workspace", items: navItems }];
 
   const Side = (
     <>
@@ -113,17 +174,23 @@ export default function Layout({ user, children }) {
           </p>
         </div>
       </div>
-      <nav aria-label="Main navigation" className="flex-1 space-y-1 overflow-y-auto px-3 py-3">
-        <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[.16em] text-white/35">
-          {user?.role === "superadmin" ? "Administration" : "Workspace"}
-        </p>
-        {navItems.map((n) => (
-          <Link key={n.to} to={n.to} aria-current={navIsActive(n, loc) ? "page" : undefined}
-            data-testid={`nav-${n.label.toLowerCase().replace(/[^a-z]/g, "-")}`}
-            className={`app-nav-link flex items-center gap-3 rounded-lg px-3 py-2.5 text-[14px] font-medium transition-colors ${
-              navIsActive(n, loc) ? "is-active text-white" : "text-white/60 hover:bg-white/5 hover:text-white"}`}>
-            <n.icon size={18} strokeWidth={1.8} /> {n.label}
-          </Link>
+      <nav aria-label="Main navigation" className="flex-1 space-y-4 overflow-y-auto px-3 py-3">
+        {navGroups.map((group) => (
+          <section key={group.label} aria-label={group.label}>
+            <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[.16em] text-white/35">
+              {group.label}
+            </p>
+            <div className="space-y-1">
+              {group.items.map((n) => (
+                <Link key={n.to} to={n.to} aria-current={navIsActive(n, loc) ? "page" : undefined}
+                  data-testid={`nav-${n.label.toLowerCase().replace(/[^a-z]/g, "-")}`}
+                  className={`app-nav-link flex items-center gap-3 rounded-lg px-3 py-2.5 text-[14px] font-medium transition-colors ${
+                    navIsActive(n, loc) ? "is-active text-white" : "text-white/60 hover:bg-white/5 hover:text-white"}`}>
+                  <n.icon size={18} strokeWidth={1.8} /> {n.label}
+                </Link>
+              ))}
+            </div>
+          </section>
         ))}
       </nav>
       <div className="border-t border-white/10 px-3 py-3">
@@ -172,11 +239,19 @@ export default function Layout({ user, children }) {
               <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
               <input data-testid="global-search" value={q} onChange={(e) => setQ(e.target.value)}
                 placeholder="Search vehicle, driver, party, trip, LR…"
+                aria-label="Search vehicles, drivers, parties, trips, and lorry receipts"
+                aria-expanded={q.trim().length > 1}
+                aria-controls="global-search-results"
                 className="fld py-2 pl-9 text-[14px]" />
-              {q.length > 1 && (
-                <div className="absolute z-40 mt-1.5 max-h-[60vh] w-full overflow-y-auto rounded-xl border border-line bg-white py-1 shadow-xl">
-                  {res.length === 0 && <p className="px-3 py-3 text-[13px] text-muted">No match found</p>}
-                  {res.map((r, i) => (
+              {q.trim().length > 1 && (
+                <div id="global-search-results" role="region" aria-label="Search results"
+                  className="absolute z-40 mt-1.5 max-h-[60vh] w-full overflow-y-auto rounded-xl border border-line bg-white py-1 shadow-xl">
+                  {searchBusy && <p role="status" className="px-3 py-3 text-[13px] text-muted">Searching…</p>}
+                  {!searchBusy && searchError &&
+                    <p role="alert" className="px-3 py-3 text-[13px] text-red-700">{searchError}</p>}
+                  {!searchBusy && !searchError && res.length === 0 &&
+                    <p className="px-3 py-3 text-[13px] text-muted">No match found</p>}
+                  {!searchBusy && !searchError && res.map((r, i) => (
                     <button key={i} data-testid={`search-result-${i}`}
                       onClick={() => { nav(r.link); setQ(""); }}
                       className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left hover:bg-brand-50">
@@ -192,29 +267,58 @@ export default function Layout({ user, children }) {
             </div>
             )}
             {user?.role === "superadmin" && <div className="flex-1" />}
+            <span role="status" aria-live="polite" data-testid="sync-status"
+              className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-1 text-[10px] font-semibold sm:gap-1.5 sm:px-2 sm:text-xs ${
+                !isOnline ? "bg-red-50 text-red-800"
+                  : syncStatus === "connected" ? "bg-green-50 text-green-800"
+                    : syncStatus === "reconnecting" ? "bg-amber-50 text-amber-900"
+                      : "bg-gray-100 text-gray-700"
+              }`}>
+              <span aria-hidden="true" className={`h-2 w-2 rounded-full ${
+                !isOnline ? "bg-red-600"
+                  : syncStatus === "connected" ? "bg-green-600"
+                    : syncStatus === "reconnecting" ? "bg-amber-500" : "bg-gray-500"
+              }`} />
+              <span className="sm:hidden">{!isOnline ? "Offline"
+                : syncStatus === "connected" ? "Live"
+                  : syncStatus === "reconnecting" ? "Retrying"
+                    : "Checking"}</span>
+              <span className="hidden sm:inline">{!isOnline ? "Offline · not synced"
+                : syncStatus === "connected" ? "Live updates on"
+                  : syncStatus === "reconnecting" ? "Reconnecting…"
+                    : "Checking connection…"}</span>
+            </span>
             {showIndustrialTools && (
               <button onClick={() => setSheet(true)} data-testid="quick-action-btn"
                 className="btn-p hidden py-2 md:inline-flex"><Plus size={17} /> New Entry</button>
             )}
-            <time className="ml-auto shrink-0 text-right text-xs font-semibold text-muted sm:text-sm"
-              aria-label="Current India Standard Time">
-              {new Intl.DateTimeFormat("en-IN", {
-                timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric",
-                hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true,
-                timeZoneName: "short",
-              }).format(clockNow)}
-            </time>
+            <CurrentTime />
           </div>
+          {isSiteBookingRoute && user?.role !== "superadmin" && <nav aria-label="Booking sections"
+            className="flex gap-1 overflow-x-auto border-t border-line px-3 py-1.5 md:justify-end md:px-7">
+            {(user?.role === "owner" ? BOOKING_HEADER_NAV : [SITE_NAV, ...BOOKING_NAV]).map((item) => {
+              const active = navIsActive(item, loc);
+              return <Link key={item.to} to={item.to}
+                aria-current={active ? "page" : undefined}
+                data-testid={`booking-section-${item.label.toLowerCase().replace(/[^a-z]/g, "-")}`}
+                className={`inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-semibold transition-colors ${
+                  active ? "bg-brand-50 text-brand-800" : "text-muted hover:bg-canvas hover:text-ink"}`}>
+                <item.icon size={16} aria-hidden="true" />
+                {item.label}
+              </Link>;
+            })}
+          </nav>}
         </header>
 
         <main className="app-main page-enter px-4 pb-28 pt-6 md:px-7 md:pb-10">{children}</main>
       </div>
 
       {/* mobile bottom bar */}
-      <div className="app-header fixed bottom-0 left-0 right-0 z-30 border-t border-line pb-[env(safe-area-inset-bottom)] md:hidden">
+      <nav aria-label="Primary mobile navigation"
+        className="app-header fixed bottom-0 left-0 right-0 z-30 border-t border-line pb-[env(safe-area-inset-bottom)] md:hidden">
         <div className={`grid ${user?.role === "superadmin" ? "grid-cols-2"
           : user?.role === "site_manager" ? "grid-cols-3"
-            : "grid-cols-5"}`}>
+            : showIndustrialTools ? "grid-cols-5" : "grid-cols-4"}`}>
           {user?.role === "superadmin" || user?.role === "site_manager" ? mobileNav.map((n) => <BottomLink key={n.to} n={n} />) : (
             showIndustrialTools ? <>
               {mobileNav.slice(0, 2).map((n) => <BottomLink key={n.to} n={n} />)}
@@ -226,7 +330,7 @@ export default function Layout({ user, children }) {
             </> : mobileNav.map((n) => <BottomLink key={n.to} n={n} />)
           )}
         </div>
-      </div>
+      </nav>
 
       {sheet && (
         <div className="fixed inset-0 z-50 flex items-end bg-ink/50 backdrop-blur-sm md:items-center md:justify-center"

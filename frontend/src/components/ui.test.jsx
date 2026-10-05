@@ -44,4 +44,33 @@ describe("global toast host", () => {
 
     expect(container.querySelectorAll('[data-testid="toast"]')).toHaveLength(2);
   });
+
+  it("keeps save failure reasons visible until dismissed or the same save succeeds", () => {
+    act(() => {
+      window.dispatchEvent(new CustomEvent("fms:mutation-status", { detail: {
+        state: "failed", key: "put:/settings", title: "Save failed · Settings updated",
+        reason: "Company name is required",
+      } }));
+    });
+    expect(container.querySelector('[data-testid="persistent-save-error"]').textContent)
+      .toContain("Company name is required");
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("fms:mutation-status", { detail: {
+        state: "saved", key: "put:/settings",
+      } }));
+    });
+    expect(container.querySelector('[data-testid="persistent-save-error"]')).toBeNull();
+  });
+
+  it("lets users dismiss persistent save failures", () => {
+    act(() => {
+      window.dispatchEvent(new CustomEvent("fms:mutation-status", { detail: {
+        state: "failed", key: "post:/sites", title: "Save failed · Site created",
+        reason: "The server could not save this site.",
+      } }));
+    });
+    act(() => container.querySelector('[aria-label="Dismiss save error"]').click());
+    expect(container.querySelector('[data-testid="persistent-save-error"]')).toBeNull();
+  });
 });

@@ -22,6 +22,7 @@ describe("simple booking workflow", () => {
 
   beforeEach(() => {
     localStorage.clear();
+    Object.defineProperty(window.navigator, "onLine", { configurable: true, value: true });
     api.get.mockImplementation((path) => {
       if (path === "/sites") return Promise.resolve({ data: [site] });
       if (path === `/sites/${site.id}/trips`) return Promise.resolve({ data: { rows: [], total: 0 } });
@@ -63,8 +64,13 @@ describe("simple booking workflow", () => {
     expect(romanHindi("car")).toBe("कार");
     expect(romanHindi("HARDWARE")).toBe("हार्डवेयर");
     expect(romanHindi("Cement")).toBe("सीमेंट");
-    expect(romanHindi("Food Grains")).toBe("खाद्यान्न");
+    expect(romanHindi("Food Grains")).toBe("अनाज");
     expect(romanHindi("AUTO")).toBe("ऑटो");
+    expect(romanHindi("gadi bhada")).toBe("गाड़ी भाड़ा");
+    expect(romanHindi("gaadi bhaada")).toBe("गाड़ी भाड़ा");
+    expect(romanHindi("गाड़ी bhada")).toBe("गाड़ी भाड़ा");
+    expect(romanHindi("vehicle rent")).toBe("गाड़ी भाड़ा");
+    expect(romanHindi("hamali")).toBe("हमाली");
     expect(romanHindi("कपड़ा")).toBe("कपड़ा");
   });
 
@@ -121,11 +127,11 @@ describe("simple booking workflow", () => {
     expect(container.querySelector('[aria-label="NGP-LR-01 sender"]')).toBeNull();
     expect(container.textContent).toContain("पुराना भेजने वाला");
     expect(container.textContent).not.toContain("Old sender");
-    expect(ledgerTable.querySelector("tbody tr td:nth-child(5)").textContent).toBe("सीमेंट - १, अनाज - ३");
+    expect(ledgerTable.querySelector("tbody tr td:nth-child(5)").textContent).toBe("१ - सीमेंट, ३ - अनाज");
     expect(ledgerTable.textContent).toContain("Admin - Owner Name");
     expect(ledgerTable.querySelector("tbody tr td:nth-child(8)").textContent).toContain("₹2");
     expect(container.querySelector('select option[value=""]')?.textContent).toBe("Select trip");
-    expect(container.textContent).toContain(`Selected trip: ${trip.trip_ref}`);
+    expect(container.textContent).toContain(`Selected trip${trip.trip_ref}`);
     expect(api.get).toHaveBeenCalledWith(
       `/sites/${site.id}/ledger/entries`,
       expect.objectContaining({ params: expect.objectContaining({ trip_id: trip.id }) }),
@@ -152,6 +158,42 @@ describe("simple booking workflow", () => {
       hamali: "10",
       expected_updated_at: "version-2",
     });
+  });
+
+  it("keeps ledger edits pending offline and saves them after reconnection", async () => {
+    const row = {
+      id: "lr-1", site_id: site.id, trip_id: trip.id, trip_ref: trip.trip_ref,
+      trip_status: "open", lr_ref: "NGP-LR-01", receipt_date: trip.operating_date,
+      sender_name: "Sender", receiver_name: "Receiver", rent: "100.00", hamali: "0.00",
+      total_rent: "100.00", updated_at: "version-1", goods_rows: [{
+        type: "Cement", type_hindi: "सीमेंट", description: "", quantity: 1,
+      }],
+    };
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [site] });
+      if (path === `/sites/${site.id}/trips`) return Promise.resolve({ data: { rows: [trip], total: 1 } });
+      if (path === `/sites/${site.id}/ledger/entries`) return Promise.resolve({ data: { rows: [row], total: 1 } });
+      return Promise.resolve({ data: trip });
+    });
+    api.patch.mockResolvedValue({ data: { ...row, rent: "125.00", updated_at: "version-2" } });
+    await renderBooking("ledger");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
+
+    await act(async () => {
+      Object.defineProperty(window.navigator, "onLine", { configurable: true, value: false });
+      setInput('[aria-label="NGP-LR-01 Bhada"]', "125");
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    });
+    expect(container.textContent).toContain("Waiting to sync · keep this page open");
+    expect(api.patch).not.toHaveBeenCalled();
+
+    await act(async () => {
+      Object.defineProperty(window.navigator, "onLine", { configurable: true, value: true });
+      window.dispatchEvent(new Event("online"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(api.patch).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Saved");
   });
 
   it("lets site managers edit only ledger charges and shows receipt creator attribution", async () => {
@@ -240,11 +282,9 @@ describe("simple booking workflow", () => {
         button.textContent.includes("Close Trip")).click();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    await act(async () => {
-      Array.from(container.querySelectorAll("a")).find((link) =>
-        link.textContent.includes("Dashboard")).click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await act(async () => { root.render(null); });
+    await renderBooking("dashboard", "owner");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     expect(api.post).toHaveBeenCalledWith(`/sites/${site.id}/trips/${firstTrip.id}/close`, {});
     const firstCard = Array.from(container.querySelectorAll("button")).find((button) =>
@@ -257,10 +297,19 @@ describe("simple booking workflow", () => {
   });
 
   it("creates a trip without vehicle or driver, then starts with one goods row", async () => {
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [{
+        ...site, config: { goods_suggestions: ["स्थानीय अनाज", "सीमेंट"] },
+      }] });
+      if (path === `/sites/${site.id}/trips`) return Promise.resolve({ data: { rows: [], total: 0 } });
+      if (path === `/sites/${site.id}/trips/${trip.id}/lrs`) return Promise.resolve({ data: { rows: [], total: 0 } });
+      return Promise.resolve({ data: trip });
+    });
     await renderBooking();
     await act(async () => {
       Array.from(container.querySelectorAll("button")).find((button) => button.textContent.includes("Create Trip")).click();
     });
+    expect(container.querySelector("form .sticky.bottom-0")).not.toBeNull();
     await act(async () => {
       container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -270,12 +319,28 @@ describe("simple booking workflow", () => {
       operating_date: expect.any(String), truck_no: "", driver_name: "",
     });
     expect(container.textContent).toContain("New receipt");
-    expect(container.querySelectorAll('[aria-label^="Good and description row "]')).toHaveLength(3);
+    expect(container.querySelectorAll('[aria-label^="Goods and description row "]')).toHaveLength(3);
     expect(container.querySelectorAll('[aria-label^="Quantity row "]')).toHaveLength(3);
+    expect(container.querySelector('[aria-label="Goods and description row 1"]').parentElement.parentElement.parentElement.className)
+      .toContain("grid-cols-[minmax(0,1fr)_2.75rem]");
+    expect(container.querySelector('[aria-label="Goods and description row 1"]').placeholder)
+      .toBe("Goods and description");
+    expect(container.querySelector('[aria-label="Goods and description row 1"]').parentElement.className)
+      .toContain("relative block");
+    expect(container.querySelector('[aria-label="Quantity row 1"]').parentElement.querySelector("svg").className.baseVal)
+      .toContain("top-1/2");
+    expect(container.querySelector("#receipt-entry-form .sticky.bottom-0")).not.toBeNull();
     expect(container.querySelector('[aria-label="Receipt Bhada"]').value).toBe("0");
     expect(container.querySelector('[aria-label="Receipt Hamali"]').value).toBe("0");
     expect(container.textContent).toContain("Bhada (₹)");
     expect(container.textContent).toContain("Hamali (₹)");
+    const receiverAddress = container.querySelector('[aria-label="Receiver address (optional)"]');
+    const receiverPhone = container.querySelector('[aria-label="Receiver phone (10 digits, optional)"]');
+    expect(receiverAddress.parentElement.parentElement)
+      .toBe(receiverPhone.parentElement.parentElement);
+    expect(receiverAddress.parentElement.parentElement.className).toContain("md:grid-cols-2");
+    expect(Array.from(container.querySelectorAll("#booking-goods-suggestions option"))
+      .map((option) => option.value)).toEqual(["स्थानीय अनाज", "सीमेंट"]);
   });
 
   it("removes goods rows with the X button and restores three blank rows", async () => {
@@ -288,19 +353,19 @@ describe("simple booking workflow", () => {
       container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(container.querySelectorAll('[aria-label^="Good and description row "]')).toHaveLength(3);
+    expect(container.querySelectorAll('[aria-label^="Goods and description row "]')).toHaveLength(3);
     await act(async () => {
       container.querySelector('[aria-label="Remove goods row 2"]').click();
     });
-    expect(container.querySelectorAll('[aria-label^="Good and description row "]')).toHaveLength(2);
+    expect(container.querySelectorAll('[aria-label^="Goods and description row "]')).toHaveLength(2);
     await act(async () => {
       container.querySelector('[aria-label="Remove goods row 1"]').click();
     });
-    expect(container.querySelectorAll('[aria-label^="Good and description row "]')).toHaveLength(1);
+    expect(container.querySelectorAll('[aria-label^="Goods and description row "]')).toHaveLength(1);
     await act(async () => {
       container.querySelector('[aria-label="Remove goods row 1"]').click();
     });
-    expect(container.querySelectorAll('[aria-label^="Good and description row "]')).toHaveLength(3);
+    expect(container.querySelectorAll('[aria-label^="Goods and description row "]')).toHaveLength(3);
   });
 
   it("saves English receipt data and resets the form after a successful save", async () => {
@@ -309,7 +374,12 @@ describe("simple booking workflow", () => {
     window.requestAnimationFrame = (callback) => callback();
     const pendingReceiptRefreshes = [];
     api.get.mockImplementation((path) => {
-      if (path === "/sites") return Promise.resolve({ data: [site] });
+      if (path === "/sites") return Promise.resolve({ data: [{
+        ...site,
+        config: { receipt_controls: {
+          sender_address_enabled: false, receiver_address_enabled: false,
+        } },
+      }] });
       if (path === `/sites/${site.id}/trips`) return Promise.resolve({ data: { rows: [], total: 0 } });
       if (path.endsWith("/lrs")) {
         return new Promise((resolve) => pendingReceiptRefreshes.push(resolve));
@@ -319,7 +389,12 @@ describe("simple booking workflow", () => {
     const createdAt = "2026-09-29T07:04:05+00:00";
     api.post.mockImplementation((path, body) => Promise.resolve({
       data: path.endsWith("/lrs")
-        ? { ...body, id: "lr-1", lr_ref: "NGP-LR-01", receipt_fee: "2.00", total_rent: "37.00", receipt_created_at: createdAt }
+        ? {
+          ...body, id: "lr-1", lr_ref: "NGP-LR-01", receipt_fee: "2.00",
+          total_rent: "37.00", receipt_created_at: createdAt,
+          sender_address: "Old Sender Road", sender_address_hindi: "पुराना प्रेषक पता",
+          receiver_address: "Old Receiver Road", receiver_address_hindi: "पुराना प्राप्तकर्ता पता",
+        }
         : trip,
     }));
     await renderBooking();
@@ -330,9 +405,11 @@ describe("simple booking workflow", () => {
       container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    expect(container.querySelector('[aria-label="Sender address (optional)"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Receiver address (optional)"]')).toBeNull();
     await act(async () => {
       setInput('[aria-label="Receiver name in English"]', "Suresh");
-      setInput('[aria-label="Good and description row 1"]', "Cement");
+      setInput('[aria-label="Goods and description row 1"]', "Cement");
       setInput('[aria-label="Quantity row 1"]', "3");
       setInput('[aria-label="Receipt Bhada"]', "30.00");
       setInput('[aria-label="Receipt Hamali"]', "5.00");
@@ -362,23 +439,29 @@ describe("simple booking workflow", () => {
       hamali: "5.00",
     });
     expect(receiptRequest[1]).not.toHaveProperty("sender_phone");
+    expect(receiptRequest[1]).not.toHaveProperty("sender_address");
+    expect(receiptRequest[1]).not.toHaveProperty("receiver_address");
     expect(printSpy).toHaveBeenCalledTimes(1);
     expect(document.body.textContent).toContain("12:34:05 IST");
     expect(receiptRequest[1]).not.toHaveProperty("receipt_created_at");
     expect(document.querySelector(".receipt-print-goods").textContent).not.toContain("Roof repair bags");
-    expect(document.querySelector(".receipt-print-goods").textContent).toContain("सीमेंट - ३");
+    expect(document.querySelector(".receipt-print-goods").textContent).toContain("३ - सीमेंट");
     expect(document.querySelector(".receipt-print-parties").textContent).toContain("9876543210");
+    expect(document.querySelector(".receipt-print-parties").textContent)
+      .not.toContain("Old Sender Road");
+    expect(document.querySelector(".receipt-print-parties").textContent)
+      .not.toContain("Old Receiver Road");
     expect(document.querySelector(".receipt-print-company").textContent).toContain("नायडू गुड्स ट्रांसपोर्ट");
     const printHeader = document.querySelector(".receipt-print-header");
     expect(printHeader.querySelector(".receipt-print-company")).not.toBeNull();
     expect(document.querySelector("style").textContent).toContain(
-      ".receipt-print-logo { position:absolute; top:0; left:0;",
+      ".receipt-print-logo { position:absolute; top:50%; left:0; width:270px; height:190px;",
     );
     expect(document.querySelector("style").textContent).toContain(
       ".receipt-print-company { width:100%; text-align:center; }",
     );
     expect(container.querySelector('[aria-label="Receiver name in English"]').value).toBe("");
-    expect(container.querySelector('[aria-label="Good and description row 1"]').value).toBe("");
+    expect(container.querySelector('[aria-label="Goods and description row 1"]').value).toBe("");
     expect(document.querySelector(".receipt-print-charges").textContent).toContain("₹30");
     expect(document.querySelector(".receipt-print-charges").textContent).toContain("₹5");
     expect(document.querySelector(".receipt-print-charges").textContent).toContain("₹37");
@@ -417,7 +500,7 @@ describe("simple booking workflow", () => {
     await act(async () => {
       Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Edit").click();
     });
-    expect(container.querySelector('[aria-label="Good and description row 1"]').value).toBe("Cement Sacks");
+    expect(container.querySelector('[aria-label="Goods and description row 1"]').value).toBe("Cement Sacks");
     await act(async () => {
       Array.from(container.querySelectorAll("button")).find((button) =>
         button.textContent.includes("Cancel editing")).click();
@@ -461,7 +544,7 @@ describe("simple booking workflow", () => {
         button.textContent === "Edit").click();
     });
     await act(async () => {
-      setInput('[aria-label="Good and description row 1"]', "Cement rolls");
+      setInput('[aria-label="Goods and description row 1"]', "Cement rolls");
       const saveButton = Array.from(container.querySelectorAll("button")).find((button) =>
         button.textContent.includes("Save changes"));
       saveButton.click();
@@ -515,7 +598,7 @@ describe("simple booking workflow", () => {
     expect(container.textContent).toContain("Edit receipt");
     expect(container.textContent).not.toContain("Owner correction reason");
     await act(async () => {
-      setInput('[aria-label="Good and description row 1"]', "Cement");
+      setInput('[aria-label="Goods and description row 1"]', "Cement");
       Array.from(container.querySelectorAll("button")).find((button) =>
         button.textContent.includes("Save changes")).click();
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -552,7 +635,7 @@ describe("simple booking workflow", () => {
       Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Edit").click();
     });
     await act(async () => {
-      setInput('[aria-label="Good and description row 1"]', "Cement");
+      setInput('[aria-label="Goods and description row 1"]', "Cement");
       Array.from(container.querySelectorAll("button")).find((button) =>
         button.textContent.includes("Save changes")).click();
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -593,12 +676,12 @@ describe("simple booking workflow", () => {
       container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(container.querySelectorAll('[aria-label^="Good and description row "]')).toHaveLength(3);
-    expect(container.querySelector('[aria-label="Quantity row 1"]').parentElement.parentElement.className)
+    expect(container.querySelectorAll('[aria-label^="Goods and description row "]')).toHaveLength(3);
+    expect(container.querySelector('[aria-label="Quantity row 1"]').parentElement.parentElement.parentElement.className)
       .toContain("grid-cols-[2rem_minmax(0,1fr)_10rem_2.25rem]");
     await act(async () => {
       setInput('[aria-label="Receiver name in English"]', "Suresh");
-      setInput('[aria-label="Good and description row 1"]', "Cement");
+      setInput('[aria-label="Goods and description row 1"]', "Cement");
       setInput('[aria-label="Quantity row 1"]', "3");
     });
     await act(async () => {
@@ -624,9 +707,12 @@ describe("simple booking workflow", () => {
       id: "lr-1", site_id: site.id, trip_id: trip.id, trip_ref: trip.trip_ref,
       trip_status: "open", lr_ref: "NGP-LR-01", receipt_date: trip.operating_date,
       sender_name: "Sender", receiver_name: "Receiver", rent: "100.00", hamali: "10.00",
-      total_rent: "110.00", paid_total: "20.00", outstanding: "80.00",
+      total_rent: "110.00", receipt_fee: "2.00", paid_total: "20.00", outstanding: "80.00",
       payment_status: "partial", ledger_settlement_created: false,
-      goods_rows: [{ type: "Cement", type_hindi: "सीमेंट", quantity: 1, rent: "100.00", hamali: "10.00" }],
+      goods_rows: [{
+        type: "Cement", type_hindi: "सीमेंट", description: "Bags",
+        description_hindi: "बोरे", quantity: 1, rent: "100.00", hamali: "10.00",
+      }],
       updated_at: "version-1",
     };
     api.get.mockImplementation((path) => {
@@ -640,6 +726,21 @@ describe("simple booking workflow", () => {
     const table = container.querySelector("table");
     expect(table.querySelectorAll("input")).toHaveLength(3);
     expect(table.querySelector('[aria-label="NGP-LR-01 Amount paid"]')).not.toBeNull();
+    expect(table.querySelector("tbody tr td:nth-child(5)").textContent).toBe("१ - सीमेंट/बोरे");
+    const totals = container.querySelector('[aria-label="Selected ledger totals"]');
+    const totalCells = totals.querySelectorAll("tfoot td");
+    expect(totalCells).toHaveLength(6);
+    expect(totalCells[0].colSpan).toBe(5);
+    expect(totalCells[1].textContent).toContain("Bhada total: ₹100");
+    expect(totalCells[2].textContent).toContain("Hamali total: ₹10");
+    expect(totalCells[3].textContent).toContain("Receipt fee total: ₹2");
+    expect(totalCells[4].textContent).toContain("Grand total: ₹112");
+    const mobileRow = container.querySelector('article[aria-label="NGP-LR-01 mobile ledger receipt"]');
+    expect(mobileRow).not.toBeNull();
+    expect(mobileRow.textContent).toContain("१ - सीमेंट/बोरे");
+    expect(mobileRow.querySelector('[aria-label="NGP-LR-01 mobile Bhada"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Mobile selected ledger totals"]').textContent)
+      .toContain("Grand total");
     expect(Array.from(container.querySelectorAll("button")).some((button) =>
       button.textContent.includes("Complete trip ledger"))).toBe(true);
     expect(table.querySelector('[aria-label="NGP-LR-01 date"]')).toBeNull();
@@ -693,9 +794,9 @@ describe("simple booking workflow", () => {
     });
     await renderBooking("ledger", "owner");
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
-    expect(container.textContent).toContain(`Selected trip: ${trip.trip_ref}`);
-    expect(container.textContent).toContain("Print ledger");
-    expect(container.textContent).toContain("Download Excel");
+    expect(container.textContent).toContain(`Selected trip${trip.trip_ref}`);
+    expect(container.textContent).toContain("Print");
+    expect(container.textContent).toContain("Excel");
     expect(container.textContent).toContain("Complete trip ledger");
   });
 

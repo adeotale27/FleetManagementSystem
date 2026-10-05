@@ -44,6 +44,17 @@ const mutationSuccessLabel = (config) => {
   return `${resource} ${action}`;
 };
 
+const mutationKey = (config) => [
+  String(config?.method || "").toLowerCase(),
+  String(config?.url || "").split(/[?#]/, 1)[0],
+].join(":");
+
+const publishMutationStatus = (detail) => {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("fms:mutation-status", { detail }));
+  }
+};
+
 api.interceptors.request.use((cfg) => {
   const t = localStorage.getItem("fms_token");
   if (t) cfg.headers.Authorization = `Bearer ${t}`;
@@ -53,6 +64,7 @@ api.interceptors.request.use((cfg) => {
 api.interceptors.response.use(
   (r) => {
     if (isWriteRequest(r.config)) {
+      publishMutationStatus({ state: "saved", key: mutationKey(r.config) });
       scheduleMutationSuccess(mutationSuccessLabel(r.config));
       publishDataChange(r.headers?.["x-data-revision"], { notifySelf: false });
       if (r.headers?.["x-data-sync-status"] === "unavailable") {
@@ -66,7 +78,16 @@ api.interceptors.response.use(
       localStorage.removeItem("fms_token");
       if (window.location.pathname !== "/login") window.location.href = "/login";
     }
-    if (isWriteRequest(err?.config)) toast(errMsg(err), "err", { apiError: true });
+    if (isWriteRequest(err?.config)) {
+      const reason = errMsg(err);
+      publishMutationStatus({
+        state: "failed",
+        key: mutationKey(err.config),
+        title: `Save failed · ${mutationSuccessLabel(err.config)}`,
+        reason,
+      });
+      toast(reason, "err", { apiError: true });
+    }
     return Promise.reject(err);
   }
 );
