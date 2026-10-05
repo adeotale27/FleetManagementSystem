@@ -716,9 +716,19 @@ async def initialize_site_storage():
                 ]},
                 name="site_trip_expense_posting_unique",
             )
+        existing_reversal_index = (await db.site_payments.index_information()).get(
+            "site_payment_reversal_unique",
+        )
+        if existing_reversal_index and (
+            existing_reversal_index.get("unique") is not True
+            or existing_reversal_index.get("partialFilterExpression")
+            != {"kind": "reversal", "reversal_of": {"$exists": True}}
+        ):
+            await db.site_payments.drop_index("site_payment_reversal_unique")
         await db.site_payments.create_index(
             [("business_id", 1), ("site_id", 1), ("reversal_of", 1)],
-            unique=True, sparse=True,
+            unique=True,
+            partialFilterExpression={"kind": "reversal", "reversal_of": {"$exists": True}},
             name="site_payment_reversal_unique",
         )
         await db.site_audit_events.create_index(
@@ -2412,10 +2422,9 @@ async def create_site_trip_expense(
 async def update_site_trip(site_id: str, trip_id: str, body: TripUpdate, u=Depends(site_user)):
     site = await _site_for_user(site_id, u, "trips:update")
     trip = await _trip(site, trip_id)
-    if trip["status"] != "open":
-        raise HTTPException(409, "Closed trips must be reopened by the business owner before editing")
     if trip.get("reconciled"):
         raise HTTPException(409, "Trip details are locked because its ledger has been reconciled")
+    _ensure_trip_ledger_open(trip)
     changes = body.model_dump(exclude_unset=True)
     if not changes:
         return _doc_for_user(trip, u)
@@ -2440,10 +2449,18 @@ async def update_site_trip(site_id: str, trip_id: str, body: TripUpdate, u=Depen
         if key in changes:
             changes[key] = _normalize_label(changes[key], key, 32 if key == "truck_no" else 100)
     changes["updated_at"] = now_iso()
-    await db.site_trips.update_one(
-        _scoped(str(site["business_id"]), site_id, _id=trip_id, status="open"),
+    update_query = _scoped(
+        str(site["business_id"]), site_id, _id=trip_id, status=trip["status"],
+        reconciled={"$ne": True},
+        ledger_completed_at={"$exists": False},
+        ledger_completion_started_at={"$exists": False},
+    )
+    updated_result = await db.site_trips.update_one(
+        update_query,
         {"$set": changes},
     )
+    if not updated_result.matched_count:
+        raise HTTPException(409, "Trip details changed or were locked. Reload the trip before saving again.")
     await _audit(site, u, "trip.updated", "trip", trip_id,
                  old={k: trip.get(k) for k in changes if k in trip},
                  new={k: changes[k] for k in changes if k != "updated_at"})
@@ -2892,7 +2909,7 @@ async def update_site_lr(
                     "Hamali",
                 )),
             }),
-        } for line in changes["containers"]]
+        } for index, line in enumerate(changes["containers"])]
         changes["containers"] = containers
         changes["goods_rows"] = containers
         changes["goods_type"] = containers[0]["type"]
@@ -2913,8 +2930,6 @@ async def update_site_lr(
         for goods_name in {line["type"] for line in containers}:
             await _save_category(site, u, "goods", goods_name)
     if "rent" in changes:
-        if not idempotency_key:
-            raise HTTPException(422, "An idempotency key is required when changing bhada")
         old_rent = _decimal_value(lr.get("rent"))
         new_rent = _decimal(changes["rent"], "Bhada", allow_none=True)
         paid = (await _payments_by_lr(site, trip_id, [lr_id])).get(lr_id, Decimal("0.00"))
@@ -2926,6 +2941,8 @@ async def update_site_lr(
         changes["rent"] = Decimal128(new_rent) if new_rent is not None else None
         delta = (new_rent or Decimal("0.00")) - old_rent
         if delta:
+            if not idempotency_key:
+                raise HTTPException(422, "An idempotency key is required when changing bhada")
             event_id = f"lr-rent-edit:{lr_id}:{idempotency_key}"
             await _financial_event(
                 event_id, site, changes.get("party_id", lr["party_id"]), lr["operating_date"],

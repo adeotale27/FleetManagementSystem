@@ -518,6 +518,9 @@ export default function Booking({ user }) {
   const [tripLoading, setTripLoading] = useState(false);
   const [tripFormOpen, setTripFormOpen] = useState(false);
   const [tripForm, setTripForm] = useState({ date: todayISO(), truck_no: "", driver_name: "" });
+  const [tripEditOpen, setTripEditOpen] = useState(false);
+  const [tripEditForm, setTripEditForm] = useState({ truck_no: "", driver_name: "" });
+  const [tripEditSaving, setTripEditSaving] = useState(false);
   const [receiptFormOpen, setReceiptFormOpen] = useState(false);
   const [receiptFormVersion, setReceiptFormVersion] = useState(0);
   const [editingReceipt, setEditingReceipt] = useState(null);
@@ -751,6 +754,43 @@ export default function Booking({ user }) {
       await refreshTrips(trip.operating_date, siteId);
       navigate("/booking/receipts");
     } catch (requestError) { setTripError(errMsg(requestError)); }
+  };
+  const openTripEditor = () => {
+    if (!selectedTrip) return;
+    setTripEditForm({
+      truck_no: selectedTrip.truck_no || "",
+      driver_name: selectedTrip.driver_name || "",
+    });
+    setTripEditOpen(true);
+    setTripError("");
+  };
+  const saveTripDetails = async (event) => {
+    event.preventDefault();
+    if (!selectedTrip || tripEditSaving) return;
+    setTripEditSaving(true);
+    setTripError("");
+    const changes = {};
+    if (tripEditForm.truck_no.trim()) changes.truck_no = tripEditForm.truck_no.trim();
+    if (tripEditForm.driver_name.trim()) changes.driver_name = tripEditForm.driver_name.trim();
+    try {
+      const response = await api.patch(
+        `/sites/${siteId}/trips/${selectedTrip.id}`,
+        changes,
+      );
+      const updatedTrip = { ...selectedTrip, ...response.data };
+      setSelectedTrip(updatedTrip);
+      const cacheKey = `${siteId}:${selectedTrip.operating_date}`;
+      const updateTrip = (trip) => trip.id === updatedTrip.id ? { ...trip, ...updatedTrip } : trip;
+      const cachedTrips = tripsCache.current.get(cacheKey);
+      if (cachedTrips) tripsCache.current.set(cacheKey, cachedTrips.map(updateTrip));
+      setTrips((current) => current.map(updateTrip));
+      setTripEditOpen(false);
+      setSuccess(`Trip details saved: ${updatedTrip.trip_ref}.`);
+    } catch (requestError) {
+      setTripError(errMsg(requestError));
+    } finally {
+      setTripEditSaving(false);
+    }
   };
   const changeTripStatus = async (reopen = false) => {
     if (!selectedTrip) return;
@@ -1031,16 +1071,43 @@ export default function Booking({ user }) {
 
   const setLedgerRowPaid = async (row, received) => {
     if (!owner || isLedgerLocked(ledgerTrip) || paidRowsUpdating.has(row.id)) return;
+    const previousRow = row;
+    const optimisticRow = {
+      ...row,
+      amount_paid: received,
+      ...(received ? {
+        paid_total: (Number(row.rent || 0) + Number(row.receipt_fee ?? 2)).toFixed(2),
+        outstanding: "0.00",
+        payment_status: "paid",
+      } : {}),
+    };
+    ledgerRowCache.current[row.id] = optimisticRow;
+    setLedgerRows((current) => current.map((item) => item.id === row.id ? optimisticRow : item));
     setPaidRowsUpdating((current) => new Set(current).add(row.id));
     setLedgerError("");
     try {
-      await api.post(`/sites/${siteId}/trips/${ledgerTripId}/lrs/${row.id}/settlement`, {
+      const result = await api.post(`/sites/${siteId}/trips/${ledgerTripId}/lrs/${row.id}/settlement`, {
         received,
         idempotency_key: keyForRequest(),
       });
-      await loadLedger();
+      const savedRow = {
+        ...optimisticRow,
+        amount_paid: result.data.received,
+        paid_total: result.data.paid_total,
+        outstanding: result.data.outstanding,
+        payment_status: Number(result.data.outstanding) <= 0 ? "paid"
+          : Number(result.data.paid_total) > 0 ? "partial" : "unpaid",
+      };
+      ledgerRowCache.current[row.id] = savedRow;
+      setLedgerRows((current) => current.map((item) => item.id === row.id ? savedRow : item));
+      setLedgerStatus((current) => ({
+        ...current,
+        [row.id]: result.data.received ? "Paid status saved" : "Paid status reversed",
+      }));
     } catch (requestError) {
-      setLedgerError(errMsg(requestError));
+      ledgerRowCache.current[row.id] = previousRow;
+      setLedgerRows((current) => current.map((item) => item.id === row.id ? previousRow : item));
+      setLedgerError(`${row.lr_ref}: Paid status was not saved. ${errMsg(requestError)}`);
     } finally {
       setPaidRowsUpdating((current) => {
         const next = new Set(current);
@@ -1253,6 +1320,8 @@ export default function Booking({ user }) {
                 {selectedTrip.driver_name ? ` · ${selectedTrip.driver_name}` : ""}</p>
             </div>
             {selectedTrip.status === "closed" && <span className="rounded-lg bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">Trip closed · receipts locked</span>}
+            {can("trips:update") && !isLedgerLocked(selectedTrip) && !selectedTrip.reconciled &&
+              <button type="button" className="btn-s min-h-11" onClick={openTripEditor}>Edit trip details</button>}
             {selectedTrip.status === "open" && owner &&
               <button className="btn-s" onClick={() => changeTripStatus(false)}>Close Trip</button>}
             {selectedTrip.status === "closed" && owner &&
@@ -1260,6 +1329,28 @@ export default function Booking({ user }) {
           </Card> : <Card className="p-5">
             <p className="text-lg font-semibold">Choose a trip before creating a receipt.</p>
             <Link className="btn-p mt-3" to="/booking/dashboard">Open Dashboard</Link>
+          </Card>}
+          {tripEditOpen && selectedTrip && <Card className="p-4 sm:p-6">
+            <h3 className="mb-4 text-lg font-bold">Edit trip details · {selectedTrip.trip_ref}</h3>
+            <form onSubmit={saveTripDetails} className="grid gap-4 sm:grid-cols-2">
+              <label><span className="lbl">Vehicle number</span>
+                <input className={field} aria-label="Edit trip vehicle number" maxLength={32}
+                  value={tripEditForm.truck_no}
+                  onChange={(event) => setTripEditForm((current) => ({ ...current, truck_no: event.target.value }))} />
+              </label>
+              <label><span className="lbl">Driver name</span>
+                <input className={field} aria-label="Edit trip driver name" maxLength={100}
+                  value={tripEditForm.driver_name}
+                  onChange={(event) => setTripEditForm((current) => ({ ...current, driver_name: event.target.value }))} />
+              </label>
+              <div className="flex gap-2 sm:col-span-2">
+                <button type="button" className="btn-s min-h-11" disabled={tripEditSaving}
+                  onClick={() => setTripEditOpen(false)}>Cancel</button>
+                <button type="submit" className="btn-p min-h-11 flex-1" disabled={tripEditSaving}>
+                  {tripEditSaving ? "Saving trip…" : "Save trip details"}
+                </button>
+              </div>
+            </form>
           </Card>}
           {receiptFormOpen && selectedTrip && (selectedTrip.status === "open" || owner)
             && !isLedgerLocked(selectedTrip) && <>

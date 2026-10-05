@@ -53,6 +53,7 @@ describe("API mutation notices", () => {
 
   it.each([
     ["post", "/sites/site-1/trips/trip-1/lrs", "LR created"],
+    ["post", "/sites/site-1/trips/trip-1/lrs/lr-1/settlement", "Payment status updated"],
     ["post", "/sites/site-1/trips/trip-1/expenses", "Expense saved"],
     ["patch", "/sites/site-1/trips/trip-1?source=console", "Trip updated"],
     ["patch", "/sites/site-1", "Site updated"],

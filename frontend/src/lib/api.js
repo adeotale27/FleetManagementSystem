@@ -37,6 +37,7 @@ const mutationSuccessLabel = (config) => {
   ))?.toLowerCase()] || "";
 
   if (!resource) return "Changes saved successfully.";
+  if (last === "settlement") return "Payment status updated";
   if (last === "close") return `${resource} closed`;
   if (last === "reopen") return `${resource} reopened`;
   const action = method === "post" ? (last === "trips" || last === "lrs" || last === "sites" ? "created" : "saved")

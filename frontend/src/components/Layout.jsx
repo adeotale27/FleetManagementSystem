@@ -8,6 +8,32 @@ import { api } from "../lib/api";
 import EntryModal from "./QuickForms";
 import { Badge } from "./ui";
 
+const APP_LOGO = "/app-icon.png";
+
+function BrandLogo({ src, name, className }) {
+  const [failedSource, setFailedSource] = useState("");
+  const [fallbackFailed, setFallbackFailed] = useState(false);
+  useEffect(() => {
+    setFailedSource("");
+    setFallbackFailed(false);
+  }, [src]);
+
+  const imageSrc = failedSource ? APP_LOGO : (src || APP_LOGO);
+  if (fallbackFailed) {
+    return <span role="img" aria-label={`${name || "Business"} logo unavailable`}
+      className={`${className} grid place-items-center bg-white text-lg font-bold text-brand-700`}>
+      {(name || "B").trim().charAt(0).toUpperCase()}
+    </span>;
+  }
+
+  return <img src={imageSrc} alt={`${name || "Business"} logo`}
+    data-testid="brand-logo" className={className}
+    onError={() => {
+      if (imageSrc === APP_LOGO) setFallbackFailed(true);
+      else setFailedSource(imageSrc);
+    }} />;
+}
+
 const NAV = [
   { to: "/trips?tab=trips", label: "Industrial Trips", icon: Truck, key: "trips",
     activeWhen: (location) => location.pathname === "/trips" && new URLSearchParams(location.search).get("tab") !== "lrs" },
@@ -142,7 +168,7 @@ export default function Layout({ user, children, syncStatus = "checking" }) {
     setEntry(kind);
   };
 
-  const bizLogo = user?.role === "superadmin" ? "/app-icon.png" : (user?.branding?.logo || "/app-icon.png");
+  const bizLogo = user?.role === "superadmin" ? APP_LOGO : user?.branding?.logo;
   const bizName = user?.role === "superadmin" ? "ProFleet" : (user?.tenant_name || user?.branding?.name || "ProFleet");
   const photo = user?.photo;
   const isSiteBookingRoute = loc.pathname === "/booking" || loc.pathname.startsWith("/booking/")
@@ -166,7 +192,8 @@ export default function Layout({ user, children, syncStatus = "checking" }) {
   const Side = (
     <>
       <div className="flex items-center gap-3 px-5 py-5">
-        <img src={bizLogo} alt="" className="app-brand-mark h-10 w-10 shrink-0 rounded-xl bg-white object-contain ring-1 ring-white/10" />
+        <BrandLogo src={bizLogo} name={bizName}
+          className="app-brand-mark h-14 w-14 shrink-0 rounded-xl bg-white object-contain ring-1 ring-white/10" />
         <div className="min-w-0">
           <p className="truncate font-head text-[15.5px] font-bold leading-none text-white">{bizName}</p>
           <p className="mt-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-white/45">
@@ -233,7 +260,8 @@ export default function Layout({ user, children, syncStatus = "checking" }) {
               aria-expanded={menu} className="rounded-lg p-2 text-ink hover:bg-brand-50 md:hidden">
               <Menu size={21} />
             </button>
-            <img src={bizLogo} alt="" className="h-8 w-8 rounded-lg object-contain md:hidden" />
+            <BrandLogo src={bizLogo} name={bizName}
+              className="h-10 w-10 shrink-0 rounded-lg bg-white object-contain md:hidden" />
             {showIndustrialTools && (
             <div className="relative flex-1 md:max-w-md">
               <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
