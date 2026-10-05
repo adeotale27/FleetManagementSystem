@@ -2467,6 +2467,43 @@ async def update_site_trip(site_id: str, trip_id: str, body: TripUpdate, u=Depen
     return _doc_for_user(await _trip(site, trip_id), u)
 
 
+@router.delete("/sites/{site_id}/trips/{trip_id}")
+async def delete_site_trip(site_id: str, trip_id: str, u=Depends(site_user)):
+    _owner(u)
+    site = await _site_for_user(site_id, u, "trips:update")
+    trip = await _trip(site, trip_id)
+    business_id = str(site["business_id"])
+    linked_records = (
+        ("receipts", db.site_lrs),
+        ("payments", db.site_payments),
+        ("expenses", db.expenses),
+        ("ledger entries", db.ledger),
+        ("cashbook entries", db.cashbook),
+        ("ledger imports", db.site_ledger_imports),
+    )
+    for label, collection in linked_records:
+        if await collection.count_documents(_scoped(
+            business_id, site_id, trip_id=trip_id,
+        )):
+            raise HTTPException(
+                409,
+                f"This trip cannot be deleted because it has linked {label}.",
+            )
+    deleted = await db.site_trips.delete_one(
+        _scoped(business_id, site_id, _id=trip_id),
+    )
+    if not deleted.deleted_count:
+        raise HTTPException(409, "This trip changed before it could be deleted. Reload and try again.")
+    await _audit(
+        site, u, "trip.deleted", "trip", trip_id,
+        old={
+            "trip_ref": trip.get("trip_ref"),
+            "operating_date": trip.get("operating_date"),
+        },
+    )
+    return {"deleted": True, "id": trip_id}
+
+
 @router.post("/sites/{site_id}/trips/{trip_id}/close")
 async def close_site_trip(site_id: str, trip_id: str, u=Depends(site_user)):
     _owner(u)
@@ -2780,6 +2817,15 @@ async def update_site_lr(
         or sum((_decimal_value(line.get("hamali")) for line in incoming_goods), Decimal("0.00"))
         != _decimal_value(lr.get("hamali"))
     )
+    requested_charge_change = row_charge_change or any(
+        _decimal_value(changes[key]) != _decimal_value(lr.get(key))
+        for key in financial_fields.intersection(changes)
+    )
+    if lr.get("booking_ledger_paid") and requested_charge_change:
+        raise HTTPException(
+            409,
+            "Untick Amount paid before changing Bhada or Hamali.",
+        )
     charge_values_changed = False
     if lr.get("reconciled") and (financial_fields.intersection(changes) or row_charge_change) and (
         not is_owner

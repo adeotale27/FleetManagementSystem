@@ -246,6 +246,7 @@ function ReceiptForm({
   trip, receipt, canEditFinance, addressSuggestions, convertHindi, receiptFee,
   goodsSuggestions, senderAddressEnabled, receiverAddressEnabled, onCancel, onSaved,
 }) {
+  const chargesLocked = Boolean(receipt?.amount_paid || receipt?.booking_ledger_paid);
   const [form, setForm] = useState(() => receipt ? {
     receipt_date: receipt.receipt_date || receipt.operating_date || trip.operating_date,
     sender_name: receipt.sender_name || "",
@@ -467,11 +468,16 @@ function ReceiptForm({
           </datalist>
         </section>
         {canEditFinance && <section className="grid gap-3 rounded-xl border border-line p-4 sm:grid-cols-2">
+          {chargesLocked && <p className="text-sm text-amber-800 sm:col-span-2">
+            Untick Amount paid before changing Bhada or Hamali.
+          </p>}
           <label><span className="lbl">Bhada (₹)</span><input className={field} type="number" min="0"
             step="0.01" inputMode="decimal" aria-label="Receipt Bhada"
+            disabled={chargesLocked}
             value={amountInput(form.rent)} onChange={(event) => patch({ rent: event.target.value })} /></label>
           <label><span className="lbl">Hamali (₹)</span><input className={field} type="number" min="0"
             step="0.01" inputMode="decimal" aria-label="Receipt Hamali"
+            disabled={chargesLocked}
             value={amountInput(form.hamali)} onChange={(event) => patch({ hamali: event.target.value })} /></label>
         </section>}
         <section className="rounded-xl bg-brand-50 p-4">
@@ -521,6 +527,7 @@ export default function Booking({ user }) {
   const [tripEditOpen, setTripEditOpen] = useState(false);
   const [tripEditForm, setTripEditForm] = useState({ truck_no: "", driver_name: "" });
   const [tripEditSaving, setTripEditSaving] = useState(false);
+  const [tripDeleting, setTripDeleting] = useState(false);
   const [receiptFormOpen, setReceiptFormOpen] = useState(false);
   const [receiptFormVersion, setReceiptFormVersion] = useState(0);
   const [editingReceipt, setEditingReceipt] = useState(null);
@@ -790,6 +797,30 @@ export default function Booking({ user }) {
       setTripError(errMsg(requestError));
     } finally {
       setTripEditSaving(false);
+    }
+  };
+  const deleteTrip = async () => {
+    if (!owner || !selectedTrip || tripDeleting || tripEditSaving) return;
+    if (!window.confirm(
+      `Delete empty trip ${selectedTrip.trip_ref}? Trips with receipts or financial records cannot be deleted.`,
+    )) return;
+    setTripDeleting(true);
+    setTripError("");
+    try {
+      await api.delete(`/sites/${siteId}/trips/${selectedTrip.id}`);
+      localStorage.removeItem("booking_trip_id");
+      setSelectedTrip(null);
+      setReceipts([]);
+      setEditingReceipt(null);
+      setReceiptFormOpen(false);
+      setTripEditOpen(false);
+      setSuccess(`Trip ${selectedTrip.trip_ref} was deleted.`);
+      await refreshTrips();
+      navigate("/booking/dashboard");
+    } catch (requestError) {
+      setTripError(errMsg(requestError));
+    } finally {
+      setTripDeleting(false);
     }
   };
   const changeTripStatus = async (reopen = false) => {
@@ -1178,8 +1209,11 @@ export default function Booking({ user }) {
     aria-label={`${row.lr_ref} ${label}`} className={`${field} ${className}`} type={type}
     value={value ?? ""}
     {...(type === "number" ? { min: 0, step: "0.01", inputMode: "decimal" } : {})}
+    title={(key === "rent" || key === "hamali") && row.amount_paid
+      ? "Untick Amount paid before changing Bhada or Hamali." : undefined}
     disabled={isLedgerLocked(ledgerTrip) || row.voided || (row.trip_status === "closed" && !owner)
-      || (key === "rent" || key === "hamali" ? !canEditFinance : !can("lrs:update"))}
+      || (key === "rent" || key === "hamali"
+        ? !canEditFinance || row.amount_paid : !can("lrs:update"))}
     onChange={(event) => editLedgerCell(row.id, key, event.target.value)}
     onBlur={() => flushLedgerRow(row.id)} />;
   if (siteError && !sites.length) return <ErrorState text={siteError} onRetry={() => api.get("/sites").then((response) => setSites(response.data || []))} />;
@@ -1349,6 +1383,10 @@ export default function Booking({ user }) {
                 <button type="submit" className="btn-p min-h-11 flex-1" disabled={tripEditSaving}>
                   {tripEditSaving ? "Saving trip…" : "Save trip details"}
                 </button>
+                {owner && <button type="button" className="btn-s min-h-11 border-red-300 text-red-700"
+                  disabled={tripEditSaving || tripDeleting} onClick={deleteTrip}>
+                  {tripDeleting ? "Deleting trip…" : "Delete empty trip"}
+                </button>}
               </div>
             </form>
           </Card>}
