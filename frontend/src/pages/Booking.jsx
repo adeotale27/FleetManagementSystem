@@ -802,19 +802,21 @@ export default function Booking({ user }) {
   const deleteTrip = async () => {
     if (!owner || !selectedTrip || tripDeleting || tripEditSaving) return;
     if (!window.confirm(
-      `Delete empty trip ${selectedTrip.trip_ref}? Trips with receipts or financial records cannot be deleted.`,
+      `Delete trip ${selectedTrip.trip_ref}? Empty trips are deleted; trips with receipts can only be archived when every receipt is void. Financial history will be preserved.`,
     )) return;
     setTripDeleting(true);
     setTripError("");
     try {
-      await api.delete(`/sites/${siteId}/trips/${selectedTrip.id}`);
+      const response = await api.delete(`/sites/${siteId}/trips/${selectedTrip.id}`);
       localStorage.removeItem("booking_trip_id");
       setSelectedTrip(null);
       setReceipts([]);
       setEditingReceipt(null);
       setReceiptFormOpen(false);
       setTripEditOpen(false);
-      setSuccess(`Trip ${selectedTrip.trip_ref} was deleted.`);
+      setSuccess(response.data?.archived
+        ? `Trip ${selectedTrip.trip_ref} was archived. Its void receipts and financial history were preserved.`
+        : `Trip ${selectedTrip.trip_ref} was deleted.`);
       await refreshTrips();
       navigate("/booking/dashboard");
     } catch (requestError) {
@@ -1173,6 +1175,41 @@ export default function Booking({ user }) {
     }
   };
 
+  const undoTripLedgerCompletion = async () => {
+    if (!owner || !ledgerTripId || !ledgerTrip?.ledger_completed_at || ledgerCompleting) return;
+    if (Object.keys(dirtyRows.current).some((id) => Object.keys(dirtyRows.current[id] || {}).length)
+      || savingRows.current.size) {
+      setLedgerError("Save or discard pending ledger edits before undoing completion.");
+      return;
+    }
+    if (!window.confirm(
+      "Undo ledger completion and unlock this trip? Existing payments and Amount paid ticks will remain unchanged.",
+    )) return;
+    setLedgerCompleting(true);
+    setLedgerError("");
+    try {
+      const response = await api.post(
+        `/sites/${siteId}/trips/${ledgerTripId}/ledger/uncomplete`,
+      );
+      const updatedTrip = {
+        ...ledgerTrip,
+        ...response.data,
+        ledger_completed_at: null,
+        ledger_completed_by: "",
+        ledger_completion_started_at: null,
+        ledger_completion_started_by: "",
+        ledger_completion_date: null,
+      };
+      setLedgerTrips((current) => current.map((trip) => trip.id === ledgerTripId
+        ? { ...trip, ...updatedTrip } : trip));
+      await loadLedger();
+    } catch (requestError) {
+      setLedgerError(errMsg(requestError));
+    } finally {
+      setLedgerCompleting(false);
+    }
+  };
+
   const voidReceipt = async (receipt) => {
     if (!window.confirm(`Void receipt ${receipt.lr_ref}? This keeps it in the audit history.`)) return;
     const reason = window.prompt("Why does this receipt need to be voided? This reason is saved in the audit history.");
@@ -1385,7 +1422,7 @@ export default function Booking({ user }) {
                 </button>
                 {owner && <button type="button" className="btn-s min-h-11 border-red-300 text-red-700"
                   disabled={tripEditSaving || tripDeleting} onClick={deleteTrip}>
-                  {tripDeleting ? "Deleting trip…" : "Delete empty trip"}
+                  {tripDeleting ? "Deleting trip…" : "Delete trip"}
                 </button>}
               </div>
             </form>
@@ -1468,6 +1505,12 @@ export default function Booking({ user }) {
                 {ledgerCompleting ? "Completing ledger…" : ledgerTrip?.ledger_completion_started_at
                   ? "Resume ledger completion" : "Complete trip ledger"}
                 </button>}
+              {owner && ledgerTripId && ledgerTrip?.ledger_completed_at && <button
+                className="btn-s col-span-2 min-h-11 sm:col-span-1"
+                disabled={ledgerCompleting || ledgerBusy}
+                onClick={undoTripLedgerCompletion}>
+                {ledgerCompleting ? "Updating ledger…" : "Undo ledger completion"}
+              </button>}
             </div>
           </div>
           {isLedgerLocked(ledgerTrip) && <p className="border border-gray-500 bg-gray-100 p-2 text-sm">

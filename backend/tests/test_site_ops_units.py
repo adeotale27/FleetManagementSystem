@@ -239,10 +239,72 @@ def test_owner_can_delete_only_empty_site_trip(monkeypatch):
     assert audit_calls[0][0][2:5] == ("trip.deleted", "trip", "trip-1")
 
 
-def test_trip_delete_rejects_linked_receipts_and_non_owners(monkeypatch):
-    class LinkedReceipts:
+def test_owner_can_archive_trip_when_all_receipts_are_void_and_preserve_history(monkeypatch):
+    site = {"_id": "site-1", "business_id": "business-1"}
+    trip = {"_id": "trip-1", "trip_ref": "NGP29092026-01"}
+    linked_count_calls = []
+    updates = []
+    audits = []
+
+    class AllVoidReceipts:
+        async def count_documents(self, query):
+            assert query["trip_id"] == "trip-1"
+            return 2
+
+        async def find_one(self, query, _projection):
+            assert query["voided"] == {"$ne": True}
+            return None
+
+    class Trips:
+        async def update_one(self, query, update):
+            updates.append((query, update))
+            return SimpleNamespace(matched_count=1)
+
+    class LinkedHistory:
+        async def count_documents(self, query):
+            linked_count_calls.append(query)
+            return 1
+
+    async def audit(*args, **kwargs):
+        audits.append((args, kwargs))
+
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(
+        site_lrs=AllVoidReceipts(), site_payments=LinkedHistory(),
+        expenses=LinkedHistory(), ledger=LinkedHistory(),
+        cashbook=LinkedHistory(), site_ledger_imports=LinkedHistory(),
+        site_trips=Trips(),
+    ))
+    monkeypatch.setattr(site_ops, "_site_for_user", _async_value(site))
+    monkeypatch.setattr(site_ops, "_trip", _async_value(trip))
+    monkeypatch.setattr(site_ops, "_audit", audit)
+    monkeypatch.setattr(site_ops, "now_iso", lambda: "2026-09-29T12:00:00+00:00")
+
+    result = asyncio.run(site_ops.delete_site_trip(
+        "site-1", "trip-1", {"role": "owner", "username": "owner"},
+    ))
+
+    assert result == {"deleted": True, "archived": True, "id": "trip-1"}
+    assert updates[0][0] == {
+        "business_id": "business-1", "site_id": "site-1", "_id": "trip-1",
+        "archived_at": {"$exists": False},
+    }
+    assert updates[0][1]["$set"] == {
+        "archived_at": "2026-09-29T12:00:00+00:00",
+        "archived_by": "owner", "updated_at": "2026-09-29T12:00:00+00:00",
+    }
+    assert linked_count_calls == []
+    assert audits[0][0][2:5] == ("trip.archived", "trip", "trip-1")
+    assert audits[0][1]["new"]["voided_receipt_count"] == 2
+
+
+def test_trip_delete_rejects_active_receipts_and_non_owners(monkeypatch):
+    class ActiveReceipts:
         async def count_documents(self, _query):
             return 1
+
+        async def find_one(self, query, _projection):
+            assert query["voided"] == {"$ne": True}
+            return {"_id": "lr-active"}
 
     class EmptyCollection:
         async def count_documents(self, _query):
@@ -250,12 +312,15 @@ def test_trip_delete_rejects_linked_receipts_and_non_owners(monkeypatch):
 
     class Trips:
         async def delete_one(self, _query):
-            raise AssertionError("A trip with linked receipts must not be deleted")
+            raise AssertionError("A trip with an active receipt must not be deleted")
+
+        async def update_one(self, _query, _update):
+            raise AssertionError("A trip with an active receipt must not be archived")
 
     site = {"_id": "site-1", "business_id": "business-1"}
     trip = {"_id": "trip-1"}
     monkeypatch.setattr(site_ops, "db", SimpleNamespace(
-        site_lrs=LinkedReceipts(), site_payments=EmptyCollection(),
+        site_lrs=ActiveReceipts(), site_payments=EmptyCollection(),
         expenses=EmptyCollection(), ledger=EmptyCollection(),
         cashbook=EmptyCollection(), site_ledger_imports=EmptyCollection(),
         site_trips=Trips(),
@@ -268,13 +333,53 @@ def test_trip_delete_rejects_linked_receipts_and_non_owners(monkeypatch):
             "site-1", "trip-1", {"role": "owner", "username": "owner"},
         ))
     assert linked_error.value.status_code == 409
-    assert "linked receipts" in linked_error.value.detail
+    assert "active receipts" in linked_error.value.detail
 
     with pytest.raises(HTTPException) as permission_error:
         asyncio.run(site_ops.delete_site_trip(
             "site-1", "trip-1", {"role": "site_manager", "username": "manager"},
         ))
     assert permission_error.value.status_code == 403
+
+
+def test_archived_trips_are_not_returned_by_normal_trip_listing(monkeypatch):
+    captured = []
+
+    class Cursor:
+        def sort(self, *_args):
+            return self
+
+        def skip(self, _offset):
+            return self
+
+        def limit(self, _limit):
+            return self
+
+        async def to_list(self, _limit):
+            return []
+
+    class Trips:
+        async def count_documents(self, query):
+            captured.append(query)
+            return 0
+
+        def find(self, query):
+            captured.append(query)
+            return Cursor()
+
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(site_trips=Trips()))
+    monkeypatch.setattr(
+        site_ops, "_site_for_user",
+        _async_value({"_id": "site-1", "business_id": "business-1"}),
+    )
+
+    result = asyncio.run(site_ops.list_site_trips(
+        "site-1", u={"role": "owner", "username": "owner"},
+    ))
+
+    assert result["rows"] == []
+    assert result["total"] == 0
+    assert all(query["archived_at"] == {"$exists": False} for query in captured)
 
 
 def test_trip_details_remain_locked_during_ledger_completion(monkeypatch):
@@ -1647,6 +1752,148 @@ def test_completing_trip_ledger_posts_outstanding_bhada_and_locks_trip(monkeypat
     assert posted[0][3] == Decimal("82.00")
     assert posted[1]["source"] == "booking_settlement"
     assert audit[0][0][2] == "trip.ledger_completed"
+
+
+def test_owner_can_undo_ledger_completion_without_changing_settlements(monkeypatch):
+    site = {"_id": "site-1", "business_id": "business-1"}
+    completed_at = "2026-09-29T12:00:00+00:00"
+    trip = {
+        "_id": "trip-1", "ledger_completed_at": completed_at,
+        "ledger_completed_by": "owner", "ledger_completion_started_at": completed_at,
+        "ledger_completion_started_by": "owner", "ledger_completion_date": "2026-09-29",
+    }
+    lr = {
+        "_id": "lr-1", "trip_id": "trip-1", "lr_ref": "NGP-LR-1",
+        "rent": Decimal128("100.00"), "receipt_fee": Decimal128("2.00"),
+        "voided": False,
+    }
+    existing_payments = [{"_id": "settlement-1", "amount": Decimal128("102.00")}]
+    updates = []
+    audits = []
+
+    class Trips:
+        async def update_one(self, query, update):
+            updates.append((query, update))
+            trip.update(update.get("$set", {}))
+            for key in update.get("$unset", {}):
+                trip.pop(key, None)
+            return SimpleNamespace(matched_count=1)
+
+    class LRs:
+        def find(self, _query):
+            class Cursor:
+                def sort(self, *_args):
+                    return self
+
+                def limit(self, _limit):
+                    return self
+
+                def to_list(self, _limit):
+                    async def rows():
+                        return [lr]
+                    return rows()
+            return Cursor()
+
+        async def update_one(self, _query, update):
+            lr.update(update["$set"])
+
+    class Payments:
+        async def update_one(self, *_args, **_kwargs):
+            raise AssertionError("Re-completion must not post duplicate settlements")
+
+    async def audit(*args, **kwargs):
+        audits.append((args, kwargs))
+
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(
+        site_trips=Trips(), site_lrs=LRs(), site_payments=Payments(),
+    ))
+    monkeypatch.setattr(site_ops, "_site_for_user", _async_value(site))
+    monkeypatch.setattr(site_ops, "_trip", _async_value(trip))
+    monkeypatch.setattr(site_ops, "_audit", audit)
+    monkeypatch.setattr(
+        site_ops, "_payments_by_lr",
+        _async_value({"lr-1": Decimal("102.00")}),
+    )
+    monkeypatch.setattr(
+        site_ops, "_record_lr_payment",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Re-completion must not create another payment"),
+        ),
+    )
+    monkeypatch.setattr(site_ops, "_now_at_site", lambda _site: ("2026-09-29", None))
+    monkeypatch.setattr(site_ops, "now_iso", lambda: "2026-09-29T12:00:00+00:00")
+
+    result = asyncio.run(site_ops.uncomplete_site_trip_ledger(
+        "site-1", "trip-1", {"role": "owner", "username": "owner"},
+    ))
+
+    assert result == {"id": "trip-1", "ledger_completed": False}
+    assert updates == [(
+        {
+            "business_id": "business-1", "site_id": "site-1", "_id": "trip-1",
+            "ledger_completed_at": completed_at,
+        },
+        {"$unset": {
+            "ledger_completed_at": "", "ledger_completed_by": "",
+            "ledger_completion_started_at": "", "ledger_completion_started_by": "",
+            "ledger_completion_date": "",
+        }},
+    )]
+    assert audits[0][0][2:5] == (
+        "trip.ledger_completion_undone", "trip", "trip-1",
+    )
+    assert audits[0][1]["new"]["settlements_retained"] is True
+
+    completed_again = asyncio.run(site_ops.complete_site_trip_ledger(
+        "site-1", "trip-1", {"role": "owner", "username": "owner"},
+    ))
+    assert completed_again["ledger_completed"] is True
+    assert trip["ledger_completed_by"] == "owner"
+    assert lr["booking_ledger_paid"] is True
+    assert existing_payments == [{
+        "_id": "settlement-1", "amount": Decimal128("102.00"),
+    }]
+    assert [call[0][2] for call in audits] == [
+        "trip.ledger_completion_undone", "trip.ledger_completed",
+    ]
+
+
+def test_only_owner_can_undo_ledger_completion(monkeypatch):
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(site_ops.uncomplete_site_trip_ledger(
+            "site-1", "trip-1", {"role": "site_manager", "username": "manager"},
+        ))
+
+    assert error.value.status_code == 403
+
+
+def test_undo_ledger_completion_rejects_incomplete_or_concurrently_changed_trip(monkeypatch):
+    site = {"_id": "site-1", "business_id": "business-1"}
+    user = {"role": "owner", "username": "owner"}
+    monkeypatch.setattr(site_ops, "_site_for_user", _async_value(site))
+
+    monkeypatch.setattr(site_ops, "_trip", _async_value({"_id": "trip-1"}))
+    with pytest.raises(HTTPException) as incomplete_error:
+        asyncio.run(site_ops.uncomplete_site_trip_ledger("site-1", "trip-1", user))
+    assert incomplete_error.value.status_code == 409
+    assert "not completed" in incomplete_error.value.detail
+
+    completed_at = "2026-09-29T12:00:00+00:00"
+    monkeypatch.setattr(site_ops, "_trip", _async_value({
+        "_id": "trip-1", "ledger_completed_at": completed_at,
+    }))
+
+    class ConcurrentTripUpdate:
+        async def update_one(self, _query, _update):
+            return SimpleNamespace(matched_count=0)
+
+    monkeypatch.setattr(
+        site_ops, "db", SimpleNamespace(site_trips=ConcurrentTripUpdate()),
+    )
+    with pytest.raises(HTTPException) as changed_error:
+        asyncio.run(site_ops.uncomplete_site_trip_ledger("site-1", "trip-1", user))
+    assert changed_error.value.status_code == 409
+    assert "changed before it could be unlocked" in changed_error.value.detail
 
 
 def test_owner_can_reverse_only_a_ledger_created_settlement(monkeypatch):

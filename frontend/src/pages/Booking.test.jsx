@@ -318,7 +318,7 @@ describe("simple booking workflow", () => {
         .find((button) => button.textContent.includes("Edit trip details")).click();
     });
 
-    expect(container.textContent).not.toContain("Delete empty trip");
+    expect(container.textContent).not.toContain("Delete trip");
     expect(container.querySelector('[aria-label="Edit trip vehicle number"]')).not.toBeNull();
     await act(async () => {
       setInput('[aria-label="Edit trip vehicle number"]', "MH 31 AB 1234");
@@ -332,11 +332,12 @@ describe("simple booking workflow", () => {
     });
     expect(container.textContent).toContain("MH 31 AB 1234");
     expect(container.textContent).toContain("Ramesh");
-    expect(container.textContent).not.toContain("Delete empty trip");
+    expect(container.textContent).not.toContain("Delete trip");
   });
 
-  it("lets only the owner delete an empty trip from trip editing", async () => {
+  it("lets only the owner delete or archive a trip from trip editing", async () => {
     const confirm = jest.spyOn(window, "confirm").mockReturnValue(true);
+    api.delete.mockResolvedValue({ data: { deleted: true, archived: true, id: trip.id } });
     api.get.mockImplementation((path) => {
       if (path === "/sites") return Promise.resolve({ data: [site] });
       if (path === `/sites/${site.id}/trips`) return Promise.resolve({ data: { rows: [trip], total: 1 } });
@@ -353,16 +354,49 @@ describe("simple booking workflow", () => {
       Array.from(container.querySelectorAll("button"))
         .find((button) => button.textContent.includes("Edit trip details")).click();
     });
-    expect(container.textContent).toContain("Delete empty trip");
+    expect(container.textContent).toContain("Delete trip");
     await act(async () => {
       Array.from(container.querySelectorAll("button"))
-        .find((button) => button.textContent.includes("Delete empty trip")).click();
+        .find((button) => button.textContent.includes("Delete trip")).click();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     expect(confirm).toHaveBeenCalled();
     expect(api.delete).toHaveBeenCalledWith(`/sites/${site.id}/trips/${trip.id}`);
     expect(localStorage.getItem("booking_trip_id")).toBeNull();
+    expect(container.textContent).toContain("Its void receipts and financial history were preserved.");
+    confirm.mockRestore();
+  });
+
+  it("shows the server reason when trip deletion is blocked", async () => {
+    const confirm = jest.spyOn(window, "confirm").mockReturnValue(true);
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [site] });
+      if (path === `/sites/${site.id}/trips`) return Promise.resolve({ data: { rows: [trip], total: 1 } });
+      if (path === `/sites/${site.id}/trips/${trip.id}/lrs`) return Promise.resolve({ data: { rows: [], total: 0 } });
+      return Promise.resolve({ data: trip });
+    });
+    api.delete.mockRejectedValue({
+      response: { status: 409, data: { detail: "Void every receipt first." } },
+    });
+
+    await renderBooking("dashboard", "owner");
+    await act(async () => {
+      container.querySelector("button.card").click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent.includes("Edit trip details")).click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent.includes("Delete trip")).click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[role="alert"]').textContent).toContain("Void every receipt first.");
+    expect(localStorage.getItem("booking_trip_id")).toBe(trip.id);
     confirm.mockRestore();
   });
 
@@ -879,6 +913,106 @@ describe("simple booking workflow", () => {
     expect(container.textContent).toContain("Print");
     expect(container.textContent).toContain("Excel");
     expect(container.textContent).toContain("Complete trip ledger");
+  });
+
+  it("lets an owner undo a completed ledger while retaining its paid state", async () => {
+    const completedTrip = {
+      ...trip,
+      ledger_completed_at: "2026-09-29T12:00:00+00:00",
+      ledger_completed_by: "owner",
+      ledger_completion_started_at: "2026-09-29T12:00:00+00:00",
+    };
+    const paidRow = {
+      id: "lr-1", site_id: site.id, trip_id: trip.id, trip_ref: trip.trip_ref,
+      trip_status: "closed", lr_ref: "NGP-LR-01", receipt_date: trip.operating_date,
+      receiver_name: "Receiver", rent: "100.00", hamali: "0.00",
+      total_rent: "100.00", paid_total: "102.00", outstanding: "0.00",
+      amount_paid: true, goods_rows: [],
+    };
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [site] });
+      if (path === `/sites/${site.id}/ledger/entries`) {
+        return Promise.resolve({ data: { rows: [paidRow], total: 1 } });
+      }
+      if (path === `/sites/${site.id}/trips`) {
+        return Promise.resolve({ data: { rows: [completedTrip], total: 1 } });
+      }
+      return Promise.resolve({ data: completedTrip });
+    });
+    api.post.mockResolvedValue({ data: { id: trip.id, ledger_completed: false } });
+    const confirm = jest.spyOn(window, "confirm").mockReturnValue(true);
+
+    await renderBooking("ledger", "owner");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
+    expect(container.textContent).toContain("Ledger completed and locked");
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent.includes("Undo ledger completion")).click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("will remain unchanged"));
+    expect(api.post).toHaveBeenCalledWith(
+      `/sites/${site.id}/trips/${trip.id}/ledger/uncomplete`,
+    );
+    expect(container.textContent).not.toContain("Ledger completed and locked");
+    expect(container.querySelector('[aria-label="NGP-LR-01 Amount paid"]').checked).toBe(true);
+    expect(container.querySelector('[aria-label="NGP-LR-01 Amount paid"]').disabled).toBe(false);
+    expect(Array.from(container.querySelectorAll("button")).some((button) =>
+      button.textContent.includes("Complete trip ledger"))).toBe(true);
+    confirm.mockRestore();
+  });
+
+  it("does not offer completed-ledger undo to a manager", async () => {
+    const completedTrip = { ...trip, ledger_completed_at: "2026-09-29T12:00:00+00:00" };
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [site] });
+      if (path === `/sites/${site.id}/ledger/entries`) {
+        return Promise.resolve({ data: { rows: [], total: 0 } });
+      }
+      if (path === `/sites/${site.id}/trips`) {
+        return Promise.resolve({ data: { rows: [completedTrip], total: 1 } });
+      }
+      return Promise.resolve({ data: completedTrip });
+    });
+
+    await renderBooking("ledger", "site_manager");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
+
+    expect(container.textContent).not.toContain("Undo ledger completion");
+  });
+
+  it("keeps the ledger locked and shows the server error when undo fails", async () => {
+    const completedTrip = { ...trip, ledger_completed_at: "2026-09-29T12:00:00+00:00" };
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [site] });
+      if (path === `/sites/${site.id}/ledger/entries`) {
+        return Promise.resolve({ data: { rows: [], total: 0 } });
+      }
+      if (path === `/sites/${site.id}/trips`) {
+        return Promise.resolve({ data: { rows: [completedTrip], total: 1 } });
+      }
+      return Promise.resolve({ data: completedTrip });
+    });
+    api.post.mockRejectedValue({
+      response: { status: 409, data: { detail: "This trip ledger changed. Reload and retry." } },
+    });
+    const confirm = jest.spyOn(window, "confirm").mockReturnValue(true);
+
+    await renderBooking("ledger", "owner");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent.includes("Undo ledger completion")).click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[role="alert"]').textContent)
+      .toContain("This trip ledger changed. Reload and retry.");
+    expect(container.textContent).toContain("Ledger completed and locked");
+    expect(Array.from(container.querySelectorAll("button")).some((button) =>
+      button.textContent.includes("Undo ledger completion"))).toBe(true);
+    confirm.mockRestore();
   });
 
   it("keeps voided ledger row fields read-only", async () => {
