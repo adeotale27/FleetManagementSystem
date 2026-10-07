@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import {
-  CalendarDays, Check, ChevronRight, Download, FileText, Hash, MapPin, Package, Phone,
-  Plus, Printer, Truck, UserRound, X,
+  Banknote, Ban, CalendarDays, Check, ChevronRight, CircleAlert, CircleCheck, CircleHelp,
+  Clock3, Download, FileText, Hash, MapPin, Package, Phone, Plus, Printer, Receipt, Search,
+  Truck, UserRound, X,
 } from "lucide-react";
 import { api, errMsg } from "../lib/api";
 import { Btn, Card, ErrorState, Loader, PageHead } from "../components/ui";
@@ -98,6 +99,128 @@ export const romanHindi = (source) => {
 
 function money(value) {
   return `₹${(Number(value) || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+}
+
+function receiptPaymentStatus(receipt) {
+  const status = String(receipt.payment_status || "").toLowerCase();
+  if (["paid", "partial", "unpaid", "unpriced"].includes(status)) return status;
+  if (receipt.rent == null) return "unpriced";
+  if (receipt.amount_paid || Number(receipt.outstanding) <= 0) return "paid";
+  if (Number(receipt.paid_total) > 0) return "partial";
+  return "unpaid";
+}
+
+function paymentStatusLabel(status, language = "en") {
+  const labels = language === "hi" ? {
+    paid: "पूरा भुगतान",
+    partial: "कुछ भुगतान",
+    unpaid: "भुगतान बाकी",
+    unpriced: "दाम नहीं भरा",
+  } : {
+    paid: "Paid",
+    partial: "Partially paid",
+    unpaid: "Pending payment",
+    unpriced: "Unpriced",
+  };
+  return labels[status] || labels.unpriced;
+}
+
+function paymentStatusSymbol(status) {
+  return ({
+    paid: "✓",
+    partial: "◐",
+    unpaid: "!",
+    unpriced: "?",
+  })[status] || "?";
+}
+
+function ledgerColumnLabel(english, language) {
+  if (language !== "hi") return english === "Amount paid" ? "Mark money received" : english;
+  return ({
+    Date: "तारीख",
+    "Receipt no.": "रसीद नंबर",
+    Sender: "भेजने वाला",
+    Receiver: "प्राप्तकर्ता",
+    "Goods & quantity": "सामान और मात्रा",
+    Bhada: "भाड़ा",
+    Hamali: "हमाली",
+    "Receipt fee": "रसीद शुल्क",
+    "Entered by": "किसने भरा",
+    "Amount paid": "पैसे मिलने पर निशान लगाएँ",
+    "Mark money received": "पैसे मिलने पर निशान लगाएँ",
+  })[english] || english;
+}
+
+function paymentStatusClass(status) {
+  return ({
+    paid: "bg-green-100 text-green-800",
+    partial: "bg-amber-100 text-amber-900",
+    unpaid: "bg-red-100 text-red-800",
+    unpriced: "bg-gray-200 text-gray-700",
+  })[status] || "bg-gray-200 text-gray-700";
+}
+
+function IconLabel({ icon: Icon, children, className = "" }) {
+  return <span className={`inline-flex items-center gap-1.5 ${className}`}>
+    <Icon size={18} aria-hidden="true" />
+    {children}
+  </span>;
+}
+
+function PaymentStatusBadge({ status, voided = false, language = "en" }) {
+  const Icon = voided ? Ban : ({
+    paid: CircleCheck,
+    partial: Clock3,
+    unpaid: Clock3,
+    unpriced: CircleHelp,
+  })[status] || CircleAlert;
+  const label = voided
+    ? (language === "hi" ? "रद्द" : "Voided")
+    : paymentStatusLabel(status, language);
+  const symbol = voided ? "×" : paymentStatusSymbol(status);
+  const styles = voided ? "bg-gray-200 text-gray-800" : paymentStatusClass(status);
+  return <span className={`inline-flex min-h-9 items-center gap-1.5 rounded-full border border-current px-3 py-1 text-sm font-bold ${styles}`}>
+    <Icon size={17} aria-hidden="true" />
+    <span aria-hidden="true">{symbol}</span>
+    {label}
+  </span>;
+}
+
+function receiptOutstanding(receipt) {
+  if (receipt.outstanding != null) return Math.max(Number(receipt.outstanding) || 0, 0);
+  if (receipt.rent == null) return 0;
+  const due = (Number(receipt.rent) || 0) + (Number(receipt.receipt_fee ?? 2) || 0);
+  return Math.max(due - (Number(receipt.paid_total) || 0), 0);
+}
+
+function readReceiptDraft(key) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return { draft: null, error: "" };
+    const saved = JSON.parse(raw);
+    if (saved?.version !== 1 || !saved.form || !Array.isArray(saved.form.goods_rows)) {
+      return { draft: null, error: "A saved receipt draft could not be read. Discard it to continue." };
+    }
+    const textFields = [
+      "receipt_date", "sender_name", "sender_address", "receiver_name",
+      "receiver_address", "receiver_phone", "rent", "hamali",
+    ];
+    if (textFields.some((key) => typeof saved.form[key] !== "string")
+      || saved.form.goods_rows.some((line) =>
+        ["type", "type_hindi", "description", "description_hindi"]
+          .some((key) => typeof line?.[key] !== "string")
+        || !["string", "number"].includes(typeof line?.quantity))) {
+      return { draft: null, error: "A saved receipt draft could not be read. Discard it to continue." };
+    }
+    return { draft: {
+      ...saved.form,
+      goods_rows: saved.form.goods_rows.map((line) => ({
+        ...line, quantity: String(line.quantity ?? ""),
+      })),
+    }, error: "" };
+  } catch {
+    return { draft: null, error: "A saved receipt draft could not be read. Discard it to continue." };
+  }
 }
 
 function amountInput(value) {
@@ -244,9 +367,14 @@ function ReceiptPrint({ receipt, trip, site, branding, showCharges, controls, ac
 
 function ReceiptForm({
   trip, receipt, canEditFinance, addressSuggestions, convertHindi, receiptFee,
-  goodsSuggestions, senderAddressEnabled, receiverAddressEnabled, onCancel, onSaved,
+  goodsSuggestions, senderAddressEnabled, receiverAddressEnabled, previousReceipts,
+  draftScope, language, onCancel, onSaved,
 }) {
+  const t = (english, hindi) => language === "hi" ? hindi : english;
   const chargesLocked = Boolean(receipt?.amount_paid || receipt?.booking_ledger_paid);
+  const draftKey = `booking_receipt_draft:${encodeURIComponent(trip.site_id)}:${encodeURIComponent(trip.id)}:${encodeURIComponent(draftScope)}`;
+  const [draftRecovery, setDraftRecovery] = useState(() => readReceiptDraft(draftKey));
+  const [draftStatus, setDraftStatus] = useState("");
   const [form, setForm] = useState(() => receipt ? {
     receipt_date: receipt.receipt_date || receipt.operating_date || trip.operating_date,
     sender_name: receipt.sender_name || "",
@@ -271,7 +399,68 @@ function ReceiptForm({
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [saveKey] = useState(keyForRequest);
+  useEffect(() => {
+    if (receipt || draftRecovery.draft || draftRecovery.error) return;
+    const hasContent = Boolean(
+      form.sender_name.trim() || form.sender_address.trim() || form.receiver_name.trim()
+      || form.receiver_address.trim() || form.receiver_phone
+      || form.goods_rows.some((line) => line.type.trim() || line.quantity)
+      || form.rent !== "0" || form.hamali !== "0"
+      || form.receipt_date !== trip.operating_date
+    );
+    try {
+      if (hasContent) {
+        window.localStorage.setItem(draftKey, JSON.stringify({ version: 1, form }));
+        setDraftStatus(t("Draft saved locally on this device.", "अधूरी रसीद इस डिवाइस में सेव है।"));
+      } else {
+        window.localStorage.removeItem(draftKey);
+        setDraftStatus("");
+      }
+      setDraftRecovery((current) => ({ ...current, error: "" }));
+    } catch {
+      setDraftStatus(t("Draft could not be saved on this device.", "अधूरी रसीद इस डिवाइस में सेव नहीं हो सकी।"));
+    }
+  }, [draftKey, draftRecovery.draft, form, language, receipt, trip.operating_date]);
   const patch = (values) => setForm((current) => ({ ...current, ...values }));
+  const discardDraft = () => {
+    try {
+      window.localStorage.removeItem(draftKey);
+      setDraftRecovery({ draft: null, error: "" });
+      setDraftStatus("");
+    } catch {
+      setDraftStatus(t("Draft could not be removed from this device.", "अधूरी रसीद इस डिवाइस से हटाई नहीं जा सकी।"));
+    }
+  };
+  const copyPreviousReceipt = (previousReceipt) => {
+    const previousGoods = getGoodsRows(previousReceipt)
+      .filter((line) => line.type || line.description)
+      .map((line) => ({
+        ...line,
+        type: [line.type, line.description].filter(Boolean).join(" "),
+        type_hindi: [line.type_hindi, line.description_hindi].filter(Boolean).join(" "),
+        description: "",
+        description_hindi: "",
+        quantity: String(line.quantity ?? ""),
+      }));
+    patch({
+      sender_name: previousReceipt.sender_name || "",
+      sender_address: previousReceipt.sender_address || "",
+      receiver_name: previousReceipt.receiver_name || "",
+      receiver_address: previousReceipt.receiver_address || "",
+      receiver_phone: previousReceipt.receiver_phone || "",
+      goods_rows: previousGoods.length ? previousGoods : blankGoods(),
+      rent: "0",
+      hamali: "0",
+    });
+  };
+  const choosePreviousReceiver = (receiptId) => {
+    const previousReceipt = previousReceipts.find((item) => item.id === receiptId);
+    if (!previousReceipt) return;
+    patch({
+      receiver_name: previousReceipt.receiver_name || "",
+      receiver_phone: previousReceipt.receiver_phone || "",
+    });
+  };
   const changeGoods = (index, key, value) => {
     setForm((current) => ({ ...current, goods_rows: current.goods_rows.map((line, row) =>
       row === index ? { ...line, [key]: value } : line) }));
@@ -282,19 +471,22 @@ function ReceiptForm({
     setError("");
     const goods = form.goods_rows.filter((line) => line.type.trim() && Number(line.quantity) > 0);
     if (!form.receiver_name.trim() || !goods.length) {
-      setError("Enter the receiver and at least one goods row.");
+      setError(t("Enter the receiver and at least one goods row.", "प्राप्तकर्ता का नाम और कम से कम एक सामान भरें।"));
       return;
     }
     if (window.navigator.onLine === false) {
-      setError("Offline — receipt not saved. Keep this form open and tap Save when you’re back online.");
+      setError(t("Offline — receipt not saved. Keep this form open and tap Save when you’re back online.",
+        "इंटरनेट नहीं है — रसीद सेव नहीं हुई। यह फ़ॉर्म खुला रखें और इंटरनेट आने पर सेव करें।"));
       return;
     }
     if (goods.some((line) => !Number.isInteger(Number(line.quantity)) || Number(line.quantity) <= 0)) {
-      setError("Goods quantity must be a whole number greater than zero.");
+      setError(t("Goods quantity must be a whole number greater than zero.",
+        "सामान की मात्रा शून्य से बड़ी पूरी संख्या होनी चाहिए।"));
       return;
     }
     if (form.receiver_phone && form.receiver_phone.length !== 10) {
-      setError("Receiver phone must contain exactly 10 digits.");
+      setError(t("Receiver phone must contain exactly 10 digits.",
+        "प्राप्तकर्ता का फ़ोन नंबर ठीक 10 अंकों का होना चाहिए।"));
       return;
     }
     savingRef.current = true;
@@ -339,15 +531,18 @@ function ReceiptForm({
         : await api.post(`/sites/${trip.site_id}/trips/${trip.id}/lrs`, {
           ...body, idempotency_key: saveKey,
         });
+      if (!receipt) discardDraft();
       setReceiverMatch(null);
       await onSaved(response.data, printAfter);
     } catch (requestError) {
       const detail = requestError?.response?.data?.detail;
       if (detail?.code === "receiver_match_confirmation_required") {
         setReceiverMatch(detail);
-        setError(detail.message || "Choose whether this is the same receiver or a different receiver.");
+        setError(detail.message || t("Choose whether this is the same receiver or a different receiver.",
+          "बताएँ कि यह वही प्राप्तकर्ता है या कोई दूसरा।"));
       } else if (window.navigator.onLine === false) {
-        setError("Offline — receipt not saved. Keep this form open and tap Save when you’re back online.");
+        setError(t("Offline — receipt not saved. Keep this form open and tap Save when you’re back online.",
+          "इंटरनेट नहीं है — रसीद सेव नहीं हुई। यह फ़ॉर्म खुला रखें और इंटरनेट आने पर सेव करें।"));
       } else {
         setError(errMsg(requestError));
       }
@@ -364,66 +559,109 @@ function ReceiptForm({
   return (
     <Card className="p-4 sm:p-6">
       <div className="mb-4 flex items-start justify-between gap-3">
-        <div><h2 className="text-xl font-bold">{receipt ? "Edit receipt" : "New receipt"}</h2>
-          <p className="mt-1 text-sm text-muted">Trip {trip.trip_ref} · {trip.operating_date}</p></div>
-        <button type="button" onClick={onCancel} aria-label="Close receipt form" className="rounded-lg p-2 hover:bg-canvas"><X size={20} /></button>
+        <div><h2 className="text-xl font-bold">{receipt ? t("Edit receipt", "रसीद बदलें") : t("New receipt", "नई रसीद")}</h2>
+          <p className="mt-1 text-sm text-muted">{t("Trip", "यात्रा")} {trip.trip_ref} · {trip.operating_date}</p></div>
+        <button type="button" onClick={onCancel} aria-label={t("Close receipt form", "रसीद फ़ॉर्म बंद करें")} className="rounded-lg p-2 hover:bg-canvas"><X size={20} /></button>
       </div>
+      {!receipt && draftRecovery.draft && <section className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
+        <p className="font-semibold">{t("A saved receipt draft is available for this trip.", "इस यात्रा की अधूरी रसीद इस डिवाइस में सेव है।")}</p>
+        <p className="mt-1 text-sm text-muted">{t("Drafts are stored locally on this device and are not sent until you save.",
+          "यह रसीद इसी डिवाइस में रहेगी। सेव करने पर ही भेजी जाएगी।")}</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" className="btn-p" onClick={() => {
+            setForm((current) => ({ ...current, ...draftRecovery.draft }));
+            setDraftRecovery({ draft: null, error: "" });
+            setDraftStatus(t("Draft restored from this device.", "अधूरी रसीद वापस खोल दी गई।"));
+          }}>{t("Resume draft", "अधूरी रसीद खोलें")}</button>
+          <button type="button" className="btn-s" onClick={discardDraft}>{t("Discard draft", "अधूरी रसीद मिटाएँ")}</button>
+        </div>
+      </section>}
+      {!receipt && !draftRecovery.draft && draftRecovery.error && <div className="mb-3 flex flex-wrap items-center gap-3 text-sm text-amber-900">
+        <span>{t(draftRecovery.error, "डिवाइस में सेव अधूरी रसीद पढ़ी नहीं जा सकी। आगे बढ़ने के लिए इसे मिटाएँ।")}</span>
+        <button type="button" className="underline" onClick={discardDraft}>{t("Discard unreadable draft", "न पढ़ी जा सकने वाली अधूरी रसीद मिटाएँ")}</button>
+      </div>}
+      {!receipt && (draftStatus || draftRecovery.error) && <p role="status" className="mb-3 text-sm text-muted">
+        {draftRecovery.error
+          ? t(draftRecovery.error, "डिवाइस में सेव अधूरी रसीद पढ़ी नहीं जा सकी। आगे बढ़ने के लिए इसे मिटाएँ.")
+          : draftStatus}
+      </p>}
       {error && <div role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm font-medium text-red-800">{error}</div>}
       {receiverMatch && <section className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
-        <h3 className="font-bold">Check the receiver before saving</h3>
+        <h3 className="font-bold">{t("Check the receiver before saving", "सेव करने से पहले प्राप्तकर्ता जाँचें")}</h3>
         <p className="mt-1 text-sm">{receiverMatch.message}</p>
         <div className="mt-3 flex flex-wrap gap-2">
           {(receiverMatch.matches || []).map((match) => <button key={match.id} type="button" className="btn-s"
             disabled={saving} onClick={() => save(null, false, { action: "same", identityId: match.id })}>
-            Same receiver: {match.label || match.name}
+            {t("Same receiver:", "वही प्राप्तकर्ता:")} {match.label || match.name}
           </button>)}
           <button type="button" className="btn-s" disabled={saving}
             onClick={() => save(null, false, { action: "different" })}>
-            Different receiver
+            {t("Different receiver", "दूसरा प्राप्तकर्ता")}
           </button>
         </div>
       </section>}
       <form onSubmit={(event) => save(event)} className="space-y-5">
         <div className="grid gap-4 sm:grid-cols-2">
-          <label><span className="lbl">Receipt date</span><input className={field} type="date" required
+          <label><span className="lbl">{t("Receipt date", "रसीद की तारीख")}</span><input className={field} type="date" required
             value={form.receipt_date} onChange={(event) => patch({ receipt_date: event.target.value })} /></label>
-          <div className="rounded-lg bg-canvas px-3 py-3 text-sm"><span className="lbl">Trip number</span><strong>{trip.trip_ref}</strong></div>
+          <div className="rounded-lg bg-canvas px-3 py-3 text-sm"><span className="lbl">{t("Trip number", "यात्रा नंबर")}</span><strong>{trip.trip_ref}</strong></div>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
-          <label><span className="lbl flex items-center gap-2"><UserRound size={16} aria-hidden="true" />Sender (optional)</span><input className={field} aria-label="Sender name in English"
+          <label><span className="lbl flex items-center gap-2"><UserRound size={16} aria-hidden="true" />{t("Sender (optional)", "भेजने वाला (ज़रूरी नहीं)")}</span><input className={field} aria-label={t("Sender name in English", "भेजने वाले का नाम")}
             value={form.sender_name} onChange={(event) => patch({ sender_name: event.target.value })} /></label>
-          <label><span className="lbl flex items-center gap-2"><UserRound size={16} aria-hidden="true" />Receiver *</span><input className={field} required aria-label="Receiver name in English"
-            value={form.receiver_name} onChange={(event) => patch({ receiver_name: event.target.value })} /></label>
+          <label><span className="lbl flex items-center gap-2"><UserRound size={16} aria-hidden="true" />{t("Receiver *", "प्राप्तकर्ता *")}</span><input className={field} required aria-label={t("Receiver name in English", "प्राप्तकर्ता का नाम")}
+            list={!receipt && previousReceipts.length ? "previous-receiver-options" : undefined}
+            value={form.receiver_name} onChange={(event) => patch({ receiver_name: event.target.value })} />
+            {!receipt && previousReceipts.length > 0 && <datalist id="previous-receiver-options">
+              {[...new Set(previousReceipts.map((item) => item.receiver_name).filter(Boolean))].map((name) =>
+                <option key={name} value={name} />)}
+            </datalist>}
+          </label>
         </div>
-        {senderAddressEnabled && <label className="block"><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />Sender address (optional)</span><input className={field} aria-label="Sender address (optional)" list="sender-address-options"
+        {!receipt && previousReceipts.length > 0 && <div className="flex flex-wrap items-end gap-2">
+          <label className="min-w-56 flex-1"><span className="lbl">{t("Use a previous receiver", "पहले का प्राप्तकर्ता चुनें")}</span>
+            <select className={field} aria-label={t("Use a previous receiver", "पहले का प्राप्तकर्ता चुनें")} defaultValue=""
+              onChange={(event) => choosePreviousReceiver(event.target.value)}>
+              <option value="">{t("Choose a saved receiver", "सेव किए प्राप्तकर्ता को चुनें")}</option>
+              {previousReceipts.filter((item) => item.receiver_name).map((item) =>
+                <option key={item.id} value={item.id}>
+                  {item.receiver_name}{item.receiver_phone ? ` · ${item.receiver_phone}` : ""}
+                </option>)}
+            </select>
+          </label>
+          <button type="button" className="btn-s min-h-11" onClick={() => copyPreviousReceipt(previousReceipts[0])}>
+            <FileText size={16} /> {t("Copy previous receipt", "पिछली रसीद की जानकारी लें")}
+          </button>
+        </div>}
+        {senderAddressEnabled && <label className="block"><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />{t("Sender address (optional)", "भेजने वाले का पता (ज़रूरी नहीं)")}</span><input className={field} aria-label={t("Sender address (optional)", "भेजने वाले का पता (ज़रूरी नहीं)")} list="sender-address-options"
           value={form.sender_address} onChange={(event) => patch({ sender_address: event.target.value })} />
           <datalist id="sender-address-options">{addressSuggestions.sender.map((address) =>
             <option key={address} value={address} />)}</datalist></label>}
         <div className="grid gap-4 md:grid-cols-2">
-          {receiverAddressEnabled && <label><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />Receiver address (optional)</span><input className={field} aria-label="Receiver address (optional)" list="receiver-address-options"
+          {receiverAddressEnabled && <label><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />{t("Receiver address (optional)", "प्राप्तकर्ता का पता (ज़रूरी नहीं)")}</span><input className={field} aria-label={t("Receiver address (optional)", "प्राप्तकर्ता का पता (ज़रूरी नहीं)")} list="receiver-address-options"
             value={form.receiver_address} onChange={(event) => patch({ receiver_address: event.target.value })} />
             <datalist id="receiver-address-options">{addressSuggestions.receiver.map((address) =>
               <option key={address} value={address} />)}</datalist></label>}
           <label className={receiverAddressEnabled ? "" : "md:col-start-1"}>
-            <span className="lbl flex items-center gap-2"><Phone size={16} aria-hidden="true" />Receiver phone (10 digits, optional)</span>
+            <span className="lbl flex items-center gap-2"><Phone size={16} aria-hidden="true" />{t("Receiver phone (10 digits, optional)", "प्राप्तकर्ता का फ़ोन (10 अंक, ज़रूरी नहीं)")}</span>
             <input className={field} type="tel" inputMode="numeric" maxLength={10} pattern="[0-9]{10}"
-              value={form.receiver_phone} aria-label="Receiver phone (10 digits, optional)"
+              value={form.receiver_phone} aria-label={t("Receiver phone (10 digits, optional)", "प्राप्तकर्ता का फ़ोन (10 अंक, ज़रूरी नहीं)")}
               onChange={(event) => patch({ receiver_phone: event.target.value.replace(/\D/g, "").slice(0, 10) })} />
           </label>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
-          <label><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />Receiver city</span>
+          <label><span className="lbl flex items-center gap-2"><MapPin size={16} aria-hidden="true" />{t("Receiver city", "प्राप्तकर्ता का शहर")}</span>
             <select className={field} value="Hinganghat" disabled>
               <option value="Hinganghat">Hinganghat</option>
             </select></label>
         </div>
         <section>
           <div className="mb-2 flex items-center justify-between gap-3">
-            <h3 className="text-lg font-bold">Goods</h3>
+            <h3 className="text-lg font-bold">{t("Goods", "सामान")}</h3>
             <button type="button" className="btn-s" onClick={() => patch({ goods_rows: [...form.goods_rows, {
               type: "", type_hindi: "", description: "", description_hindi: "", quantity: "",
             }] })}>
-              <Plus size={17} /> Add good
+              <Plus size={17} /> {t("Add good", "सामान जोड़ें")}
             </button>
           </div>
           <div className="space-y-2">
@@ -431,26 +669,29 @@ function ReceiptForm({
               className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-start gap-2 rounded-xl border border-line p-2 sm:grid-cols-[2rem_minmax(0,1fr)_10rem_2.25rem]">
               <span className="hidden pt-3 text-center font-semibold sm:block">{index + 1}</span>
               <label className="relative col-start-1 row-start-1 block min-w-0 sm:col-start-2">
-                <span className="lbl">Goods and description · {index + 1}</span>
+                <span className="lbl">{t("Goods and description", "सामान का नाम")} · {index + 1}</span>
                 <span className="relative block">
                   <Package size={16} aria-hidden="true"
                     className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-muted" />
                   <input className={`${field} min-h-12 pl-9`} list="booking-goods-suggestions" value={line.type}
-                    placeholder="Goods and description" aria-label={`Goods and description row ${index + 1}`}
+                    placeholder={t("Goods and description", "सामान का नाम")} aria-label={language === "hi"
+                      ? `${t("Goods and description", "सामान का नाम")} · ${index + 1}`
+                      : `Goods and description row ${index + 1}`}
                     onChange={(event) => changeGoods(index, "type", event.target.value)} />
                 </span>
               </label>
               <label className="relative col-start-1 row-start-2 block sm:col-start-3 sm:row-start-1">
-                <span className="lbl">Quantity</span>
+                <span className="lbl">{t("Quantity", "मात्रा")}</span>
                 <span className="relative block">
                   <Hash size={16} aria-hidden="true"
                     className="pointer-events-none absolute left-2 top-1/2 z-10 -translate-y-1/2 text-muted" />
-                  <input className={`${field} min-h-12 pl-8`} type="number" min="1" step="1" inputMode="numeric" placeholder="Enter quantity"
-                    aria-label={`Quantity row ${index + 1}`} value={line.quantity}
+                  <input className={`${field} min-h-12 pl-8`} type="number" min="1" step="1" inputMode="numeric" placeholder={t("Enter quantity", "मात्रा लिखें")}
+                    aria-label={language === "hi" ? `${t("Quantity", "मात्रा")} · ${index + 1}` : `Quantity row ${index + 1}`}
+                    value={line.quantity}
                     onChange={(event) => changeGoods(index, "quantity", event.target.value)} />
                 </span>
               </label>
-              <button type="button" aria-label={`Remove goods row ${index + 1}`} className="col-start-2 row-start-1 self-end rounded-lg p-2 text-muted hover:bg-red-50 hover:text-red-700 sm:col-start-4 sm:row-start-1"
+              <button type="button" aria-label={`${t("Remove goods row", "सामान हटाएँ")} ${index + 1}`} className="col-start-2 row-start-1 self-end rounded-lg p-2 text-muted hover:bg-red-50 hover:text-red-700 sm:col-start-4 sm:row-start-1"
                 onClick={() => {
                   setForm((current) => ({
                     ...current,
@@ -469,35 +710,37 @@ function ReceiptForm({
         </section>
         {canEditFinance && <section className="grid gap-3 rounded-xl border border-line p-4 sm:grid-cols-2">
           {chargesLocked && <p className="text-sm text-amber-800 sm:col-span-2">
-            Untick Amount paid before changing Bhada or Hamali.
+            {t("Untick Amount paid before changing Bhada or Hamali.", "भाड़ा या हमाली बदलने से पहले ‘पैसे मिले’ का निशान हटाएँ।")}
           </p>}
-          <label><span className="lbl">Bhada (₹)</span><input className={field} type="number" min="0"
-            step="0.01" inputMode="decimal" aria-label="Receipt Bhada"
+          <label><span className="lbl"><IconLabel icon={Banknote}>{t("Bhada (₹)", "भाड़ा (₹)")}</IconLabel></span><input className={field} type="number" min="0"
+            step="0.01" inputMode="decimal" aria-label={t("Receipt Bhada", "रसीद का भाड़ा")}
             disabled={chargesLocked}
             value={amountInput(form.rent)} onChange={(event) => patch({ rent: event.target.value })} /></label>
-          <label><span className="lbl">Hamali (₹)</span><input className={field} type="number" min="0"
-            step="0.01" inputMode="decimal" aria-label="Receipt Hamali"
+          <label><span className="lbl"><IconLabel icon={Banknote}>{t("Hamali (₹)", "हमाली (₹)")}</IconLabel></span><input className={field} type="number" min="0"
+            step="0.01" inputMode="decimal" aria-label={t("Receipt Hamali", "रसीद की हमाली")}
             disabled={chargesLocked}
             value={amountInput(form.hamali)} onChange={(event) => patch({ hamali: event.target.value })} /></label>
         </section>}
         <section className="rounded-xl bg-brand-50 p-4">
-          <h3 className="text-lg font-bold">Receipt total</h3>
+          <h3 className="text-lg font-bold"><IconLabel icon={Receipt}>{t("Receipt total", "रसीद का हिसाब")}</IconLabel></h3>
           <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
-            <p>Bhada: <strong>{money(rentTotal)}</strong></p>
-            <p>Hamali: <strong>{money(hamaliTotal)}</strong></p>
-            <p>Receipt fee: <strong>{money(fee)}</strong> (fixed)</p>
+            <p><IconLabel icon={Banknote}>{t("Bhada:", "भाड़ा:")}</IconLabel> <strong>{money(rentTotal)}</strong></p>
+            <p><IconLabel icon={Banknote}>{t("Hamali:", "हमाली:")}</IconLabel> <strong>{money(hamaliTotal)}</strong></p>
+            <p><IconLabel icon={Receipt}>{t("Receipt fee:", "रसीद शुल्क:")}</IconLabel> <strong>{money(fee)}</strong> {t("(fixed)", "(तय)")}</p>
           </div>
-          <p className="mt-2 flex justify-between text-xl font-bold"><span>Total</span><span>{money(total)}</span></p>
+          <p className="mt-2 flex justify-between text-xl font-bold">
+            <IconLabel icon={Receipt}>{t("Total amount", "कुल रकम")}</IconLabel><span>{money(total)}</span>
+          </p>
         </section>
         <div className="sticky bottom-0 z-10 -mx-4 flex flex-col gap-2 border-t border-line bg-white/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-8px_20px_rgba(16,24,40,0.08)] backdrop-blur sm:static sm:mx-0 sm:flex-row sm:gap-3 sm:border-0 sm:bg-transparent sm:p-0 sm:pt-0 sm:shadow-none sm:backdrop-blur-none">
           <button type="button" disabled={saving} onClick={onCancel} className="btn-s min-h-12 flex-1 text-base">
-            Cancel {receipt ? "editing" : "receipt"}
+            {receipt ? t("Cancel editing", "बदलाव रद्द करें") : t("Cancel receipt", "रसीद रद्द करें")}
           </button>
           <Btn type="submit" disabled={saving} className="min-h-12 flex-1 text-base">
-            {saving ? "Saving…" : receipt ? "Save changes" : "Save receipt"}
+            {saving ? t("Saving…", "सेव हो रहा है…") : receipt ? t("Save changes", "बदलाव सेव करें") : t("Save receipt", "रसीद सेव करें")}
           </Btn>
           <button type="button" disabled={saving} onClick={(event) => save(event, true)} className="btn-s min-h-12 flex-1 text-base">
-            <Printer size={18} /> Save & print
+            <Printer size={18} /> {t("Print paper (saves receipt first)", "प्रिंट निकालें (पहले रसीद सेव होगी)")}
           </button>
         </div>
       </form>
@@ -513,13 +756,31 @@ export default function Booking({ user }) {
       : location.pathname.endsWith("/finance") ? "finance"
         : location.pathname.endsWith("/audit") ? "audit" : "dashboard";
   const owner = user?.role === "owner";
+  const [language, setLanguage] = useState(() =>
+    localStorage.getItem("booking_language") === "hi" ? "hi" : "en");
+  const t = (english, hindi) => language === "hi" ? hindi : english;
+  useEffect(() => {
+    localStorage.setItem("booking_language", language);
+  }, [language]);
   const [sites, setSites] = useState([]);
   const [siteId, setSiteId] = useState(localStorage.getItem("booking_site_id") || "");
   const [siteError, setSiteError] = useState("");
   const [selectedDate, setSelectedDate] = useState(todayISO);
+  const [todaySummary, setTodaySummary] = useState({
+    key: "", receiptCount: 0, outstanding: 0, loading: false, error: "",
+  });
+  const [todaySummaryRetry, setTodaySummaryRetry] = useState(0);
+  const [tripSearch, setTripSearch] = useState("");
+  const [tripStatusFilter, setTripStatusFilter] = useState("all");
   const [trips, setTrips] = useState([]);
   const [selectedTrip, setSelectedTrip] = useState(null);
   const [receipts, setReceipts] = useState([]);
+  const [receiptsLoading, setReceiptsLoading] = useState(false);
+  const [receiptsError, setReceiptsError] = useState("");
+  const [receiptSearch, setReceiptSearch] = useState("");
+  const [receiptPaymentFilter, setReceiptPaymentFilter] = useState("all");
+  const [receiptStateFilter, setReceiptStateFilter] = useState("all");
+  const [tripCloseoutOpen, setTripCloseoutOpen] = useState(false);
   const [tripError, setTripError] = useState("");
   const [tripLoading, setTripLoading] = useState(false);
   const [tripFormOpen, setTripFormOpen] = useState(false);
@@ -538,10 +799,15 @@ export default function Booking({ user }) {
   const [ledgerTrips, setLedgerTrips] = useState([]);
   const [ledgerTripId, setLedgerTripId] = useState("");
   const [ledgerBusy, setLedgerBusy] = useState(false);
+  const [ledgerLoadedKey, setLedgerLoadedKey] = useState("");
   const [ledgerCompleting, setLedgerCompleting] = useState(false);
   const [paidRowsUpdating, setPaidRowsUpdating] = useState(() => new Set());
   const [ledgerError, setLedgerError] = useState("");
   const [ledgerDate, setLedgerDate] = useState(todayISO());
+  const [ledgerSearch, setLedgerSearch] = useState("");
+  const [ledgerPaymentFilter, setLedgerPaymentFilter] = useState("all");
+  const [ledgerStateFilter, setLedgerStateFilter] = useState("all");
+  const [ledgerCompletionReviewOpen, setLedgerCompletionReviewOpen] = useState(false);
   const [ledgerStatus, setLedgerStatus] = useState({});
   const dirtyRows = useRef({});
   const saveTimers = useRef({});
@@ -552,6 +818,7 @@ export default function Booking({ user }) {
   const rowVersions = useRef({});
   const ledgerRowCache = useRef({});
   const tripsCache = useRef(new Map());
+  const todaySummaryRequest = useRef(0);
   const receiptsCache = useRef(new Map());
   const tripsRequestVersions = useRef(new Map());
   const receiptsRequestVersions = useRef(new Map());
@@ -563,23 +830,93 @@ export default function Booking({ user }) {
   const previousPage = useRef(page);
   const site = sites.find((item) => item.id === siteId);
   const ledgerTrip = ledgerTrips.find((trip) => trip.id === ledgerTripId);
+  const ledgerSummaryKey = `${siteId}:${ledgerDate}:${ledgerTripId}`;
+  const ledgerSummaryReady = Boolean(ledgerTripId) && ledgerLoadedKey === ledgerSummaryKey;
   const ledgerTotals = useMemo(() => {
-    const cents = ledgerRows.reduce((totals, row) => {
-      if (row.voided) return totals;
-      totals.bhada += Math.round((Number(row.rent) || 0) * 100);
-      totals.hamali += Math.round((Number(row.hamali) || 0) * 100);
-      totals.receiptFee += Math.round((Number(row.receipt_fee ?? 2) || 0) * 100);
-      return totals;
-    }, { bhada: 0, hamali: 0, receiptFee: 0 });
+    const totals = ledgerRows.reduce((value, row) => {
+      if (row.voided) return value;
+      value.bhada += Math.round((Number(row.rent) || 0) * 100);
+      value.hamali += Math.round((Number(row.hamali) || 0) * 100);
+      value.receiptFee += Math.round((Number(row.receipt_fee ?? 2) || 0) * 100);
+      value.paid += Math.round((Number(row.paid_total) || 0) * 100);
+      value.outstanding += Math.round(receiptOutstanding(row) * 100);
+      if (receiptPaymentStatus(row) === "unpriced") value.unpriced += 1;
+      value.count += 1;
+      return value;
+    }, { bhada: 0, hamali: 0, receiptFee: 0, paid: 0, outstanding: 0, count: 0, unpriced: 0 });
     return {
-      bhada: cents.bhada / 100,
-      hamali: cents.hamali / 100,
-      receiptFee: cents.receiptFee / 100,
-      total: (cents.bhada + cents.hamali + cents.receiptFee) / 100,
+      bhada: totals.bhada / 100,
+      hamali: totals.hamali / 100,
+      receiptFee: totals.receiptFee / 100,
+      paid: totals.paid / 100,
+      outstanding: totals.outstanding / 100,
+      count: totals.count,
+      unpriced: totals.unpriced,
+      total: (totals.bhada + totals.hamali + totals.receiptFee) / 100,
     };
   }, [ledgerRows]);
+  const filteredTrips = useMemo(() => {
+    const query = tripSearch.trim().toLowerCase();
+    return trips.filter((trip) => {
+      const matchesQuery = !query || [
+        trip.trip_ref, trip.truck_no, trip.driver_name,
+      ].some((value) => String(value || "").toLowerCase().includes(query));
+      const matchesStatus = tripStatusFilter === "all" || trip.status === tripStatusFilter;
+      return matchesQuery && matchesStatus;
+    });
+  }, [trips, tripSearch, tripStatusFilter]);
+  const openTodayTrips = trips.filter((trip) => trip.status === "open");
+  const todaySummaryCurrent = todaySummary.key === `${siteId}:${selectedDate}`;
+  const filteredReceipts = useMemo(() => {
+    const query = receiptSearch.trim().toLowerCase();
+    return receipts.filter((receipt) => {
+      const goods = getGoodsRows(receipt).flatMap((line) => [
+        line.type, line.type_hindi, line.description, line.description_hindi,
+      ]).join(" ");
+      const matchesQuery = !query || [
+        receipt.lr_ref, receipt.sender_name, receipt.receiver_name, receipt.receiver_phone, goods,
+      ].some((value) => String(value || "").toLowerCase().includes(query));
+      const matchesPayment = receiptPaymentFilter === "all"
+        || (!receipt.voided && receiptPaymentStatus(receipt) === receiptPaymentFilter);
+      const matchesState = receiptStateFilter === "all"
+        || (receiptStateFilter === "voided" ? receipt.voided : !receipt.voided);
+      return matchesQuery && matchesPayment && matchesState;
+    });
+  }, [receipts, receiptSearch, receiptPaymentFilter, receiptStateFilter]);
+  const filteredLedgerRows = useMemo(() => {
+    const query = ledgerSearch.trim().toLowerCase();
+    return ledgerRows.filter((row) => {
+      const goods = getGoodsRows(row).flatMap((line) => [
+        line.type, line.type_hindi, line.description, line.description_hindi,
+      ]).join(" ");
+      const matchesQuery = !query || [
+        row.lr_ref, row.sender_name, row.receiver_name, row.receiver_phone, goods,
+      ].some((value) => String(value || "").toLowerCase().includes(query));
+      const matchesPayment = ledgerPaymentFilter === "all"
+        || (!row.voided && receiptPaymentStatus(row) === ledgerPaymentFilter);
+      const matchesState = ledgerStateFilter === "all"
+        || (ledgerStateFilter === "voided" ? row.voided : !row.voided);
+      return matchesQuery && matchesPayment && matchesState;
+    });
+  }, [ledgerRows, ledgerSearch, ledgerPaymentFilter, ledgerStateFilter]);
+  const tripCloseoutSummary = useMemo(() => receipts.reduce((summary, receipt) => {
+    if (receipt.voided) {
+      summary.voided += 1;
+      return summary;
+    }
+    summary.count += 1;
+    if (receiptPaymentStatus(receipt) === "unpriced") summary.unpriced += 1;
+    summary.charges += Number(receipt.total_rent)
+      || (Number(receipt.rent) || 0) + (Number(receipt.hamali) || 0)
+        + (Number(receipt.receipt_fee ?? 2) || 0);
+    summary.paid += Number(receipt.paid_total) || 0;
+    summary.outstanding += receiptOutstanding(receipt);
+    return summary;
+  }, { count: 0, voided: 0, unpriced: 0, charges: 0, paid: 0, outstanding: 0 }), [receipts]);
   const permissions = user?.site_permissions?.[siteId] || [];
   const can = (permission) => owner || permissions.includes(permission);
+  const nextReceiptTrip = trips.find((trip) => trip.status === "open"
+    && !isLedgerLocked(trip) && can("lrs:create"));
   const canFinanceRead = can("finance:read") || can("finance:update") || can("lrs:create") || can("lrs:update");
   const canEditFinance = can("lrs:update");
   const receiptControls = site?.config?.receipt_controls || {};
@@ -613,10 +950,19 @@ export default function Booking({ user }) {
     }
     setTripError("");
     try {
-      const response = await api.get(`/sites/${targetSite}/trips`, { params: {
+      const params = {
         from_date: dateValue, to_date: dateValue, limit: 100, offset: 0,
-      } });
-      const rows = response.data.rows || [];
+      };
+      const response = await api.get(`/sites/${targetSite}/trips`, { params });
+      let rows = response.data.rows || [];
+      const total = Math.min(Number(response.data.total) || rows.length, 10000);
+      const offsets = [];
+      for (let offset = rows.length; offset < total; offset += 100) offsets.push(offset);
+      if (offsets.length) {
+        const pages = await Promise.all(offsets.map((offset) =>
+          api.get(`/sites/${targetSite}/trips`, { params: { ...params, offset } })));
+        rows = rows.concat(...pages.map((page) => page.data.rows || []));
+      }
       if (tripsRequestVersions.current.get(cacheKey) === requestVersion) {
         tripsCache.current.set(cacheKey, rows);
         if (activeTripsRequest.current === cacheKey) setTrips(rows);
@@ -631,13 +977,20 @@ export default function Booking({ user }) {
   }, [selectedDate, siteId]);
 
   const refreshReceipts = useCallback(async (targetTrip = selectedTrip) => {
-    if (!targetTrip) { setReceipts([]); return; }
+    if (!targetTrip) {
+      setReceipts([]);
+      setReceiptsLoading(false);
+      setReceiptsError("");
+      return;
+    }
     const cacheKey = `${targetTrip.site_id}:${targetTrip.id}`;
     activeReceiptsRequest.current = cacheKey;
     const requestVersion = (receiptsRequestVersions.current.get(cacheKey) || 0) + 1;
     receiptsRequestVersions.current.set(cacheKey, requestVersion);
     const cachedReceipts = receiptsCache.current.get(cacheKey);
     setReceipts(cachedReceipts || []);
+    setReceiptsLoading(true);
+    setReceiptsError("");
     try {
       const path = `/sites/${targetTrip.site_id}/trips/${targetTrip.id}/lrs`;
       const first = await api.get(path, { params: { limit: 100, offset: 0 } });
@@ -649,17 +1002,24 @@ export default function Booking({ user }) {
       const total = Math.min(Number(first.data.total) || rows.length, 10000);
       const offsets = [];
       for (let offset = rows.length; offset < total; offset += 100) offsets.push(offset);
-      if (!offsets.length) return;
-      const pages = await Promise.all(offsets.map((offset) =>
-        api.get(path, { params: { limit: 100, offset } })));
-      rows = rows.concat(...pages.map((page) => page.data.rows || []));
-      if (receiptsRequestVersions.current.get(cacheKey) === requestVersion) {
-        receiptsCache.current.set(cacheKey, rows);
-        if (activeReceiptsRequest.current === cacheKey) setReceipts(rows);
+      if (offsets.length) {
+        const pages = await Promise.all(offsets.map((offset) =>
+          api.get(path, { params: { limit: 100, offset } })));
+        rows = rows.concat(...pages.map((page) => page.data.rows || []));
+        if (receiptsRequestVersions.current.get(cacheKey) === requestVersion) {
+          receiptsCache.current.set(cacheKey, rows);
+          if (activeReceiptsRequest.current === cacheKey) setReceipts(rows);
+        }
       }
     } catch (requestError) {
       if (receiptsRequestVersions.current.get(cacheKey) === requestVersion
-        && activeReceiptsRequest.current === cacheKey) setTripError(errMsg(requestError));
+        && activeReceiptsRequest.current === cacheKey) {
+        setReceiptsError(errMsg(requestError));
+        setTripError(errMsg(requestError));
+      }
+    } finally {
+      if (receiptsRequestVersions.current.get(cacheKey) === requestVersion
+        && activeReceiptsRequest.current === cacheKey) setReceiptsLoading(false);
     }
   }, [selectedTrip]);
 
@@ -680,6 +1040,50 @@ export default function Booking({ user }) {
     localStorage.setItem("booking_site_id", siteId);
     refreshTrips(selectedDate, siteId);
   }, [siteId, selectedDate, refreshTrips]);
+
+  useEffect(() => {
+    const requestId = ++todaySummaryRequest.current;
+    const key = `${siteId}:${selectedDate}`;
+    if (page !== "dashboard" || !siteId || !canFinanceRead) {
+      setTodaySummary({ key, receiptCount: 0, outstanding: null, loading: false, error: "" });
+      return () => {
+        if (todaySummaryRequest.current === requestId) todaySummaryRequest.current += 1;
+      };
+    }
+    setTodaySummary({ key, receiptCount: 0, outstanding: 0, loading: true, error: "" });
+    const loadSummary = async () => {
+      try {
+        const path = `/sites/${siteId}/ledger/entries`;
+        const params = { from_date: selectedDate, to_date: selectedDate, limit: 1000, offset: 0 };
+        const first = await api.get(path, { params });
+        let rows = first.data.rows || [];
+        const total = Math.min(Number(first.data.total) || rows.length, 10000);
+        const offsets = [];
+        for (let offset = rows.length; offset < total; offset += 1000) offsets.push(offset);
+        if (offsets.length) {
+          const pages = await Promise.all(offsets.map((offset) =>
+            api.get(path, { params: { ...params, offset } })));
+          rows = rows.concat(...pages.map((response) => response.data.rows || []));
+        }
+        if (requestId !== todaySummaryRequest.current) return;
+        const activeRows = rows.filter((row) => !row.voided);
+        const outstandingCents = activeRows.reduce((totalCents, row) =>
+          totalCents + Math.round(receiptOutstanding(row) * 100), 0);
+        setTodaySummary({
+          key, receiptCount: activeRows.length, outstanding: outstandingCents / 100,
+          loading: false, error: "",
+        });
+      } catch (requestError) {
+        if (requestId === todaySummaryRequest.current) {
+          setTodaySummary({ key, receiptCount: 0, outstanding: null, loading: false, error: errMsg(requestError) });
+        }
+      }
+    };
+    loadSummary();
+    return () => {
+      if (todaySummaryRequest.current === requestId) todaySummaryRequest.current += 1;
+    };
+  }, [page, siteId, selectedDate, canFinanceRead, todaySummaryRetry]);
 
   useEffect(() => {
     if (!selectedTrip || page !== "receipts") return;
@@ -827,6 +1231,10 @@ export default function Booking({ user }) {
   };
   const changeTripStatus = async (reopen = false) => {
     if (!selectedTrip) return;
+    if (!reopen) {
+      setTripCloseoutOpen(true);
+      return;
+    }
     const reason = reopen ? window.prompt("Why does this trip need to be reopened?") : "";
     if (reopen && !reason?.trim()) return;
     try {
@@ -847,6 +1255,29 @@ export default function Booking({ user }) {
       setTrips((current) => current.map(updateTrip));
       setSuccess(`${response.data.trip_ref} ${reopen ? "reopened" : "closed"}.`);
     } catch (requestError) { setTripError(errMsg(requestError)); }
+  };
+  const confirmTripClose = async () => {
+    if (!selectedTrip) return;
+    setTripCloseoutOpen(false);
+    try {
+      const response = await api.post(`/sites/${siteId}/trips/${selectedTrip.id}/close`, {});
+      const updatedTrip = {
+        ...selectedTrip, ...response.data,
+        lr_count: response.data.lr_count ?? selectedTrip.lr_count,
+      };
+      setSelectedTrip(updatedTrip);
+      const cacheKey = `${siteId}:${selectedDate}`;
+      tripsRequestVersions.current.set(cacheKey, (tripsRequestVersions.current.get(cacheKey) || 0) + 1);
+      const updateTrip = (item) => item.id === updatedTrip.id
+        ? { ...item, ...updatedTrip, lr_count: updatedTrip.lr_count ?? item.lr_count }
+        : item;
+      const cachedTrips = tripsCache.current.get(cacheKey);
+      if (cachedTrips) tripsCache.current.set(cacheKey, cachedTrips.map(updateTrip));
+      setTrips((current) => current.map(updateTrip));
+      setSuccess(`${response.data.trip_ref} closed.`);
+    } catch (requestError) {
+      setTripError(errMsg(requestError));
+    }
   };
   const receiptSaved = async (receipt, printAfter) => {
     const creating = !editingReceipt;
@@ -913,10 +1344,12 @@ export default function Booking({ user }) {
     if (!siteId || !ledgerTripId) {
       setLedgerRows([]);
       setLedgerBusy(false);
+      setLedgerLoadedKey("");
       return;
     }
     setLedgerBusy(true);
     setLedgerError("");
+    setLedgerLoadedKey("");
     try {
       const params = {
         limit: 1000, offset: 0,
@@ -934,16 +1367,19 @@ export default function Booking({ user }) {
         setLedgerRows(nextRows.map((row) => ({ ...row, ...(dirtyRows.current[row.id] || {}) })));
       };
       applyRows(rows);
-      if (requestId === activeLedgerRequest.current) setLedgerBusy(false);
       const total = Math.min(Number(first.data.total) || rows.length, 10000);
       const offsets = [];
       for (let offset = rows.length; offset < total; offset += 1000) offsets.push(offset);
-      if (!offsets.length) return;
-      const pages = await Promise.all(offsets.map((offset) =>
-        api.get(`/sites/${siteId}/ledger/entries`, { params: { ...params, offset } })));
-      rows = rows.concat(...pages.map((page) => page.data.rows || []));
-      if (requestId === activeLedgerRequest.current) applyRows(rows);
-      else rows.forEach((row) => { ledgerRowCache.current[row.id] = row; });
+      if (offsets.length) {
+        const pages = await Promise.all(offsets.map((offset) =>
+          api.get(`/sites/${siteId}/ledger/entries`, { params: { ...params, offset } })));
+        rows = rows.concat(...pages.map((page) => page.data.rows || []));
+        if (requestId === activeLedgerRequest.current) applyRows(rows);
+        else rows.forEach((row) => { ledgerRowCache.current[row.id] = row; });
+      }
+      if (requestId === activeLedgerRequest.current) {
+        setLedgerLoadedKey(`${siteId}:${ledgerDate}:${ledgerTripId}`);
+      }
     } catch (requestError) {
       if (requestId === activeLedgerRequest.current) setLedgerError(errMsg(requestError));
     } finally {
@@ -1151,15 +1587,18 @@ export default function Booking({ user }) {
   };
 
   const completeTripLedger = async () => {
-    if (!owner || !ledgerTripId || ledgerTrip?.ledger_completed_at) return;
+    if (!owner || !ledgerTripId || !ledgerSummaryReady || ledgerBusy || ledgerTrip?.ledger_completed_at) return;
     if (Object.keys(dirtyRows.current).some((id) => Object.keys(dirtyRows.current[id] || {}).length)
       || savingRows.current.size) {
       setLedgerError("Save or discard pending ledger edits before completing this trip.");
       return;
     }
-    if (!window.confirm(
-      "Complete this trip ledger? This records every outstanding Bhada as received and permanently locks receipt, ledger, and payment changes for this trip.",
-    )) return;
+    setLedgerCompletionReviewOpen(true);
+  };
+  const submitTripLedgerCompletion = async () => {
+    if (!owner || !ledgerTripId || !ledgerSummaryReady || ledgerBusy
+      || ledgerTrip?.ledger_completed_at || ledgerCompleting) return;
+    setLedgerCompletionReviewOpen(false);
     setLedgerCompleting(true);
     setLedgerError("");
     try {
@@ -1235,19 +1674,23 @@ export default function Booking({ user }) {
     } catch (requestError) { setTripError(errMsg(requestError)); }
   };
 
-  const title = page === "dashboard" ? "Dashboard" : page === "receipts" ? "Receipts"
-    : page === "finance" ? "Booking Finance" : page === "audit" ? "Booking Audit" : "Ledger";
-  const tripSelector = useMemo(() => trips, [trips]);
+  const title = page === "dashboard" ? t("Dashboard", "डैशबोर्ड")
+    : page === "receipts" ? t("Receipts", "रसीदें")
+      : page === "finance" ? t("Booking Finance", "बुकिंग वित्त")
+        : page === "audit" ? t("Booking Audit", "बुकिंग जाँच") : t("Ledger", "खाता");
   const addressSuggestions = useMemo(() => ({
     sender: [...new Set(receipts.map((receipt) => receipt.sender_address).filter(Boolean))],
     receiver: [...new Set(receipts.map((receipt) => receipt.receiver_address).filter(Boolean))],
   }), [receipts]);
   const ledgerField = (row, key, value, type, label, className = "") => <input
-    aria-label={`${row.lr_ref} ${label}`} className={`${field} ${className}`} type={type}
+    aria-label={`${row.lr_ref} ${language === "hi"
+      ? ledgerColumnLabel(label.replace(/^mobile /i, ""), language) : label}`}
+    className={`${field} ${className}`} type={type}
     value={value ?? ""}
     {...(type === "number" ? { min: 0, step: "0.01", inputMode: "decimal" } : {})}
     title={(key === "rent" || key === "hamali") && row.amount_paid
-      ? "Untick Amount paid before changing Bhada or Hamali." : undefined}
+      ? t("Untick Amount paid before changing Bhada or Hamali.",
+        "भाड़ा या हमाली बदलने से पहले ‘पैसे मिले’ का निशान हटाएँ।") : undefined}
     disabled={isLedgerLocked(ledgerTrip) || row.voided || (row.trip_status === "closed" && !owner)
       || (key === "rent" || key === "hamali"
         ? !canEditFinance || row.amount_paid : !can("lrs:update"))}
@@ -1266,6 +1709,7 @@ export default function Booking({ user }) {
       <style>{`
         .booking-print-portal { display:none; }
         .booking-print-target { display:none; }
+        .booking-workspace .lbl { text-transform:none; letter-spacing:normal; font-size:0.875rem; line-height:1.25rem; }
         @page { size:A4 ${printMode === "ledger" ? "landscape" : "portrait"}; margin:8mm; }
         @media print {
           html, body { height:auto !important; margin:0 !important; overflow:visible !important; background:#fff !important; }
@@ -1313,14 +1757,29 @@ export default function Booking({ user }) {
           .booking-ledger-print th { background:#e9efed !important; }
         }
       `}</style>
-      <div className="booking-workspace space-y-5">
-        <PageHead title={title} subtitle={site?.name || "Goods transport"} />
+      <div className="booking-workspace space-y-5" lang={language === "hi" ? "hi-IN" : "en"}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <PageHead title={title} subtitle={site?.name || t("Goods transport", "माल ढुलाई")} />
+          <div className="inline-flex items-center gap-1 rounded-xl border border-line bg-white p-1"
+            role="group" aria-label={t("Display language", "दिखाने की भाषा")}>
+            <button type="button" aria-pressed={language === "en"}
+              onClick={() => setLanguage("en")}
+              className={`min-h-11 rounded-lg px-4 font-semibold ${language === "en" ? "bg-brand-700 text-white" : "text-ink hover:bg-canvas"}`}>
+              English
+            </button>
+            <button type="button" aria-pressed={language === "hi"}
+              onClick={() => setLanguage("hi")}
+              className={`min-h-11 rounded-lg px-4 font-semibold ${language === "hi" ? "bg-brand-700 text-white" : "text-ink hover:bg-canvas"}`}>
+              हिंदी
+            </button>
+          </div>
+        </div>
         <div>
-          {owner && <label className="block max-w-md"><span className="lbl">Site / Garage</span><select className={field} value={siteId}
+          {owner && <label className="block max-w-md"><span className="lbl">{t("Site / Garage", "साइट / गैराज")}</span><select className={field} value={siteId}
             onChange={(event) => selectSite(event.target.value)}>{sites.map((item) =>
               <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
           {!owner && <div className="inline-flex rounded-lg border border-line bg-white px-3 py-2 text-sm">
-            <span className="mr-2 text-muted">Site / Garage</span><strong>{site?.name || "Loading…"}</strong>
+            <span className="mr-2 text-muted">{t("Site / Garage", "साइट / गैराज")}</span><strong>{site?.name || t("Loading…", "लोड हो रहा है…")}</strong>
           </div>}
         </div>
         {success && <div role="status" className="flex items-center gap-2 rounded-xl bg-green-50 p-4 text-lg font-semibold text-green-900"><Check />{success}</div>}
@@ -1328,7 +1787,7 @@ export default function Booking({ user }) {
 
         {page === "dashboard" && <div className="space-y-4">
           <Card className="flex flex-wrap items-center justify-between gap-4 p-4">
-            <label className="min-w-52 flex-1"><span className="lbl">Date</span>
+            <label className="min-w-52 flex-1"><span className="lbl">{t("Date", "तारीख")}</span>
               <span className="flex items-center gap-2"><CalendarDays size={18} className="text-brand-600" />
                 <input className={field} type="date" value={selectedDate}
                   onChange={(event) => {
@@ -1340,66 +1799,202 @@ export default function Booking({ user }) {
                   }} />
               </span>
             </label>
-            {can("trips:create") && <button className="btn-p min-h-14 w-full text-lg sm:w-auto" onClick={() => {
+            {can("trips:create") && <button disabled={tripLoading}
+              className={`${nextReceiptTrip ? "btn-s min-h-12 text-base" : "btn-p min-h-14 text-lg"} w-full sm:w-auto`} onClick={() => {
               setTripForm({ date: selectedDate, truck_no: "", driver_name: "" }); setTripFormOpen(true);
-            }}><Plus size={20} /> Create Trip</button>}
+            }}><Plus size={20} /> {tripLoading ? t("Loading trips…", "यात्राएँ लोड हो रही हैं…") : t("Create Trip", "यात्रा बनाएँ")}</button>}
+          </Card>
+          <Card role="region" aria-label={t("Today's work summary", "आज के काम का सारांश")}
+            className="space-y-4 border-2 border-brand-700 bg-brand-50 p-4 sm:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-xl font-extrabold">{selectedDate === todayISO()
+                  ? t("Today's summary", "आज का सारांश")
+                  : t("Daily summary", "दिन का सारांश")}</h2>
+                <p className="mt-1 text-sm text-muted">{selectedDate}</p>
+              </div>
+              {todaySummary.error && <button type="button" className="btn-s min-h-11"
+                onClick={() => setTodaySummaryRetry((current) => current + 1)}>
+                {t("Retry summary", "सारांश फिर से देखें")}
+              </button>}
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <p className="rounded-lg border border-line bg-white p-3 text-base">
+                <IconLabel icon={Truck}>{t("Trips to finish", "बाकी यात्राएँ")}</IconLabel>
+                <strong className="mt-1 block text-2xl font-extrabold">
+                  {tripLoading ? "…" : tripError ? "—" : openTodayTrips.length}
+                </strong>
+              </p>
+              <p className="rounded-lg border border-line bg-white p-3 text-base">
+                <IconLabel icon={Receipt}>{t("Receipts created", "बनी हुई रसीदें")}</IconLabel>
+                <strong className="mt-1 block text-2xl font-extrabold">
+                  {!canFinanceRead || !todaySummaryCurrent || todaySummary.loading ? "…"
+                    : todaySummary.error ? "—" : todaySummary.receiptCount}
+                </strong>
+              </p>
+              <p className="rounded-lg border border-amber-800 bg-amber-50 p-3 text-base">
+                <IconLabel icon={Clock3}>{t("Still to collect", "अभी लेना बाकी")}</IconLabel>
+                <strong className="mt-1 block text-2xl font-extrabold">
+                  {!canFinanceRead ? "—" : !todaySummaryCurrent || todaySummary.loading ? "…"
+                    : todaySummary.error || todaySummary.outstanding == null
+                      ? "—" : money(todaySummary.outstanding)}
+                </strong>
+              </p>
+            </div>
+            {todaySummary.error && <p role="alert" className="text-sm font-semibold text-red-800">
+              {t("Could not load today's receipt and money totals.", "आज की रसीदों और रकम का हिसाब नहीं मिल सका।")}
+            </p>}
+            {!canFinanceRead && <p className="text-sm text-muted">
+              {t("You do not have permission to view receipt and payment totals.", "आपको रसीद और भुगतान का हिसाब देखने की अनुमति नहीं है।")}
+            </p>}
+            <div className="border-t border-brand-200 pt-3">
+              <p className="mb-2 text-sm font-bold uppercase tracking-wide text-muted">{t("Next step", "अब यह करें")}</p>
+              {tripLoading ? (
+                <p role="status" className="rounded-lg border border-brand-300 bg-white p-3 text-base font-semibold">
+                  {t("Checking today's trips…", "आज की यात्राएँ देखी जा रही हैं…")}
+                </p>
+              ) : nextReceiptTrip ? (
+                <button type="button" className="btn-p min-h-14 w-full justify-center text-lg sm:w-auto"
+                  onClick={() => openTrip(nextReceiptTrip)}>
+                  <Plus size={20} /> {t("Add receipt", "रसीद जोड़ें")}
+                </button>
+              ) : can("trips:create") ? (
+                <p className="rounded-lg border border-brand-300 bg-white p-3 text-base font-semibold">
+                  {t("Next, use the Create Trip button above.", "अब ऊपर ‘यात्रा बनाएँ’ बटन दबाएँ।")}
+                </p>
+              ) : (
+                <button type="button" className="btn-p min-h-14 w-full justify-center text-lg sm:w-auto"
+                  onClick={() => {
+                    setLedgerDate(selectedDate);
+                    setLedgerTripId("");
+                    navigate("/booking/ledger");
+                  }}>
+                  <ChevronRight size={20} /> {t("Review ledger", "खाता देखें")}
+                </button>
+              )}
+            </div>
           </Card>
           {tripFormOpen && <Card className="p-4 sm:p-6">
-            <h2 className="mb-4 text-xl font-bold">Create trip</h2>
+            <h2 className="mb-4 text-xl font-bold">{t("Create trip", "यात्रा बनाएँ")}</h2>
             <form onSubmit={createTrip} className="grid gap-4 sm:grid-cols-2">
-              <label><span className="lbl">Date *</span><input className={field} required type="date" value={tripForm.date}
+              <label><span className="lbl">{t("Date *", "तारीख *")}</span><input className={field} required type="date" value={tripForm.date}
                 onChange={(event) => setTripForm({ ...tripForm, date: event.target.value })} /></label>
-              <label><span className="lbl">Vehicle number (optional)</span><input className={field} value={tripForm.truck_no}
+              <label><span className="lbl">{t("Vehicle number (optional)", "गाड़ी नंबर (ज़रूरी नहीं)")}</span><input className={field} value={tripForm.truck_no}
                 onChange={(event) => setTripForm({ ...tripForm, truck_no: event.target.value })} /></label>
-              <label><span className="lbl">Driver name (optional)</span><input className={field} value={tripForm.driver_name}
+              <label><span className="lbl">{t("Driver name (optional)", "ड्राइवर का नाम (ज़रूरी नहीं)")}</span><input className={field} value={tripForm.driver_name}
                 onChange={(event) => setTripForm({ ...tripForm, driver_name: event.target.value })} /></label>
               <div className="sticky bottom-0 -mx-4 flex items-center gap-2 border-t border-line bg-white/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:static sm:mx-0 sm:border-0 sm:bg-transparent sm:p-0">
-                <button type="button" className="btn-s min-h-12" onClick={() => setTripFormOpen(false)}>Cancel</button>
-                <Btn type="submit" className="min-h-12 flex-1">Create trip</Btn>
+                <button type="button" className="btn-s min-h-12" onClick={() => setTripFormOpen(false)}>{t("Cancel", "रद्द करें")}</button>
+                <Btn type="submit" className="min-h-12 flex-1">{t("Create trip", "यात्रा बनाएँ")}</Btn>
               </div>
             </form>
           </Card>}
-          <div><h2 className="mb-3 text-xl font-bold">Trips for {selectedDate}</h2>
+          <Card className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_12rem]">
+            <label><span className="lbl">{t("Find trips", "यात्रा खोजें")}</span><span className="relative block">
+              <Search size={17} aria-hidden="true" className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+              <input className={`${field} pl-10`} type="search" aria-label="Search trips"
+                placeholder={t("Trip number, vehicle or driver", "यात्रा नंबर, गाड़ी या ड्राइवर")} value={tripSearch}
+                onChange={(event) => setTripSearch(event.target.value)} />
+            </span></label>
+            <label><span className="lbl">{t("Trip status", "यात्रा की स्थिति")}</span><select className={field}
+              aria-label="Filter trips by status" value={tripStatusFilter}
+              onChange={(event) => setTripStatusFilter(event.target.value)}>
+              <option value="all">{t("All statuses", "सभी स्थितियाँ")}</option>
+              <option value="open">{t("Open", "चालू")}</option>
+              <option value="closed">{t("Closed", "बंद")}</option>
+            </select></label>
+          </Card>
+          <div><h2 className="mb-3 text-xl font-bold">{t("Trips for", "इस तारीख की यात्राएँ")} {selectedDate}</h2>
             {tripLoading ? <Loader label="Loading trips…" /> : tripError ? <ErrorState text={tripError} onRetry={() => refreshTrips()} /> :
-              trips.length ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {tripSelector.map((trip) => <button key={trip.id} onClick={() => openTrip(trip)}
+              filteredTrips.length ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {filteredTrips.map((trip) => <button key={trip.id} onClick={() => openTrip(trip)}
                   className="card min-h-36 p-4 text-left hover:border-brand-400 focus-visible:outline-brand-600">
                   <div className="flex items-start justify-between gap-2">
                     <span className="text-xl font-bold">{trip.trip_ref}</span>
                     <span className={`rounded-full px-3 py-1 text-sm font-semibold ${trip.status === "closed" ? "bg-slate-100 text-slate-700" : "bg-green-100 text-green-800"}`}>
-                      {trip.status === "closed" ? "Closed" : "Open"}
+                      {trip.status === "closed" ? t("Closed", "बंद") : t("Open", "चालू")}
                     </span>
                   </div>
-                  <p className="mt-3 flex items-center gap-2 text-sm"><Truck size={17} />{trip.truck_no || "Vehicle not entered"}</p>
-                  <p className="mt-1 text-sm text-muted">{trip.driver_name || "Driver not entered"}</p>
+                  <p className="mt-3 flex items-center gap-2 text-sm"><Truck size={17} />{trip.truck_no || t("Vehicle not entered", "गाड़ी नंबर नहीं भरा")}</p>
+                  <p className="mt-1 text-sm text-muted">{trip.driver_name || t("Driver not entered", "ड्राइवर का नाम नहीं भरा")}</p>
                   <span className="mt-4 flex items-center justify-between text-sm font-semibold text-brand-700">
-                    {trip.operating_date} · {trip.lr_count ?? "Open trip"} receipts <ChevronRight size={18} />
+                    {trip.operating_date} · {trip.lr_count ?? t("Open trip", "चालू यात्रा")} {t("receipts", "रसीदें")} <ChevronRight size={18} />
                   </span>
                 </button>)}
               </div> : <Card className="p-6 text-center">
-                <p className="text-lg font-semibold">No trips on this date.</p>
-                {can("trips:create") && <p className="mt-1 text-sm text-muted">Create a trip to start adding receipts.</p>}
+                <p className="text-lg font-semibold">{trips.length ? t("No trips match these filters.", "कोई यात्रा इस खोज से मेल नहीं खाती।")
+                  : t("No trips on this date.", "इस तारीख को कोई यात्रा नहीं है।")}</p>
+                {!trips.length && can("trips:create") && <p className="mt-1 text-sm text-muted">{t("Create a trip to start adding receipts.", "रसीदें जोड़ने के लिए यात्रा बनाएँ।")}</p>}
               </Card>}
           </div>
         </div>}
 
         {page === "receipts" && <div className="space-y-4">
           {selectedTrip ? <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
-            <div><p className="text-sm font-medium text-muted">Selected trip</p><h2 className="text-xl font-bold">{selectedTrip.trip_ref}</h2>
+          <div><p className="text-sm font-medium text-muted">{t("Selected trip", "चुनी हुई यात्रा")}</p><h2 className="text-xl font-bold">{selectedTrip.trip_ref}</h2>
               <p className="mt-1 text-sm">{selectedTrip.operating_date}
                 {selectedTrip.truck_no ? ` · ${selectedTrip.truck_no}` : ""}
                 {selectedTrip.driver_name ? ` · ${selectedTrip.driver_name}` : ""}</p>
             </div>
-            {selectedTrip.status === "closed" && <span className="rounded-lg bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">Trip closed · receipts locked</span>}
+            {selectedTrip.status === "closed" && <span className="rounded-lg bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">{t("Trip closed · receipts locked", "यात्रा बंद · रसीदें लॉक हैं")}</span>}
             {can("trips:update") && !isLedgerLocked(selectedTrip) && !selectedTrip.reconciled &&
-              <button type="button" className="btn-s min-h-11" onClick={openTripEditor}>Edit trip details</button>}
+              <button type="button" className="btn-s min-h-11" onClick={openTripEditor}>{t("Edit trip details", "यात्रा की जानकारी बदलें")}</button>}
             {selectedTrip.status === "open" && owner &&
-              <button className="btn-s" onClick={() => changeTripStatus(false)}>Close Trip</button>}
+              <button className="btn-s" disabled={receiptsLoading || Boolean(receiptsError)}
+                onClick={() => changeTripStatus(false)}>
+                {receiptsLoading ? t("Loading receipts…", "रसीदें लोड हो रही हैं…") : t("Close Trip", "यात्रा बंद करें")}
+              </button>}
             {selectedTrip.status === "closed" && owner &&
-              <button className="btn-s" onClick={() => changeTripStatus(true)}>Reopen Trip</button>}
+              <button className="btn-s" onClick={() => changeTripStatus(true)}>{t("Reopen Trip", "यात्रा फिर खोलें")}</button>}
+            {selectedTrip.status === "open" && owner && receiptsError &&
+              <div className="w-full text-sm text-red-700 sm:basis-full">
+                <p>Could not load the full receipt summary: {receiptsError}</p>
+                <button type="button" className="btn-s mt-2" onClick={() => refreshReceipts(selectedTrip)}>
+                  Retry receipt summary
+                </button>
+              </div>}
           </Card> : <Card className="p-5">
-            <p className="text-lg font-semibold">Choose a trip before creating a receipt.</p>
-            <Link className="btn-p mt-3" to="/booking/dashboard">Open Dashboard</Link>
+            <p className="text-lg font-semibold">{t("Choose a trip before creating a receipt.", "रसीद बनाने से पहले यात्रा चुनें।")}</p>
+            <Link className="btn-p mt-3" to="/booking/dashboard">{t("Open Dashboard", "डैशबोर्ड खोलें")}</Link>
+          </Card>}
+          {tripCloseoutOpen && selectedTrip && <Card role="dialog" aria-modal="true"
+            aria-labelledby="trip-closeout-title" className="border-2 border-brand-300 p-4 text-lg sm:p-6">
+            <h2 id="trip-closeout-title" className="text-2xl font-bold">{t("Check trip money before closing", "यात्रा बंद करने से पहले पैसों का हिसाब देखें")}</h2>
+            <p className="mt-1 text-base text-muted">
+              {t("Trip", "यात्रा")} {selectedTrip.trip_ref}. {t("Closing stops new receipts. Check these amounts first.",
+                "यात्रा बंद होने पर नई रसीद नहीं बनेगी। पहले ये रकम जाँचें।")}
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <p className="rounded-lg border border-line bg-canvas p-3 text-base">
+                <IconLabel icon={Receipt}>{t("Receipts", "रसीदें")}</IconLabel><strong className="block text-2xl font-extrabold">{tripCloseoutSummary.count}</strong>
+              </p>
+              <p className="rounded-lg border border-line bg-canvas p-3 text-base">
+                <IconLabel icon={Receipt}>{t("Total amount", "कुल रकम")}</IconLabel><strong className="block text-2xl font-extrabold">{money(tripCloseoutSummary.charges)}</strong>
+              </p>
+              <p className="rounded-lg border border-green-700 bg-green-50 p-3 text-base">
+                <IconLabel icon={Banknote}>✓ {t("Already received", "मिल चुके")}</IconLabel><strong className="block text-2xl font-extrabold">{money(tripCloseoutSummary.paid)}</strong>
+              </p>
+              <p className="rounded-lg border border-amber-800 bg-amber-50 p-3 text-base">
+                <IconLabel icon={Clock3}>! {t("Still to collect", "अभी लेना बाकी")}</IconLabel><strong className="block text-2xl font-extrabold">{money(tripCloseoutSummary.outstanding)}</strong>
+                <span className="mt-1 block text-xs">{t("Bhada + receipt fee", "भाड़ा + रसीद शुल्क")}</span>
+              </p>
+            </div>
+            {tripCloseoutSummary.voided > 0 && <p className="mt-3 text-sm text-muted">
+              {t(`${tripCloseoutSummary.voided} voided ${tripCloseoutSummary.voided === 1 ? "receipt is" : "receipts are"} excluded.`,
+                `${tripCloseoutSummary.voided} रद्द रसीदें शामिल नहीं हैं।`)}
+            </p>}
+            {tripCloseoutSummary.unpriced > 0 && <p className="mt-2 text-sm text-amber-900">
+              {tripCloseoutSummary.unpriced} {t("receipt(s) have no Bhada price; check charges before using the outstanding balance.",
+                "रसीदों में भाड़ा नहीं भरा है; बाकी रकम पर भरोसा करने से पहले हिसाब जाँचें।")}
+            </p>}
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button type="button" className="btn-s min-h-12 px-5 text-base"
+                onClick={() => setTripCloseoutOpen(false)}>{t("Keep trip open", "यात्रा खुली रखें")}</button>
+              <button type="button" className="btn-p min-h-12 px-5 text-base"
+                disabled={receiptsLoading || Boolean(receiptsError)} onClick={confirmTripClose}>
+                ✓ {t("Close trip", "यात्रा बंद करें")}
+              </button>
+            </div>
           </Card>}
           {tripEditOpen && selectedTrip && <Card className="p-4 sm:p-6">
             <h3 className="mb-4 text-lg font-bold">Edit trip details · {selectedTrip.trip_ref}</h3>
@@ -1432,13 +2027,16 @@ export default function Booking({ user }) {
             <div id="receipt-entry-form">
               <ReceiptForm key={editingReceipt?.id || `new-${receiptFormVersion}`} trip={selectedTrip}
                 receipt={editingReceipt}
+                draftScope={user?.id || user?.email || user?.username || user?.name || "local"}
                 canEditFinance={canEditFinance || (!editingReceipt && can("lrs:create"))}
                 addressSuggestions={addressSuggestions}
                 convertHindi={convertHindi}
                 receiptFee={receiptFee}
                 goodsSuggestions={goodsSuggestions}
+                previousReceipts={receipts.filter((receipt) => !receipt.voided)}
                 senderAddressEnabled={senderAddressEnabled}
                 receiverAddressEnabled={receiverAddressEnabled}
+                language={language}
                 onCancel={() => { setReceiptFormOpen(false); setEditingReceipt(null); }}
                 onSaved={receiptSaved} />
             </div>
@@ -1446,11 +2044,35 @@ export default function Booking({ user }) {
           {!receiptFormOpen && selectedTrip?.status === "open" && !isLedgerLocked(selectedTrip) && can("lrs:create") &&
             <button className="btn-p min-h-12 w-full sm:w-auto" onClick={() => {
               setEditingReceipt(null); setReceiptFormOpen(true); setTripError("");
-            }}><Plus size={18} /> New receipt</button>}
+            }}><Plus size={18} /> {t("New receipt", "नई रसीद")}</button>}
           <section>
-            <h2 className="mb-3 text-xl font-bold">Receipts {selectedTrip ? `· ${selectedTrip.trip_ref}` : ""}</h2>
-            {!selectedTrip ? null : receipts.length ? <div className="space-y-2">
-              {receipts.map((receipt) =>               <Card key={receipt.id} className={`flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between sm:p-4 ${receipt.voided ? "opacity-70" : ""}`}>
+            <h2 className="mb-3 text-xl font-bold">{t("Receipts", "रसीदें")} {selectedTrip ? `· ${selectedTrip.trip_ref}` : ""}</h2>
+            {selectedTrip && <Card className="grid gap-3 p-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_12rem_12rem]">
+              <label><span className="lbl">{t("Find receipts", "रसीद खोजें")}</span><span className="relative block">
+                <Search size={17} aria-hidden="true" className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                <input className={`${field} pl-10`} type="search" aria-label={t("Search receipts", "रसीद खोजें")}
+                  placeholder={t("Receipt, receiver, phone or goods", "रसीद, प्राप्तकर्ता, फ़ोन या सामान")} value={receiptSearch}
+                  onChange={(event) => setReceiptSearch(event.target.value)} />
+              </span></label>
+              {canFinanceRead && <label><span className="lbl">{t("Payment status", "भुगतान की स्थिति")}</span><select className={field}
+                aria-label={t("Filter receipts by payment status", "भुगतान की स्थिति से छाँटें")} value={receiptPaymentFilter}
+                onChange={(event) => setReceiptPaymentFilter(event.target.value)}>
+                <option value="all">{t("All payment statuses", "भुगतान की सभी स्थितियाँ")}</option>
+                <option value="unpaid">{paymentStatusLabel("unpaid", language)}</option>
+                <option value="partial">{paymentStatusLabel("partial", language)}</option>
+                <option value="paid">{paymentStatusLabel("paid", language)}</option>
+                <option value="unpriced">{paymentStatusLabel("unpriced", language)}</option>
+              </select></label>}
+              <label><span className="lbl">{t("Receipt status", "रसीद की स्थिति")}</span><select className={field}
+                aria-label={t("Filter receipts by receipt status", "रसीद की स्थिति से छाँटें")} value={receiptStateFilter}
+                onChange={(event) => setReceiptStateFilter(event.target.value)}>
+                <option value="all">{t("Active and voided", "चालू और रद्द")}</option>
+                <option value="active">{t("Active only", "सिर्फ़ चालू")}</option>
+                <option value="voided">{t("Voided only", "सिर्फ़ रद्द")}</option>
+              </select></label>
+            </Card>}
+            {!selectedTrip ? null : filteredReceipts.length ? <div className="space-y-2">
+              {filteredReceipts.map((receipt) =>               <Card key={receipt.id} className={`flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between sm:p-4 ${receipt.voided ? "opacity-70" : ""}`}>
                 <div className="min-w-48 flex-1"><h3 className="font-bold">{receipt.lr_ref}</h3>
                   <p className="mt-1 text-sm">{receipt.sender_name} → {receipt.receiver_name}</p>
                   {receipt.receiver_phone && <p className="mt-1 flex items-center gap-1 text-sm text-muted">
@@ -1458,80 +2080,185 @@ export default function Booking({ user }) {
                   </p>}
                   <p className="mt-1 text-sm text-muted">{getGoodsRows(receipt).map((line) =>
                     [line.type, line.description, `× ${line.quantity}`].filter(Boolean).join(" - ")).join(" · ")}</p>
-                  {receipt.voided && <p className="mt-1 font-semibold text-red-700">VOID · kept in history</p>}
+                  {receipt.voided && <p className="mt-1 font-semibold text-red-700">
+                    <IconLabel icon={Ban}>× VOID · kept in history</IconLabel>
+                  </p>}
+                  {canFinanceRead && !receipt.voided && <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                      <PaymentStatusBadge status={receiptPaymentStatus(receipt)} language={language} />
+                      {receipt.rent != null || receipt.total_rent != null ? <>
+                        <span><IconLabel icon={Receipt}>{t("Total amount:", "कुल रकम:")}</IconLabel> <strong>{money(receipt.total_rent
+                          ?? ((Number(receipt.rent) || 0) + (Number(receipt.hamali) || 0)
+                            + (Number(receipt.receipt_fee ?? 2) || 0)))}</strong></span>
+                        <span><IconLabel icon={Banknote}>{t("Already received:", "मिल चुके:")}</IconLabel> <strong>{money(receipt.paid_total)}</strong></span>
+                        <span><IconLabel icon={Clock3}>{t("Still to collect:", "अभी लेना बाकी:")}</IconLabel> <strong>{money(receiptOutstanding(receipt))}</strong></span>
+                      </> : null}
+                  </div>}
                 </div>
                 <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
-                  {!receipt.voided && <button className="btn-s" onClick={() => queuePrint(receipt)}><Printer size={17} /> Print</button>}
-                  {owner && receipt.voided && !isLedgerLocked(selectedTrip) && <button className="btn-s" onClick={() => restoreReceipt(receipt)}>Restore receipt</button>}
+                  {!receipt.voided && <button className="btn-s" onClick={() => queuePrint(receipt)}><Printer size={17} /> {t("Print", "प्रिंट")}</button>}
+                  {owner && receipt.voided && !isLedgerLocked(selectedTrip) && <button className="btn-s" onClick={() => restoreReceipt(receipt)}>{t("Restore receipt", "रसीद वापस लाएँ")}</button>}
                   {!isLedgerLocked(selectedTrip) && !receipt.voided && can("lrs:update") && (selectedTrip.status === "open" || owner) && <>
-                    <button className="btn-s min-h-11" onClick={() => { setEditingReceipt(receipt); setReceiptFormOpen(true); }}>Edit</button>
-                    <button className="btn-s text-red-700" onClick={() => voidReceipt(receipt)}>Void</button>
+                    <button className="btn-s min-h-11" onClick={() => { setEditingReceipt(receipt); setReceiptFormOpen(true); }}>{t("Edit", "बदलें")}</button>
+                    <button className="btn-s text-red-700" onClick={() => voidReceipt(receipt)}>{t("Void", "रद्द करें")}</button>
                   </>}
                 </div>
               </Card>)}
-            </div> : <Card className="p-5 text-center text-muted">No receipts in this trip yet.</Card>}
+            </div> : <Card className="p-5 text-center text-muted">
+              {receipts.length ? t("No receipts match these filters.", "कोई रसीद इस खोज से मेल नहीं खाती।")
+                : t("No receipts in this trip yet.", "इस यात्रा में अभी कोई रसीद नहीं है।")}
+            </Card>}
           </section>
         </div>}
 
         {page === "ledger" && <div className="space-y-3">
-          <div className="grid gap-3 border border-gray-400 bg-white p-3 sm:grid-cols-2">
-            <label><span className="lbl">Date</span><input className={field} type="date" value={ledgerDate}
+          <div className="sticky top-0 z-20 grid gap-3 border border-gray-400 bg-white p-3 shadow-sm sm:grid-cols-2 lg:static lg:shadow-none">
+            <label><span className="lbl">{t("Date", "तारीख")}</span><input className={field} type="date" value={ledgerDate}
               onChange={(event) => {
                 setLedgerTripId("");
                 setLedgerTrips([]);
                 setLedgerRows([]);
                 setLedgerDate(event.target.value);
               }} /></label>
-            <label><span className="lbl">Select trip</span><select className={field} value={ledgerTripId}
+            <label><span className="lbl">{t("Select trip", "यात्रा चुनें")}</span><select className={field} value={ledgerTripId}
               onChange={(event) => setLedgerTripId(event.target.value)} disabled={!ledgerTrips.length}>
-              <option value="">Select trip</option>
+              <option value="">{t("Select trip", "यात्रा चुनें")}</option>
               {ledgerTrips.map((trip) =>
                 <option key={trip.id} value={trip.id}>{trip.trip_ref}</option>)}
             </select></label>
           </div>
-          {ledgerError && <div role="alert" className="border border-red-700 bg-red-50 p-2 text-sm text-red-800">{ledgerError}</div>}
+          {canFinanceRead && ledgerTripId && (ledgerSummaryReady ? <section aria-label={t("Selected trip payment summary", "चुनी हुई यात्रा का भुगतान सारांश")}
+            className="grid grid-cols-2 gap-2 rounded-xl border-2 border-brand-700 bg-brand-50 p-3 text-base sm:grid-cols-4 sm:p-4">
+            <p><IconLabel icon={Receipt}>{t("Receipts", "रसीदें")}</IconLabel><strong className="block text-2xl font-extrabold">{ledgerTotals.count}</strong></p>
+            <p><IconLabel icon={Receipt}>{t("Total amount", "कुल रकम")}</IconLabel><strong className="block text-2xl font-extrabold">{money(ledgerTotals.total)}</strong></p>
+            <p className="rounded-lg border border-green-700 bg-green-50 p-2"><IconLabel icon={Banknote}>✓ {t("Already received", "मिल चुके")}</IconLabel><strong className="block text-2xl font-extrabold">{money(ledgerTotals.paid)}</strong></p>
+            <p className="rounded-lg border border-amber-800 bg-amber-50 p-2"><IconLabel icon={Clock3}>! {t("Still to collect", "अभी लेना बाकी")}</IconLabel><strong className="block text-2xl font-extrabold">{money(ledgerTotals.outstanding)}</strong>
+              <span className="block text-xs">{t("Bhada + receipt fee", "भाड़ा + रसीद शुल्क")}</span>
+            </p>
+          </section> : <p role="status" aria-live="polite" className="rounded-xl border-2 border-brand-700 bg-brand-50 p-4 text-base font-semibold">
+            {ledgerError ? t("Trip totals unavailable. Retry loading the ledger.", "यात्रा का हिसाब नहीं मिला। खाता फिर से लोड करें।")
+              : t("Loading complete trip totals…", "यात्रा का पूरा हिसाब लोड हो रहा है…")}
+          </p>)}
+          {canFinanceRead && ledgerSummaryReady && ledgerTotals.unpriced > 0 && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+            {ledgerTotals.unpriced} {t("receipt(s) have no Bhada price; review charges before completing the ledger.",
+              "रसीदों में भाड़ा नहीं भरा है; खाता पूरा करने से पहले रकम जाँचें।")}
+          </p>}
+          {ledgerTripId && <div className="grid gap-3 rounded-lg border border-gray-400 bg-white p-3 sm:grid-cols-3">
+            <label className="sm:col-span-1"><span className="lbl">{t("Find receipts in this trip", "इस यात्रा की रसीदें खोजें")}</span>
+              <span className="relative block">
+                <Search size={17} aria-hidden="true" className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                <input className={`${field} pl-10`} type="search" aria-label={t("Search trip ledger", "यात्रा का खाता खोजें")}
+                  placeholder={t("Receipt, receiver, phone or goods", "रसीद, प्राप्तकर्ता, फ़ोन या सामान")} value={ledgerSearch}
+                  onChange={(event) => setLedgerSearch(event.target.value)} />
+              </span>
+            </label>
+            {canFinanceRead && <label><span className="lbl">{t("Payment status", "भुगतान की स्थिति")}</span><select className={field}
+              aria-label={t("Filter ledger by payment status", "भुगतान की स्थिति से छाँटें")} value={ledgerPaymentFilter}
+              onChange={(event) => setLedgerPaymentFilter(event.target.value)}>
+              <option value="all">{t("All payment statuses", "भुगतान की सभी स्थितियाँ")}</option>
+              <option value="unpaid">{paymentStatusLabel("unpaid", language)}</option>
+              <option value="partial">{paymentStatusLabel("partial", language)}</option>
+              <option value="paid">{paymentStatusLabel("paid", language)}</option>
+              <option value="unpriced">{paymentStatusLabel("unpriced", language)}</option>
+            </select></label>}
+            <label><span className="lbl">{t("Receipt status", "रसीद की स्थिति")}</span><select className={field}
+              aria-label={t("Filter ledger by receipt status", "रसीद की स्थिति से छाँटें")} value={ledgerStateFilter}
+              onChange={(event) => setLedgerStateFilter(event.target.value)}>
+              <option value="all">{t("Active and voided", "चालू और रद्द")}</option>
+              <option value="active">{t("Active only", "सिर्फ़ चालू")}</option>
+              <option value="voided">{t("Voided only", "सिर्फ़ रद्द")}</option>
+            </select></label>
+          </div>}
+          {ledgerError && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 border border-red-700 bg-red-50 p-3 text-base text-red-900">
+            <span>{ledgerError}</span>
+            {!ledgerSummaryReady && !ledgerBusy && <button type="button" className="btn-s min-h-11"
+              onClick={loadLedger}>{t("Retry loading ledger", "खाता फिर से लोड करें")}</button>}
+          </div>}
           <div className="flex flex-col gap-3 border border-gray-400 bg-white p-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted">Selected trip</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted">{t("Selected trip", "चुनी हुई यात्रा")}</p>
               <h2 className="text-lg font-bold">{ledgerTrip?.trip_ref || "—"}</h2>
               <p className="text-sm">{ledgerDate}</p>
             </div>
             <div className="grid grid-cols-2 gap-2 sm:flex">
-              <button className="btn-s min-h-11" disabled={!ledgerTripId} onClick={printLedger}><Printer size={16} /> Print</button>
+              <button className="btn-s min-h-11" disabled={!ledgerTripId} onClick={printLedger}><Printer size={16} /> {t("Print", "प्रिंट")}</button>
               <button className="btn-p min-h-11" disabled={!ledgerTripId} onClick={downloadLedger}><Download size={16} /> Excel</button>
               {owner && ledgerTripId && !ledgerTrip?.ledger_completed_at && <button
-                className="btn-p col-span-2 min-h-11 sm:col-span-1" disabled={ledgerCompleting || ledgerBusy || !ledgerRows.length}
+                className="btn-p col-span-2 min-h-12 px-4 text-base sm:col-span-1"
+                disabled={ledgerCompleting || ledgerBusy || !ledgerSummaryReady || !ledgerRows.length}
                 onClick={completeTripLedger}>
-                {ledgerCompleting ? "Completing ledger…" : ledgerTrip?.ledger_completion_started_at
-                  ? "Resume ledger completion" : "Complete trip ledger"}
+                {ledgerCompleting ? t("Completing ledger…", "खाता पूरा हो रहा है…") : ledgerTrip?.ledger_completion_started_at
+                  ? t("Resume ledger completion", "खाता पूरा करना जारी रखें") : t("Complete trip ledger", "यात्रा का खाता पूरा करें")}
                 </button>}
               {owner && ledgerTripId && ledgerTrip?.ledger_completed_at && <button
                 className="btn-s col-span-2 min-h-11 sm:col-span-1"
                 disabled={ledgerCompleting || ledgerBusy}
                 onClick={undoTripLedgerCompletion}>
-                {ledgerCompleting ? "Updating ledger…" : "Undo ledger completion"}
+                {ledgerCompleting ? t("Updating ledger…", "खाता बदला जा रहा है…") : t("Undo ledger completion", "खाता पूरा करना वापस लें")}
               </button>}
             </div>
           </div>
           {isLedgerLocked(ledgerTrip) && <p className="border border-gray-500 bg-gray-100 p-2 text-sm">
-            {ledgerTrip.ledger_completed_at ? "Ledger completed and locked" : "Ledger completion in progress and locked"} · Admin: {ledgerTrip.ledger_completed_by || ledgerTrip.ledger_completion_started_by || "—"}
+            {ledgerTrip.ledger_completed_at ? t("Ledger completed and locked", "खाता पूरा हुआ और लॉक है")
+              : t("Ledger completion in progress and locked", "खाता पूरा हो रहा है और लॉक है")} · {t("Admin", "प्रशासक")}: {ledgerTrip.ledger_completed_by || ledgerTrip.ledger_completion_started_by || "—"}
             {" · "}{ledgerTrip.ledger_completed_at || ledgerTrip.ledger_completion_started_at}
           </p>}
+          {ledgerCompletionReviewOpen && ledgerTrip && <Card role="dialog" aria-modal="true"
+            aria-labelledby="ledger-completion-title" className="border-2 border-brand-300 p-4 sm:p-6">
+            <h2 id="ledger-completion-title" className="text-2xl font-bold">{t("Check trip money before finishing", "खाता पूरा करने से पहले यात्रा का हिसाब देखें")}</h2>
+            <p className="mt-1 text-base text-muted">
+              {t("Trip", "यात्रा")} {ledgerTrip.trip_ref}. {t("Finishing marks the remaining amount as received and locks changes.",
+                "खाता पूरा करने पर बाकी रकम मिली हुई मानी जाएगी और बदलाव लॉक हो जाएँगे।")}
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <p className="rounded-lg border border-line bg-canvas p-3 text-base">
+                <IconLabel icon={Receipt}>{t("Receipts", "रसीदें")}</IconLabel><strong className="block text-2xl font-extrabold">{ledgerTotals.count}</strong>
+              </p>
+              <p className="rounded-lg border border-line bg-canvas p-3 text-base">
+                <IconLabel icon={Receipt}>{t("Total amount", "कुल रकम")}</IconLabel><strong className="block text-2xl font-extrabold">{money(ledgerTotals.total)}</strong>
+              </p>
+              <p className="rounded-lg border border-green-700 bg-green-50 p-3 text-base">
+                <IconLabel icon={Banknote}>✓ {t("Already received", "मिल चुके")}</IconLabel><strong className="block text-2xl font-extrabold">{money(ledgerTotals.paid)}</strong>
+              </p>
+              <p className="rounded-lg border border-amber-800 bg-amber-50 p-3 text-base">
+                <IconLabel icon={Clock3}>! {t("Still to collect", "अभी लेना बाकी")}</IconLabel><strong className="block text-2xl font-extrabold">{money(ledgerTotals.outstanding)}</strong>
+                <span className="mt-1 block text-xs">{t("Bhada + receipt fee", "भाड़ा + रसीद शुल्क")}</span>
+              </p>
+            </div>
+            {ledgerTotals.unpriced > 0 && <p className="mt-3 text-sm text-amber-900">
+              {ledgerTotals.unpriced} {t("receipt(s) have no Bhada price. Confirm charges before completing.",
+                "रसीदों में भाड़ा नहीं भरा है। पूरा करने से पहले रकम जाँचें।")}
+            </p>}
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button type="button" className="btn-s min-h-12 px-5 text-base"
+                onClick={() => setLedgerCompletionReviewOpen(false)}>{t("Review later", "बाद में जाँचें")}</button>
+              <button type="button" className="btn-p min-h-12 px-5 text-base"
+                disabled={ledgerCompleting || ledgerBusy} onClick={submitTripLedgerCompletion}>
+                ✓ {t("Finish trip", "यात्रा पूरी करें")}
+              </button>
+            </div>
+          </Card>}
           {ledgerBusy ? <Loader label="Loading ledger…" /> : ledgerTripId ? (
             <div className="overflow-auto border border-gray-500 bg-white">
               <table aria-label="Selected ledger totals" className="hidden min-w-[1050px] border-collapse text-sm lg:table">
                 <thead className="bg-gray-200">
                   <tr>{["Date", "Receipt no.", "Sender", "Receiver", "Goods & quantity", "Bhada", "Hamali", "Receipt fee", "Entered by", ...(owner ? ["Amount paid"] : [])].map((label) =>
-                    <th key={label} className="border border-gray-500 px-2 py-2 text-left font-bold">{label}</th>)}</tr>
+                    <th key={label} className="border border-gray-500 px-2 py-2 text-left font-bold">{ledgerColumnLabel(label, language)}</th>)}</tr>
                 </thead>
-                <tbody>{ledgerRows.map((row) => {
+                <tbody>{filteredLedgerRows.map((row) => {
                   const goodsRows = getGoodsRows(row);
                   const status = ledgerStatus[row.id] || "Saved";
+                  const paymentStatus = receiptPaymentStatus(row);
                   const cell = "border border-gray-400 px-2 py-1 align-middle";
                   const hindiGoods = goodsRows.map(hindiLedgerGoodsLine).join(", ");
                   return <tr key={row.id} className={row.voided ? "bg-gray-100 text-gray-500" : ""}>
                     <td className={cell}>{row.receipt_date || row.operating_date}</td>
                     <td className={cell}>{row.lr_ref}{row.voided ? " · VOID" : ""}
+                      {canFinanceRead && <div className="mt-1"><PaymentStatusBadge status={paymentStatus} voided={row.voided} language={language} /></div>}
+                      {canFinanceRead && row.rent != null && <span className="mt-1 block text-xs">
+                        <IconLabel icon={Banknote}>Received {money(row.paid_total)}</IconLabel>
+                        {" · "}
+                        <IconLabel icon={Clock3}>Still to collect {money(receiptOutstanding(row))}</IconLabel>
+                      </span>}
                       <span role="status" aria-live="polite" className={`mt-1 block text-xs ${
                         status.startsWith("Failed") || status.startsWith("Unsaved") ? "text-red-700"
                           : status.startsWith("Waiting") ? "text-amber-800" : "text-muted"
@@ -1551,7 +2278,7 @@ export default function Booking({ user }) {
                     <td className={cell}>{money(row.receipt_fee ?? 2)}</td>
                     <td className={cell}>{row.entry_by || "—"}</td>
                     {owner && <td className={cell}>
-                      <input type="checkbox" aria-label={`${row.lr_ref} Amount paid`}
+                      <input type="checkbox" aria-label={`${row.lr_ref} ${t("Mark money received", "पैसे मिलने पर निशान लगाएँ")}`}
                           checked={Boolean(row.amount_paid)}
                           disabled={row.voided || isLedgerLocked(ledgerTrip) || paidRowsUpdating.has(row.id)}
                           onChange={(event) => setLedgerRowPaid(row, event.target.checked)} />
@@ -1560,49 +2287,65 @@ export default function Booking({ user }) {
                 })}</tbody>
                 {canFinanceRead && <tfoot><tr className="bg-gray-50">
                   <td className="border border-gray-400 px-2 py-2 text-xs text-muted" colSpan={5}>
-                    Totals exclude voided receipts.
+                    {t("Totals exclude voided receipts.", "रद्द रसीदें कुल में शामिल नहीं हैं।")}
                   </td>
-                  <td className="border border-gray-400 px-2 py-2">Bhada total: <strong>{money(ledgerTotals.bhada)}</strong></td>
-                  <td className="border border-gray-400 px-2 py-2">Hamali total: <strong>{money(ledgerTotals.hamali)}</strong></td>
-                  <td className="border border-gray-400 px-2 py-2">Receipt fee total: <strong>{money(ledgerTotals.receiptFee)}</strong></td>
-                  <td className="border border-gray-400 px-2 py-2 font-bold">Grand total: {money(ledgerTotals.total)}</td>
+                  <td className="border border-gray-400 px-2 py-2">{t("Bhada total:", "कुल भाड़ा:")} <strong>{money(ledgerTotals.bhada)}</strong></td>
+                  <td className="border border-gray-400 px-2 py-2">{t("Hamali total:", "कुल हमाली:")} <strong>{money(ledgerTotals.hamali)}</strong></td>
+                  <td className="border border-gray-400 px-2 py-2">{t("Receipt fee total:", "कुल रसीद शुल्क:")} <strong>{money(ledgerTotals.receiptFee)}</strong></td>
+                  <td className="border border-gray-400 px-2 py-2 font-bold">{t("Grand total:", "कुल रकम:")} {money(ledgerTotals.total)}</td>
                   {owner && <td className="border border-gray-400 px-2 py-2" />}
                 </tr></tfoot>}
               </table>
-              {!ledgerRows.length && <p className="border-t border-gray-400 p-4 text-center">No receipts in this trip.</p>}
+              {!ledgerRows.length && <p className="border-t border-gray-400 p-4 text-center">{t("No receipts in this trip.", "इस यात्रा में कोई रसीद नहीं है।")}</p>}
+              {ledgerRows.length > 0 && !filteredLedgerRows.length && <p className="border-t border-gray-400 p-4 text-center">
+                {t("No receipts match these filters.", "कोई रसीद इन फ़िल्टर से मेल नहीं खाती।")}
+              </p>}
               <div className="space-y-3 p-2 lg:hidden">
-                {ledgerRows.map((row) => {
+                {filteredLedgerRows.map((row) => {
                   const goods = getGoodsRows(row).map(hindiLedgerGoodsLine).join(", ");
                   const rowStatus = ledgerStatus[row.id] || "Saved";
+                  const paymentStatus = receiptPaymentStatus(row);
                   return <article key={`mobile-${row.id}`} aria-label={`${row.lr_ref} mobile ledger receipt`}
                     className={`rounded-xl border border-line bg-white p-3 ${row.voided ? "opacity-60" : ""}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <h3 className="break-all font-bold">{row.lr_ref}{row.voided ? " · VOID" : ""}</h3>
-                        <p className="mt-1 text-xs text-muted">{row.receipt_date || row.operating_date}</p>
+                        <p className="mt-1 text-sm text-muted">{row.receipt_date || row.operating_date}</p>
+                        {canFinanceRead && <div className="mt-2">
+                          <PaymentStatusBadge status={paymentStatus} voided={row.voided} language={language} />
+                        </div>}
                       </div>
-                      {owner && <label className="flex shrink-0 items-center gap-2 rounded-lg bg-canvas px-3 py-2 text-sm font-medium">
-                        Paid
-                        <input type="checkbox" aria-label={`${row.lr_ref} mobile amount paid`}
+                      {owner && <label className="flex min-h-12 shrink-0 items-center gap-3 rounded-lg border border-line bg-canvas px-3 py-2 text-base font-semibold">
+                        <IconLabel icon={CircleCheck}>{t("Mark money received", "पैसे मिलने पर निशान लगाएँ")}</IconLabel>
+                        <input type="checkbox" aria-label={`${row.lr_ref} ${t("Mark money received", "पैसे मिलने पर निशान लगाएँ")}`}
+                          className="h-6 w-6 accent-green-700"
                           checked={Boolean(row.amount_paid)}
                           disabled={row.voided || isLedgerLocked(ledgerTrip) || paidRowsUpdating.has(row.id)}
                           onChange={(event) => setLedgerRowPaid(row, event.target.checked)} />
                       </label>}
                     </div>
-                    <p className="mt-2 text-sm" lang="hi">
+                    <p className="mt-3 text-base" lang="hi">
                       {hindiText(row.sender_name_hindi, row.sender_name)} → {hindiText(row.receiver_name_hindi, row.receiver_name)}
                     </p>
-                    <p className="mt-1 text-sm font-medium" lang="hi">{goods || "Goods not entered"}</p>
+                    <p className="mt-2 text-base font-semibold" lang="hi">{goods || t("Goods not entered", "सामान नहीं भरा")}</p>
                     {canFinanceRead ? <div className="mt-3 grid grid-cols-2 gap-2">
-                      <label><span className="lbl">Bhada (₹)</span>
+                      <label><span className="lbl"><IconLabel icon={Banknote}>{t("Bhada (₹)", "भाड़ा (₹)")}</IconLabel></span>
                         {ledgerField(row, "rent", amountInput(row.rent), "number", "mobile Bhada", "min-h-11 border border-line bg-white px-2")}
                       </label>
-                      <label><span className="lbl">Hamali (₹)</span>
+                      <label><span className="lbl"><IconLabel icon={Banknote}>{t("Hamali (₹)", "हमाली (₹)")}</IconLabel></span>
                         {ledgerField(row, "hamali", amountInput(row.hamali), "number", "mobile Hamali", "min-h-11 border border-line bg-white px-2")}
                       </label>
-                      <p className="rounded-lg bg-canvas p-2 text-sm">Receipt fee <strong className="block">{money(row.receipt_fee ?? 2)}</strong></p>
-                      <p className="rounded-lg bg-canvas p-2 text-sm">Entered by <strong className="block">{row.entry_by || "—"}</strong></p>
-                    </div> : <p className="mt-2 text-xs text-muted">Entered by {row.entry_by || "—"}</p>}
+                      <p className="rounded-lg bg-canvas p-2 text-sm"><IconLabel icon={Receipt}>{t("Receipt fee", "रसीद शुल्क")}</IconLabel><strong className="block">{money(row.receipt_fee ?? 2)}</strong></p>
+                      <p className="rounded-lg bg-canvas p-2 text-sm">{t("Entered by", "किसने भरा")} <strong className="block">{row.entry_by || "—"}</strong></p>
+                      {row.rent != null && <>
+                        <p className="rounded-lg border border-green-700 bg-green-50 p-3 text-base">
+                          <IconLabel icon={Banknote}>✓ {t("Already received", "मिल चुके")}</IconLabel><strong className="block text-xl">{money(row.paid_total)}</strong>
+                        </p>
+                        <p className="rounded-lg border border-amber-800 bg-amber-50 p-3 text-base">
+                          <IconLabel icon={Clock3}>! {t("Still to collect", "अभी लेना बाकी")}</IconLabel><strong className="block text-xl">{money(receiptOutstanding(row))}</strong>
+                        </p>
+                      </>}
+                    </div> : <p className="mt-2 text-xs text-muted">{t("Entered by", "किसने भरा")} {row.entry_by || "—"}</p>}
                     <p role="status" aria-live="polite" className={`mt-2 text-xs ${
                       rowStatus.startsWith("Failed") || rowStatus.startsWith("Unsaved") ? "text-red-700"
                         : rowStatus.startsWith("Waiting") ? "text-amber-800" : "text-muted"
@@ -1610,12 +2353,12 @@ export default function Booking({ user }) {
                   </article>;
                 })}
                 {canFinanceRead && ledgerRows.length > 0 && <section aria-label="Mobile selected ledger totals"
-                  className="grid grid-cols-2 gap-2 rounded-xl border border-brand-200 bg-brand-50 p-3 text-sm">
-                  <p>Bhada total <strong className="block">{money(ledgerTotals.bhada)}</strong></p>
-                  <p>Hamali total <strong className="block">{money(ledgerTotals.hamali)}</strong></p>
-                  <p>Receipt fee total <strong className="block">{money(ledgerTotals.receiptFee)}</strong></p>
-                  <p className="font-bold">Grand total <strong className="block">{money(ledgerTotals.total)}</strong></p>
-                  <p className="col-span-2 text-xs text-muted">Totals exclude voided receipts.</p>
+                  className="grid grid-cols-2 gap-2 rounded-xl border-2 border-brand-700 bg-brand-50 p-3 text-base">
+                  <p>{t("Bhada total", "कुल भाड़ा")} <strong className="block">{money(ledgerTotals.bhada)}</strong></p>
+                  <p>{t("Hamali total", "कुल हमाली")} <strong className="block">{money(ledgerTotals.hamali)}</strong></p>
+                  <p>{t("Receipt fee total", "कुल रसीद शुल्क")} <strong className="block">{money(ledgerTotals.receiptFee)}</strong></p>
+                  <p className="font-bold">{t("Total amount", "कुल रकम")} <strong className="block text-xl">{money(ledgerTotals.total)}</strong></p>
+                  <p className="col-span-2 text-xs text-muted">{t("Totals exclude voided receipts.", "रद्द रसीदें कुल में शामिल नहीं हैं।")}</p>
                 </section>}
               </div>
               {ledgerRows.map((row) => {
