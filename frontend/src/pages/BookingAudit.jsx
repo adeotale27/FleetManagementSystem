@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { Card, Loader } from "../components/ui";
-import { dmy, money } from "../lib/format";
+import { dmy, dmyDateTime, money } from "../lib/format";
 
 const field = "fld w-full";
 const auditLabels = {
@@ -144,7 +144,7 @@ export default function BookingAudit({ user }) {
                   <p className="text-sm text-muted">{event.target_type === "lr" ? "Receipt" : event.target_type || "Booking"}</p>
                   <p className="text-xs text-muted">By {event.actor_name || event.actor_username || "Unknown"}
                     {event.actor_role ? ` · ${event.actor_role}` : ""}</p></div>
-                <time className="text-xs text-muted">{event.created_at ? new Date(event.created_at).toLocaleString() : ""}</time>
+                <time className="text-xs text-muted">{dmyDateTime(event.created_at)}</time>
               </div>
               {event.reason && <p className="mt-2 text-sm">Reason: {event.reason}</p>}
               {(event.old_values || event.new_values) && <details className="mt-2 text-xs">

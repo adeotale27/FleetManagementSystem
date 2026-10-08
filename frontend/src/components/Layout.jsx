@@ -5,6 +5,7 @@ import {
   Search, Settings as Cog, ShieldCheck, Truck, User, Users, UsersRound, Wallet, X, ArrowRight, Building2,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { dmyDateTime } from "../lib/format";
 import EntryModal from "./QuickForms";
 import { Badge } from "./ui";
 
@@ -90,11 +91,7 @@ const CurrentTime = memo(function CurrentTime() {
   return (
     <time className="ml-auto shrink-0 text-right text-xs font-semibold text-muted sm:text-sm"
       aria-label="Current India Standard Time">
-      {new Intl.DateTimeFormat("en-IN", {
-        timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric",
-        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true,
-        timeZoneName: "short",
-      }).format(clockNow)}
+      {dmyDateTime(clockNow, true)}
     </time>
   );
 });

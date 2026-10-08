@@ -5,7 +5,7 @@ import {
 import { Building2, KeyRound, Plus, ShieldCheck, SlidersHorizontal, Truck, Wallet } from "lucide-react";
 import { api, errMsg } from "../lib/api";
 import { useFetch } from "../lib/hooks";
-import { money, money0, dmy } from "../lib/format";
+import { money, money0, dmy, dmyDateTime } from "../lib/format";
 import {
   Badge, Btn, Card, DataTable, EmptyState, ErrorState, Input, Loader, Modal, PageHead, Select, Stat, TextArea, toast,
 } from "../components/ui";
@@ -236,7 +236,7 @@ export function PlatformSettings() {
           <p className="text-[12.5px] text-muted">Server failures only — for you as product owner, not tenants.</p></div>
         <DataTable testid="error-log"
           columns={[
-            { key: "created_at", label: "When" },
+            { key: "created_at", label: "When", render: (row) => dmyDateTime(row.created_at) },
             { key: "method", label: "Method" },
             { key: "path", label: "Path", strong: true },
             { key: "status", label: "Status" },

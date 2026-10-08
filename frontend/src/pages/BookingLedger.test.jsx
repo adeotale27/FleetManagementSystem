@@ -10,7 +10,7 @@ jest.mock("../lib/api", () => ({
 
 describe("simple booking workflow", () => {
   const { container, site, trip, flushMicrotasks, getByLabelText, getByRole, clickButton,
-    createLedgerRow, mockBookingApi, renderBooking, setInput } = registerBookingTestHarness();
+    createLedgerRow, mockBookingApi, renderBooking, clearBooking, setInput } = registerBookingTestHarness();
 
   describe("ledger charge editing", () => {
   it("uses the server's latest row version for queued ledger edits", async () => {
@@ -18,7 +18,7 @@ describe("simple booking workflow", () => {
       sender_name: "Old sender", receiver_name: "Old receiver",
       sender_name_hindi: "पुराना भेजने वाला", receiver_name_hindi: "पुराना प्राप्तकर्ता", sender_address: "",
       receiver_address: "",
-      entry_by: "Admin - Owner Name",
+      entry_by: "A-Owner",
       charge_editor_marker: "M",
       goods_rows: [
         { type: "Cement", type_hindi: "सीमेंट", description: "", quantity: 1, rent: "100.00", hamali: "0.00" },
@@ -52,9 +52,10 @@ describe("simple booking workflow", () => {
     expect(container.querySelector('[aria-label="NGP-LR-01 sender"]')).toBeNull();
     expect(container.textContent).toContain("पुराना भेजने वाला");
     expect(container.textContent).not.toContain("Old sender");
+    expect(ledgerTable.querySelector("tbody tr td:first-child").textContent).toBe("29-09-2026");
     expect(ledgerTable.querySelector("tbody tr td:nth-child(5)").textContent).toBe("१ - सीमेंट, ३ - अनाज");
-    expect(ledgerTable.textContent).toContain("Admin - Owner Name");
-    expect(ledgerTable.querySelector("tbody tr td:nth-child(8)").textContent).toContain("₹2");
+    expect(ledgerTable.textContent).toContain("A-Owner");
+    expect(ledgerTable.querySelector("tbody tr td:nth-child(9)").textContent).toContain("₹2");
     expect(container.querySelector('select option[value=""]')?.textContent).toBe("Select trip");
     expect(container.textContent).toContain(`Selected trip${trip.trip_ref}`);
     expect(api.get).toHaveBeenCalledWith(
@@ -121,7 +122,90 @@ describe("simple booking workflow", () => {
       await flushMicrotasks();
     });
     await waitFor(() => expect(api.patch).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(container.textContent).toContain("Saved"));
+    await waitFor(() => expect(container.querySelector('[aria-label="NGP-LR-01 Bhada"]').value).toBe("125"));
+    expect(container.textContent).not.toContain("Saved");
+  });
+
+  it("lets users add receipt data columns to the trip ledger", async () => {
+    const row = createLedgerRow({
+      sender_address: "Main Street",
+      sender_address_hindi: "मुख्य सड़क",
+      receiver_phone: "9876543210",
+      city: "Nagpur",
+    });
+    mockBookingApi({ trips: [trip], ledgerRows: [row] });
+    await renderBooking("ledger", "owner");
+    await waitFor(() => expect(container.textContent).toContain("NGP-LR-01"));
+    const ledgerTable = container.querySelector("table[aria-label='Selected ledger totals']");
+    expect(ledgerTable.querySelector("thead tr th:last-child").textContent).toBe("Mark money received");
+
+    const columnsControl = container.querySelector(".ledger-table-column-picker summary");
+    await act(async () => columnsControl.click());
+    const senderAddressToggle = getByLabelText("Show Sender address column");
+    await act(async () => senderAddressToggle.click());
+
+    expect(within(ledgerTable).getByRole("columnheader", { name: "Sender address" })).not.toBeNull();
+    expect(within(ledgerTable).queryByRole("columnheader", { name: "Receiver phone" })).toBeNull();
+
+    const receiverPhoneToggle = getByLabelText("Show Receiver phone column");
+    await act(async () => receiverPhoneToggle.click());
+    expect(within(ledgerTable).getByRole("columnheader", { name: "Receiver phone" })).not.toBeNull();
+    expect(ledgerTable.textContent).toContain("9876543210");
+    expect(columnsControl).not.toBeNull();
+
+    const bhadaToggle = getByLabelText("Show Bhada column");
+    await act(async () => bhadaToggle.click());
+    expect(within(ledgerTable).queryByRole("columnheader", { name: "Bhada" })).toBeNull();
+    expect(within(ledgerTable).getByRole("columnheader", { name: "Hamali" })).not.toBeNull();
+    expect(within(ledgerTable).getByRole("columnheader", { name: "Receipt fee" })).not.toBeNull();
+    await act(async () => bhadaToggle.click());
+    expect(within(ledgerTable).getByRole("columnheader", { name: "Bhada" })).not.toBeNull();
+
+    const receiverPhoneHeader = within(ledgerTable).getByRole("columnheader", { name: "Receiver phone" });
+    const dateHeader = within(ledgerTable).getByRole("columnheader", { name: "Date" });
+    const dataTransfer = { setData: jest.fn(), getData: () => "receiverPhone", effectAllowed: "" };
+    fireEvent.dragStart(receiverPhoneHeader, { dataTransfer });
+    fireEvent.dragOver(dateHeader, { dataTransfer });
+    fireEvent.drop(dateHeader, { dataTransfer });
+    expect(ledgerTable.querySelector("thead th").textContent).toBe("Receiver phone");
+    expect(ledgerTable.querySelector("thead th:last-child").textContent).toBe("Mark money received");
+    expect(localStorage.getItem(`booking_ledger_columns:${encodeURIComponent(site.id)}`))
+      .toContain('"receiverPhone"');
+
+    const hamaliHeader = within(ledgerTable).getByRole("columnheader", { name: "Hamali" });
+    const firstHeader = ledgerTable.querySelector("thead th");
+    const chargeTransfer = { setData: jest.fn(), getData: () => "hamali", effectAllowed: "" };
+    fireEvent.dragStart(hamaliHeader, { dataTransfer: chargeTransfer });
+    fireEvent.dragOver(firstHeader, { dataTransfer: chargeTransfer });
+    fireEvent.drop(firstHeader, { dataTransfer: chargeTransfer });
+    const reorderedHeaders = Array.from(ledgerTable.querySelectorAll("thead th"), (header) => header.textContent);
+    expect(reorderedHeaders.slice(0, 2)).toEqual(["Hamali", "Receiver phone"]);
+    expect(reorderedHeaders[reorderedHeaders.indexOf("Bhada") + 1]).not.toBe("Hamali");
+    expect(reorderedHeaders[reorderedHeaders.indexOf("Receipt fee") + 1]).not.toBe("Hamali");
+    expect(reorderedHeaders[reorderedHeaders.length - 1]).toBe("Mark money received");
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Print" }).click();
+      await flushMicrotasks();
+    });
+    const printTable = document.querySelector(".booking-ledger-print table");
+    expect(printTable.querySelector("thead th").textContent).toBe("हमाली");
+    expect(printTable.querySelector("thead th:last-child").textContent).toBe("पैसे मिलने पर निशान लगाएँ");
+    expect(printTable.textContent).not.toContain("किसने भरा");
+    await act(async () => window.dispatchEvent(new Event("afterprint")));
+
+    await act(async () => {
+      document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    });
+    expect(container.querySelector(".ledger-table-column-picker").open).toBe(false);
+
+    await clearBooking();
+    await renderBooking("ledger", "owner");
+    await waitFor(() => expect(container.querySelector("table[aria-label='Selected ledger totals']")
+      .querySelector("thead th").textContent).toBe("Hamali"));
+    const restoredHeaders = Array.from(container.querySelectorAll("table[aria-label='Selected ledger totals'] thead th"),
+      (header) => header.textContent);
+    expect(restoredHeaders[restoredHeaders.length - 1]).toBe("Mark money received");
   });
 
   it("keeps a conflicting ledger charge visible and reports the server version conflict", async () => {
@@ -152,7 +236,7 @@ describe("simple booking workflow", () => {
       trip_status: "open", lr_ref: "NGP-LR-01", receipt_date: trip.operating_date,
       sender_name: "Sender", receiver_name: "Receiver", sender_name_hindi: "",
       receiver_name_hindi: "", rent: "100.00", hamali: "10.00", total_rent: "110.00",
-      charge_editor_marker: "A", entry_by: "Manager - Saoji", goods_rows: [{
+      charge_editor_marker: "A", entry_by: "M-Saoji", goods_rows: [{
         type: "Cement", type_hindi: "सीमेंट", description: "", quantity: 1,
         rent: "100.00", hamali: "10.00",
       }], updated_at: "version-1",
@@ -176,7 +260,7 @@ describe("simple booking workflow", () => {
     expect(container.querySelector('table [aria-label="NGP-LR-01 quantity 1"]')).toBeNull();
     expect(container.querySelector('table [aria-label="NGP-LR-01 goods description 1"]')).toBeNull();
     expect(container.querySelector("table").textContent).toContain("सीमेंट");
-    expect(container.querySelector("table").textContent).toContain("Manager - Saoji");
+    expect(container.querySelector("table").textContent).toContain("M-Saoji");
     expect(container.querySelector("table td:nth-child(2)").textContent).toContain("NGP-LR-01");
     expect(container.querySelector("table td:nth-child(2)").querySelector("input")).toBeNull();
     expect(container.querySelector('[aria-label="NGP-LR-01 Mark money received"]')).toBeNull();
@@ -193,7 +277,7 @@ describe("simple booking workflow", () => {
       `/sites/${site.id}/trips/${trip.id}/lrs/lr-1`,
       expect.objectContaining({ rent: "125.00", expected_updated_at: "version-1" }),
     );
-    expect(container.querySelector("table").textContent).toContain("Manager - Saoji");
+    expect(container.querySelector("table").textContent).toContain("M-Saoji");
 
     expect(api.patch).toHaveBeenCalledTimes(1);
   });
@@ -227,14 +311,15 @@ describe("simple booking workflow", () => {
     expect(table.querySelectorAll("input")).toHaveLength(3);
     expect(table.querySelector('[aria-label="NGP-LR-01 Mark money received"]')).not.toBeNull();
     expect(table.querySelector("tbody tr td:nth-child(5)").textContent).toBe("१ - सीमेंट/बोरे");
+    expect(table.querySelector("tbody tr td:nth-child(6)").textContent).toBe("1");
     const totals = container.querySelector('[aria-label="Selected ledger totals"]');
     const totalCells = totals.querySelectorAll("tfoot td");
-    expect(totalCells).toHaveLength(6);
-    expect(totalCells[0].colSpan).toBe(5);
-    expect(totalCells[1].textContent).toContain("Bhada total: ₹100");
-    expect(totalCells[2].textContent).toContain("Hamali total: ₹10");
-    expect(totalCells[3].textContent).toContain("Receipt fee total: ₹2");
-    expect(totalCells[4].textContent).toContain("Grand total: ₹112");
+    expect(totalCells).toHaveLength(1);
+    expect(totalCells[0].colSpan).toBe(table.querySelectorAll("thead th").length);
+    expect(totalCells[0].textContent).toContain("Bhada total: ₹100");
+    expect(totalCells[0].textContent).toContain("Hamali total: ₹10");
+    expect(totalCells[0].textContent).toContain("Receipt fee total: ₹2");
+    expect(totalCells[0].textContent).toContain("Grand total: ₹112");
     const mobileRow = container.querySelector('article[aria-label="NGP-LR-01 mobile ledger receipt"]');
     expect(mobileRow).not.toBeNull();
     expect(mobileRow.textContent).toContain("१ - सीमेंट/बोरे");
@@ -309,6 +394,94 @@ describe("simple booking workflow", () => {
     expect(container.textContent).toContain("Print");
     expect(container.textContent).toContain("Excel");
     expect(container.textContent).toContain("Complete trip ledger");
+  });
+
+  it("omits receipt creator from the printed ledger", async () => {
+    const row = createLedgerRow({ entry_by: "A-Owner" });
+    mockBookingApi({ trips: [trip], ledgerRows: [row] });
+    const printSpy = jest.spyOn(window, "print").mockImplementation(() => {});
+
+    await renderBooking("ledger", "owner");
+    await waitFor(() => expect(container.textContent).toContain(`Selected trip${trip.trip_ref}`));
+    await act(async () => {
+      screen.getByRole("button", { name: "Print" }).click();
+      await flushMicrotasks();
+    });
+
+    const printTable = await waitFor(() => {
+      const table = document.querySelector(".booking-ledger-print table");
+      expect(table).not.toBeNull();
+      return table;
+    });
+    expect(printTable.textContent).not.toContain("प्रविष्टि करने वाला");
+    expect(printTable.textContent).not.toContain("A-Owner");
+    expect(container.querySelector("table[aria-label='Selected ledger totals']").textContent)
+      .toContain("Entered by");
+
+    await act(async () => window.dispatchEvent(new Event("afterprint")));
+    printSpy.mockRestore();
+  });
+
+  it("downloads the Excel ledger using the selected trip name", async () => {
+    mockBookingApi({ trips: [{ ...trip, trip_ref: "NGP/LR:Trip-01" }], ledgerRows: [] });
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [site] });
+      if (path === `/sites/${site.id}/trips`) {
+        return Promise.resolve({ data: { rows: [{ ...trip, trip_ref: "NGP/LR:Trip-01" }], total: 1 } });
+      }
+      if (path === `/sites/${site.id}/ledger/entries`) {
+        return Promise.resolve({ data: { rows: [], total: 0 } });
+      }
+      if (path === `/sites/${site.id}/ledger/export.xlsx`) {
+        return Promise.resolve({ data: new Blob(["ledger"]) });
+      }
+      return Promise.resolve({ data: trip });
+    });
+    const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true, value: jest.fn(() => "blob:ledger"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true, value: jest.fn(),
+    });
+    let downloadedFilename = "";
+    const click = jest.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function () {
+      downloadedFilename = this.download;
+    });
+
+    await renderBooking("ledger", "owner");
+    await waitFor(() => expect(container.textContent).toContain("NGP/LR:Trip-01"));
+    const ledgerTable = container.querySelector("table[aria-label='Selected ledger totals']");
+    const dataTransfer = { setData: jest.fn(), getData: () => "amountPaid", effectAllowed: "" };
+    fireEvent.dragStart(within(ledgerTable).getByRole("columnheader", { name: "Mark money received" }), { dataTransfer });
+    fireEvent.dragOver(within(ledgerTable).getByRole("columnheader", { name: "Date" }), { dataTransfer });
+    fireEvent.drop(within(ledgerTable).getByRole("columnheader", { name: "Date" }), { dataTransfer });
+    expect(ledgerTable.querySelector("thead th").textContent).toBe("Date");
+    expect(ledgerTable.querySelector("thead th:last-child").textContent).toBe("Mark money received");
+    const columnPicker = container.querySelector(".ledger-table-column-picker");
+    await act(async () => columnPicker.querySelector("summary").click());
+    await act(async () => getByLabelText("Show Sender address column").click());
+    await act(async () => getByLabelText("Show Receiver phone column").click());
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent.includes("Excel")).click();
+      await flushMicrotasks();
+    });
+
+    expect(click).toHaveBeenCalled();
+    expect(downloadedFilename).toBe("NGP-LR-Trip-01-ledger.xlsx");
+    const exportCall = api.get.mock.calls.find(([path]) =>
+      path === `/sites/${site.id}/ledger/export.xlsx`);
+    expect(exportCall[1].params).toEqual(expect.objectContaining({
+      trip_id: trip.id,
+      columns: "date,receipt,sender,receiver,goods,quantity,bhada,hamali,receiptFee,senderAddress,receiverPhone,amountPaid",
+    }));
+    click.mockRestore();
+    if (originalCreateObjectURL) Object.defineProperty(URL, "createObjectURL", originalCreateObjectURL);
+    else delete URL.createObjectURL;
+    if (originalRevokeObjectURL) Object.defineProperty(URL, "revokeObjectURL", originalRevokeObjectURL);
+    else delete URL.revokeObjectURL;
   });
 
   it("lets an owner undo a completed ledger while retaining its paid state", async () => {
@@ -448,8 +621,7 @@ describe("simple booking workflow", () => {
     mockBookingApi({ trips: [trip], ledgerRows });
     await renderBooking("ledger", "owner");
     await waitFor(() => expect(container.textContent).toContain("NGP-LR-PARTIAL"));
-    expect(screen.getByRole("region", { name: "Selected trip payment summary" }).textContent)
-      .toContain("₹164");
+    expect(screen.queryByRole("region", { name: "Selected trip payment summary" })).toBeNull();
 
     fireEvent.change(screen.getByLabelText("Filter ledger by payment status"), {
       target: { value: "partial" },
@@ -477,28 +649,27 @@ describe("simple booking workflow", () => {
     expect(container.textContent).toContain("No receipts match these filters.");
   });
 
-  it("keeps trip navigation sticky on mobile and summarizes payment amounts", async () => {
+  it("keeps the ledger compact on mobile and shows each receipt's total quantity", async () => {
     const row = createLedgerRow({
       rent: "100", hamali: "10", receipt_fee: "2", paid_total: "40",
       outstanding: "62", payment_status: "partial",
+      goods_rows: [{ type: "Rice", quantity: 2 }, { type: "Bottle", quantity: 4 }],
     });
     mockBookingApi({ trips: [trip], ledgerRows: [row] });
     await renderBooking("ledger", "owner");
     await waitFor(() => expect(container.textContent).toContain("NGP-LR-01"));
 
-    const datePicker = screen.getByLabelText("Date");
+    const datePicker = screen.getByLabelText("Date", { selector: 'input[type="date"]' });
     expect(datePicker.parentElement.parentElement.className).toContain("sticky");
-    const summary = screen.getByRole("region", { name: "Selected trip payment summary" });
-    expect(summary.textContent).toContain("✓ Already received");
-    expect(summary.textContent).toContain("₹40");
-    expect(summary.textContent).toContain("! Still to collect");
-    expect(summary.textContent).toContain("₹62");
+    expect(screen.queryByRole("region", { name: "Selected trip payment summary" })).toBeNull();
     const mobileReceipt = screen.getByLabelText("NGP-LR-01 mobile ledger receipt");
-    expect(mobileReceipt.textContent).toContain("Partially paid");
-    expect(mobileReceipt.textContent).toContain("! Still to collect");
+    expect(mobileReceipt.textContent).toContain("Total quantity: 6");
+    expect(mobileReceipt.textContent).not.toContain("Partially paid");
+    expect(mobileReceipt.textContent).not.toContain("Still to collect");
+    expect(mobileReceipt.textContent).not.toContain("Saved");
   });
 
-  it("shows loading instead of zero totals until ledger data is fully loaded", async () => {
+  it("keeps ledger completion disabled until ledger data is fully loaded", async () => {
     let resolveLedger;
     const row = createLedgerRow({
       rent: "100", hamali: "10", receipt_fee: "2", paid_total: "40",
@@ -525,9 +696,9 @@ describe("simple booking workflow", () => {
       resolveLedger({ data: { rows: [row], total: 1 } });
       await flushMicrotasks();
     });
-    await waitFor(() => expect(screen.getByRole("region", { name: "Selected trip payment summary" })
-      .textContent).toContain("₹62"));
+    await waitFor(() => expect(screen.queryByText("Loading complete trip totals…")).toBeNull());
     expect(screen.getByRole("button", { name: /Complete trip ledger/ }).disabled).toBe(false);
+    expect(screen.queryByRole("region", { name: "Selected trip payment summary" })).toBeNull();
   });
 
   it("shows a financial review before completing and locking the ledger", async () => {

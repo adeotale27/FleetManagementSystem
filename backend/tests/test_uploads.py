@@ -1,8 +1,11 @@
 import asyncio
 from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import pytest
+import storage
 from fastapi import HTTPException
 from starlette.datastructures import Headers
 from starlette.datastructures import UploadFile
@@ -53,3 +56,17 @@ def test_supported_logo_format_passes_format_validation(monkeypatch):
 
     assert result["url"] == "/api/files/test/logo.png"
     assert saved["content_type"] == "image/png"
+
+
+def test_upload_storage_can_use_a_persistent_configured_root(monkeypatch):
+    with TemporaryDirectory(prefix="upload-storage-", dir=Path(__file__).parent) as directory:
+        upload_root = Path(directory) / "persistent-uploads"
+        monkeypatch.setattr(storage, "ROOT", upload_root)
+        path, content_type = storage.build_path("tenant-a", "logo", "company.png")
+
+        storage.put_object(path, b"persisted logo", content_type)
+        data, stored_type = storage.get_object(path)
+
+        assert (upload_root / path).is_file()
+        assert data == b"persisted logo"
+        assert stored_type == "image/png"

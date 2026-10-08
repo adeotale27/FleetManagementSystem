@@ -8,6 +8,8 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 jest.mock("../lib/api", () => ({
   api: { get: jest.fn(), post: jest.fn(), put: jest.fn(), delete: jest.fn() },
+  assetUrl: (value) => value || "",
+  uploadFile: jest.fn(),
   errMsg: () => "Request failed",
 }));
 
@@ -21,11 +23,17 @@ describe("SiteConsole fetch cycles", () => {
   let root;
 
   beforeEach(() => {
+    localStorage.clear();
     api.post.mockImplementation((path) => path === "/sites"
       ? Promise.resolve({ data: { id: "site-new", name: "New Site", code: "NEW" } })
-      : Promise.resolve({ data: { ok: true } }));
+      : path === "/sites/site-new/manager"
+        ? Promise.resolve({ data: {
+          username: "mina manager", temporary_password: "Generated-temp-pass",
+        } })
+        : Promise.resolve({ data: { ok: true } }));
     api.get.mockImplementation((path) => {
       if (path === "/sites") return Promise.resolve({ data: sites });
+      if (path === "/booking/receipt-controls") return Promise.resolve({ data: {} });
       if (path === "/sites/managers") return Promise.resolve({ data: [] });
       if (path === "/masters/team") return Promise.resolve({ data: [
         { id: "team-manager", name: "Mina Manager", role: "Manager", status: "Active" },
@@ -59,6 +67,7 @@ describe("SiteConsole fetch cycles", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+    expect(localStorage.getItem("booking_site_id")).toBe("site-a");
     expect(api.get.mock.calls.filter(([path]) => path === "/sites")).toHaveLength(1);
     expect(container.querySelector('[data-testid="booking-access-management"]')).toBeNull();
     expect(container.textContent).not.toContain("Booking access management");
@@ -73,6 +82,7 @@ describe("SiteConsole fetch cycles", () => {
       await Promise.resolve();
     });
 
+    expect(localStorage.getItem("booking_site_id")).toBe("site-b");
     expect(api.get.mock.calls.filter(([path]) => path === "/sites")).toHaveLength(1);
     expect(api.get.mock.calls.filter(([path]) => path === "/sites/site-b/trips")).toHaveLength(1);
     expect(api.get.mock.calls.filter(([path]) => path === "/sites/site-b/trip-resources")).toHaveLength(1);
@@ -235,9 +245,8 @@ describe("SiteConsole fetch cycles", () => {
     };
     await setInput('input[placeholder="Site name"]', "New Site");
     await setInput('input[placeholder="e.g. NGP"]', "NEW");
-    await setInput('input[aria-label="Manager login ID"]', "mina.manager");
-    expect(container.querySelector('input[type="password"]')).not.toBeNull();
-    await setInput('input[aria-label="Manager password"]', "abc");
+    await setInput('input[aria-label="Manager login ID"]', "Mina Manager");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
 
     const createForm = container.querySelector('input[placeholder="Site name"]').closest("form");
     await act(async () => {
@@ -250,10 +259,88 @@ describe("SiteConsole fetch cycles", () => {
 
     expect(api.post).toHaveBeenCalledWith("/sites", expect.objectContaining({ name: "New Site", code: "NEW" }));
     expect(api.post).toHaveBeenCalledWith("/sites/site-new/manager", expect.objectContaining({
-      name: "Mina Manager", username: "mina.manager", team_member_id: "team-manager",
-      password: "abc",
+      name: "Mina Manager", username: "mina manager", team_member_id: "team-manager",
     }));
-    expect(container.textContent).toContain("Temporary password: abc");
+    expect(container.textContent).toContain("Temporary password: Generated-temp-pass");
+  });
+
+  it("assigns a manager using an admin-chosen ID and generated password", async () => {
+    api.post.mockImplementation((path) => path === "/sites/site-a/manager"
+      ? Promise.resolve({ data: { username: "saoji ngp", temporary_password: "Generated-once" } })
+      : Promise.resolve({ data: { ok: true } }));
+    await act(async () => {
+      root.render(
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <SiteConsole user={{ role: "owner" }} adminOnly />
+        </MemoryRouter>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const accessDetails = container.querySelector('[data-testid="booking-access-management"]');
+    await act(async () => { accessDetails.open = true; });
+    const setInput = async (selector, value) => {
+      const input = container.querySelector(selector);
+      if (!input) throw new Error(`Missing test input: ${selector}`);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await setInput('input[placeholder="First and last name"]', "Saoji Naidu");
+    await setInput('input[placeholder="Enter the ID to give this manager"]', "Saoji Ngp");
+    const assignForm = container.querySelector('input[placeholder="Enter the ID to give this manager"]').closest("form");
+    await act(async () => {
+      assignForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.post).toHaveBeenCalledWith("/sites/site-a/manager", {
+      name: "Saoji Naidu", username: "saoji ngp",
+    });
+    expect(container.textContent).toContain("Temporary password: Generated-once");
+  });
+
+  it("prevents duplicate site names and locations in the site setup form", async () => {
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [
+        { ...sites[0], location: "Main Road" }, sites[1],
+      ] });
+      if (path === "/sites/managers") return Promise.resolve({ data: [] });
+      if (path === "/masters/team") return Promise.resolve({ data: [] });
+      if (path === "/sites/system-dashboard") return Promise.resolve({ data: { sites: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    await act(async () => {
+      root.render(
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <SiteConsole user={{ role: "owner" }} adminOnly />
+        </MemoryRouter>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const setInput = async (selector, value) => {
+      const input = container.querySelector(selector);
+      if (!input) throw new Error(`Missing test input: ${selector}`);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await setInput('input[placeholder="Site name"]', "  site   a ");
+    expect(container.querySelector('input[placeholder="Site name"]').getAttribute("aria-invalid")).toBe("true");
+    expect(container.textContent).toContain("A site with this name already exists.");
+
+    await setInput('input[placeholder="Site name"]', "A new site");
+    await setInput('input[placeholder="Street, area, or landmark"]', " main road ");
+    expect(container.querySelector('input[placeholder="Street, area, or landmark"]').getAttribute("aria-invalid"))
+      .toBe("true");
+    expect(container.textContent).toContain("A site with this location already exists.");
+    const createButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Create site");
+    expect(createButton.disabled).toBe(true);
   });
 
   it("explains manager permissions with grouped action labels", async () => {
@@ -285,9 +372,41 @@ describe("SiteConsole fetch cycles", () => {
       await Promise.resolve();
     });
     const controls = Array.from(container.querySelectorAll("details"))
-      .find((details) => details.querySelector("summary")?.textContent === "Booking settings");
+      .find((details) => details.querySelector("summary")?.textContent
+        .startsWith("Booking settings"));
     await act(async () => { controls.open = true; });
+    expect(controls.open).toBe(true);
+    expect(controls.textContent).toContain("1. Printed receipt header");
+    expect(controls.textContent).toContain("2. Receipt defaults");
+    expect(controls.textContent).toContain("3. Optional contact details");
+    expect(controls.textContent).toContain("4. Suggested goods names");
+    expect(controls.textContent).toContain("These switches apply to every site.");
+    expect(controls.querySelectorAll('[aria-label^="Receipt branch name "]')).toHaveLength(3);
 
+    const companyName = controls.querySelector('[aria-label="Receipt company name"]');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")
+        .set.call(companyName, "नायडू गुड्स ट्रांसपोर्ट");
+      companyName.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const branchName = controls.querySelector('[aria-label="Receipt branch name 1"]');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")
+        .set.call(branchName, "Nagpur");
+      branchName.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const branchPhone = controls.querySelector('[aria-label="Receipt branch phone 1"]');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")
+        .set.call(branchPhone, "0000000000");
+      branchPhone.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const branchPhoneLabel = controls.querySelector('[aria-label="Receipt branch phone label 1"]');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")
+        .set.call(branchPhoneLabel, "(O)");
+      branchPhoneLabel.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     const feeInput = Array.from(controls.querySelectorAll('input[type="number"]'))
       .find((input) => input.closest("label").textContent.includes("Receipt fee"));
     expect(feeInput.value).toBe("2.00");
@@ -305,6 +424,10 @@ describe("SiteConsole fetch cycles", () => {
       .find((input) => input.getAttribute("aria-label") === "Include sender address in receipt");
     await act(async () => {     senderAddress.click();
     });
+    const receiverPhone = controls.querySelector('[aria-label="Include receiver phone in receipt"]');
+    await act(async () => { receiverPhone.click(); });
+    const receiverAddress = controls.querySelector('[aria-label="Include receiver address in receipt"]');
+    await act(async () => { receiverAddress.click(); });
     const overdueDaysInput = Array.from(controls.querySelectorAll('input[type="number"]'))
     .find((input) => input.closest("label").textContent.includes("Overdue after"));
     expect(overdueDaysInput.value).toBe("30");
@@ -337,16 +460,30 @@ describe("SiteConsole fetch cycles", () => {
     });
     expect(api.put).toHaveBeenCalledWith("/sites/site-a", expect.objectContaining({
       config: expect.objectContaining({
+        receipt_branding: expect.objectContaining({
+          company_name: "नायडू गुड्स ट्रांसपोर्ट",
+          contacts: [
+            expect.objectContaining({
+              label: "Nagpur", phone: "0000000000", phone_label: "(O)",
+            }),
+            expect.objectContaining({ label: "", phone: "", alternate_phone: "" }),
+            expect.objectContaining({ label: "", phone: "", alternate_phone: "" }),
+          ],
+        }),
         goods_suggestions: expect.arrayContaining(["स्थानीय अनाज"]),
         receipt_controls: expect.objectContaining({
           receipt_language: "english",
-          sender_address_enabled: false,
-          receiver_address_enabled: true,
           receipt_fee: "5.00",
           overdue_after_days: 5,
         }),
       }),
     }));
-    expect(api.put.mock.calls[0][1].config.goods_suggestions).not.toContain("अनाज");
+    expect(api.put).toHaveBeenCalledWith("/booking/receipt-controls", {
+      sender_address_enabled: false,
+      receiver_address_enabled: false,
+      receiver_phone_enabled: false,
+    });
+    const siteSettingsSave = api.put.mock.calls.find(([path]) => path === "/sites/site-a");
+    expect(siteSettingsSave[1].config.goods_suggestions).not.toContain("अनाज");
   });
 });

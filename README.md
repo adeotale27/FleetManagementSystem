@@ -3,9 +3,9 @@
 Transport office software for one or many logistics businesses.
 
 - **Business owner** operates three simple booking screens—Dashboard, Receipts, and Ledger—alongside separate industrial Trips & LRs, Fleet, Parties, Team, Industrial Finance, and Industrial Reports.
-- **Business owner** can administer multiple sites, assign site managers, configure per-site receipt conversion, print language and address visibility, review site operations, reconcile per-trip ledgers, record LR payments, and complete/lock a trip ledger.
+- **Business owner** can administer multiple sites, assign site managers, configure per-site receipt conversion and print visibility, set each site's lorry-receipt company identity, logo, branch contacts and terms, review site operations, reconcile per-trip ledgers, record LR payments, and complete/lock a trip ledger.
 - **Site manager** operates only assigned site bookings and granted actions; closing or reopening trips is owner-only, and industrial business routes are owner-only.
-- Receipt data is entered and edited in English in one combined goods/description field per row (three rows are shown by default); receiver city defaults to Hinganghat. Receipt conversion and address visibility are configurable per site. Admins configure the receipt fee under Booking settings; each receipt retains the fee recorded when it was created, and that fee is included in Booking Finance and payment balances. Older receipts without a stored fee retain the ₹2 legacy fallback.
+- Receipt data is entered and edited in English in one combined goods/description field per row (three rows are shown by default); receiver city defaults to Hinganghat. Receipt conversion, print visibility, branding, and address visibility are configurable per site under Booking receipt settings. Each receipt retains the fee recorded when it was created, and that fee is included in Booking Finance and payment balances. Older receipts without a stored fee retain the ₹2 legacy fallback.
 - Only the business owner can mark an LR as paid or complete a trip ledger. Completion records any outstanding Bhada as a payment and locks receipt, ledger, and payment changes for that trip.
 - **Platform owner** issues licences, suspends businesses, resets owner passwords, and turns modules on/off per business; platform access does not grant business-owner access.
 
@@ -62,7 +62,7 @@ cp frontend/.env.example frontend/.env
 | `PLATFORM_USERNAME` | `superadmin` | Platform owner login |
 | `PLATFORM_PASSWORD` | `super123` | Platform owner password |
 
-Optional (logo / document uploads only): not required. Files save under `backend/data/uploads/`.
+Logo and document uploads save under `backend/data/uploads/` by default. Set `FMS_UPLOADS_DIR` to an absolute path on a persistent shared volume for production deployments; back up that volume together with the database so saved logos remain available after restarts and across application instances.
 
 ### `frontend/.env`
 
@@ -213,7 +213,7 @@ Users collection id = username. Roles include `superadmin` (no tenant), `owner` 
 3. Assign a site manager with a unique username and a strong initial password. The password is bcrypt-hashed; managers access only explicitly assigned sites and permitted actions.
 4. Use manager access controls to grant/revoke per-site actions, reset credentials, replace a manager, or deactivate access. Deactivation preserves audit history and does not rewrite historical trip/LR creators.
 5. Open Dashboard, choose the trip date, and create a trip. Vehicle and driver details are optional.
-6. Select the trip and open Receipts. Each receipt is linked to that trip; its first three goods rows are ready immediately, with additional rows available if needed. Enter each good, its optional description, and quantity in English; configured Hindi conversion supplies Hindi goods/description output. The receiver's 10-digit phone number is saved and printed. Owners configure Hindi conversion, print language, address visibility, and the receipt fee under **Booking settings**.
+6. Select the trip and open Receipts. Each receipt is linked to that trip; its first three goods rows are ready immediately, with additional rows available if needed. Enter each good, its optional description, and quantity in English; configured Hindi conversion supplies Hindi goods/description output. The receiver's 10-digit phone number is saved and printed. Owners configure Hindi conversion, print language, address visibility, company details, logo, branch contacts, terms, and the receipt fee under **Booking receipt settings**.
 7. Use **Save & print** or print a saved receipt again. The compact A4 LR prints Hindi goods, descriptions, and quantities inline and shows Bhada, Hamali, the recorded receipt fee, and the total. When editing, **Cancel editing** discards the form changes without saving.
 8. Use **Ledger** to select one trip for the chosen date. Sender, receiver, goods/quantity, date, and receipt number are read-only; only Bhada and Hamali are editable. The sheet, print view, and `.xlsx` export are scoped to that selected trip and display goods/quantities in Hindi.
 
