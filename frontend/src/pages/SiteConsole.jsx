@@ -7,14 +7,38 @@ import {
 import {
   Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
-import { api, errMsg } from "../lib/api";
+import { api, assetUrl, errMsg, uploadFile } from "../lib/api";
 import { Btn, Card, ErrorState, Loader, PageHead } from "../components/ui";
 import { DATA_CHANGE_EVENT } from "../lib/realtime";
-import { money0 } from "../lib/format";
+import { dmy, dmyDateTime, money0 } from "../lib/format";
 import { useMaster } from "../lib/hooks";
 import { DEFAULT_BOOKING_GOODS } from "../lib/bookingGoods";
 
 const field = "fld w-full";
+const siteIdentityKey = (value) => value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+const emptyReceiptContact = () => ({
+  label: "", phone: "", phone_label: "", alternate_phone: "", alternate_phone_label: "",
+});
+const emptyReceiptBranding = () => ({
+  company_name: "", legal_line: "", address: "", logo_url: "", terms: "", footer: "",
+  contacts: Array.from({ length: 3 }, emptyReceiptContact),
+});
+const receiptBrandingFor = (site) => {
+  const configured = site?.config?.receipt_branding || {};
+  return {
+    ...emptyReceiptBranding(),
+    ...configured,
+    contacts: Array.from({ length: 3 }, (_, index) => {
+      const contact = configured.contacts?.[index] || {};
+      return {
+        label: contact.label || "", phone: contact.phone || "",
+        phone_label: contact.phone_label || "",
+        alternate_phone: contact.alternate_phone || "",
+        alternate_phone_label: contact.alternate_phone_label || "",
+      };
+    }),
+  };
+};
 const isoDay = (offset = 0) => {
   const day = new Date();
   day.setDate(day.getDate() + offset);
@@ -74,7 +98,7 @@ function ReceivableGroups({ title, breakdown }) {
       <span className="min-w-0">
         <strong className="block break-words">{row.label}</strong>
         {(row.site_name || row.operating_date) &&
-          <span className="text-xs text-muted">{[row.site_name, row.operating_date].filter(Boolean).join(" · ")}</span>}
+          <span className="text-xs text-muted">{[row.site_name, row.operating_date && dmy(row.operating_date)].filter(Boolean).join(" · ")}</span>}
         <span className="text-xs text-muted">{row.lr_count} LRs · {row.parcels} parcels</span>
         {(row.unreconciled_lrs > 0 || row.unpriced_lrs > 0) &&
           <span className="block text-xs text-amber-800">
@@ -131,9 +155,7 @@ function SiteActivityCharts({ sites, activityByDate, fromDate, toDate }) {
             <LineChart data={dailyActivity} margin={{ top: 8, right: 12, bottom: 8, left: 4 }}>
               <CartesianGrid stroke="var(--line)" vertical={false} />
               <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false}
-                tickFormatter={(value) => new Date(`${value}T12:00:00`).toLocaleDateString("en-IN", {
-                  day: "2-digit", month: "short",
-                })} interval="preserveStartEnd"
+                tickFormatter={dmy} interval="preserveStartEnd"
                 label={{ value: "Operating date", position: "insideBottom", offset: -2, fontSize: 11 }} />
               <YAxis allowDecimals={false} tick={{ fontSize: 11 }} tickLine={false}
                 label={{ value: "Records", angle: -90, position: "insideLeft", fontSize: 11 }} />
@@ -146,7 +168,7 @@ function SiteActivityCharts({ sites, activityByDate, fromDate, toDate }) {
             </LineChart>
           </ResponsiveContainer>
         </div>
-        <p className="mt-1 text-[11px] text-muted">Source: site dashboard · {fromDate} to {toDate}</p>
+        <p className="mt-1 text-[11px] text-muted">Source: site dashboard · {dmy(fromDate)} to {dmy(toDate)}</p>
       </Card>
       <Card className="p-4">
         <div className="mb-2">
@@ -168,7 +190,7 @@ function SiteActivityCharts({ sites, activityByDate, fromDate, toDate }) {
             </BarChart>
           </ResponsiveContainer>
         </div>
-        <p className="mt-1 text-[11px] text-muted">Source: site dashboard · {fromDate} to {toDate}</p>
+        <p className="mt-1 text-[11px] text-muted">Source: site dashboard · {dmy(fromDate)} to {dmy(toDate)}</p>
       </Card>
     </div>
   );
@@ -213,7 +235,7 @@ function ActivityTimeline({ rows }) {
                   {item.new_values?.lr_ref ? ` · ${item.new_values.lr_ref}` : ""}
                 </span>
                 <span className="mt-0.5 block text-xs text-muted">
-                  {item.actor_name || item.actor_username || "Team member"} · {new Date(item.created_at).toLocaleString()}
+                  {item.actor_name || item.actor_username || "Team member"} · {dmyDateTime(item.created_at)}
                 </span>
               </span>
               <Icon size={16} className="mt-0.5 shrink-0 text-brand-500" aria-hidden="true" />
@@ -237,7 +259,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
   const [sites, setSites] = useState([]);
   const [dashboard, setDashboard] = useState(null);
   const [managers, setManagers] = useState([]);
-  const [siteId, setSiteId] = useState("");
+  const [siteId, setSiteId] = useState(() => localStorage.getItem("booking_site_id") || "");
   const [tripRows, setTripRows] = useState([]);
   const [tripTotal, setTripTotal] = useState(0);
   const [tripOffset, setTripOffset] = useState(0);
@@ -259,9 +281,13 @@ export default function SiteConsole({ user, adminOnly = false }) {
   const [siteEdit, setSiteEdit] = useState({ name: "", location: "", city: "", timezone: "" });
   const [receiptControls, setReceiptControls] = useState({
     hindi_conversion_enabled: true, receipt_language: "hindi",
-    sender_address_enabled: true, receiver_address_enabled: true, receipt_fee: "2.00",
+    sender_address_enabled: true, receiver_address_enabled: true, receiver_phone_enabled: true,
+    receipt_fee: "2.00",
     overdue_after_days: "30",
   });
+  const [receiptBranding, setReceiptBranding] = useState(emptyReceiptBranding);
+  const [receiptLogoUploading, setReceiptLogoUploading] = useState(false);
+  const [receiptLogoFailed, setReceiptLogoFailed] = useState(false);
   const [goodsSuggestions, setGoodsSuggestions] = useState(DEFAULT_BOOKING_GOODS);
   const [goodsSuggestionDraft, setGoodsSuggestionDraft] = useState("");
   const [categoryForm, setCategoryForm] = useState({ goods: "", containers: "" });
@@ -270,7 +296,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
   const [tripResources, setTripResources] = useState({ vehicles: [], drivers: [] });
   const [dailyLedgerDate, setDailyLedgerDate] = useState(isoDay());
   const [downloadingDailyLedger, setDownloadingDailyLedger] = useState(false);
-  const [managerForm, setManagerForm] = useState({ name: "", username: "", password: "" });
+  const [managerForm, setManagerForm] = useState({ name: "", username: "" });
   const [siteManagerTeamId, setSiteManagerTeamId] = useState("");
   const [newSiteManager, setNewSiteManager] = useState(false);
   const [newTeamManager, setNewTeamManager] = useState({ name: "", mobile: "", role: "Manager" });
@@ -279,6 +305,14 @@ export default function SiteConsole({ user, adminOnly = false }) {
   const [grantForm, setGrantForm] = useState({ username: "", site_id: "", permissions: ["dashboard:read", "trips:read", "lrs:read"] });
   const siteEditDirtyFields = useRef({});
   const teamDirectory = useMaster(owner ? "team" : null);
+  const newSiteNameDuplicate = Boolean(siteForm.name.trim()) && sites.some((site) =>
+    siteIdentityKey(site.name || "") === siteIdentityKey(siteForm.name));
+  const newSiteLocationDuplicate = Boolean(siteForm.location.trim()) && sites.some((site) =>
+    siteIdentityKey(site.location || "") === siteIdentityKey(siteForm.location));
+  const editedSiteNameDuplicate = Boolean(siteEdit.name.trim()) && sites.some((site) =>
+    site.id !== siteId && siteIdentityKey(site.name || "") === siteIdentityKey(siteEdit.name));
+  const editedSiteLocationDuplicate = Boolean(siteEdit.location.trim()) && sites.some((site) =>
+    site.id !== siteId && siteIdentityKey(site.location || "") === siteIdentityKey(siteEdit.location));
 
   const loadBoardLrs = useCallback(async (id, tripId) => {
     setBoardTripId(tripId || "");
@@ -342,7 +376,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
     setLoading(true);
     setError("");
     try {
-      const [siteResponse, dashboardResponse, managerResponse] = await Promise.all([
+      const [siteResponse, dashboardResponse, managerResponse, visibilityResponse] = await Promise.all([
         api.get("/sites"),
         owner && !adminOnly
           ? api.get("/sites/system-dashboard", { params: Object.fromEntries(
@@ -350,6 +384,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
           ) })
           : Promise.resolve(null),
         owner ? api.get("/sites/managers") : Promise.resolve(null),
+        api.get("/booking/receipt-controls"),
       ]);
       const availableSites = siteResponse.data;
       setSites(availableSites);
@@ -358,6 +393,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
       const selected = availableSites.find((item) => item.id === preferredSite) || availableSites[0];
       setSiteId(selected?.id || "");
       if (selected) {
+        localStorage.setItem("booking_site_id", selected.id);
         const nextSiteEdit = {
           name: selected.name, location: selected.location || "",
           city: selected.city || "", timezone: selected.timezone || "Asia/Kolkata",
@@ -368,14 +404,21 @@ export default function SiteConsole({ user, adminOnly = false }) {
           ) }
           : nextSiteEdit);
         const configuredReceiptControls = selected.config?.receipt_controls || {};
+        const globalVisibility = visibilityResponse?.data || {};
         setReceiptControls({
           hindi_conversion_enabled: configuredReceiptControls.hindi_conversion_enabled !== false,
           receipt_language: configuredReceiptControls.receipt_language === "english" ? "english" : "hindi",
-          sender_address_enabled: configuredReceiptControls.sender_address_enabled !== false,
-          receiver_address_enabled: configuredReceiptControls.receiver_address_enabled !== false,
+          sender_address_enabled: globalVisibility.sender_address_enabled
+            ?? (configuredReceiptControls.sender_address_enabled !== false),
+          receiver_address_enabled: globalVisibility.receiver_address_enabled
+            ?? (configuredReceiptControls.receiver_address_enabled !== false),
+          receiver_phone_enabled: globalVisibility.receiver_phone_enabled
+            ?? (configuredReceiptControls.receiver_phone_enabled !== false),
           receipt_fee: configuredReceiptControls.receipt_fee ?? "2.00",
           overdue_after_days: String(configuredReceiptControls.overdue_after_days ?? 30),
         });
+        setReceiptBranding(receiptBrandingFor(selected));
+        setReceiptLogoFailed(false);
         setGoodsSuggestions(Array.isArray(selected.config?.goods_suggestions)
           ? selected.config.goods_suggestions : DEFAULT_BOOKING_GOODS);
         if (!preserveDrafts) siteEditDirtyFields.current = {};
@@ -417,6 +460,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
   const selectSite = async (id) => {
     siteEditDirtyFields.current = {};
     setSiteId(id);
+    if (id) localStorage.setItem("booking_site_id", id);
     if (owner) setFilters((current) => ({ ...current, site_id: id }));
     if (!id) {
       setTripRows([]);
@@ -434,14 +478,22 @@ export default function SiteConsole({ user, adminOnly = false }) {
     });
     if (selected) {
       const configuredReceiptControls = selected.config?.receipt_controls || {};
+      const globalVisibilityResponse = await api.get("/booking/receipt-controls");
+      const globalVisibility = globalVisibilityResponse.data || {};
       setReceiptControls({
         hindi_conversion_enabled: configuredReceiptControls.hindi_conversion_enabled !== false,
         receipt_language: configuredReceiptControls.receipt_language === "english" ? "english" : "hindi",
-        sender_address_enabled: configuredReceiptControls.sender_address_enabled !== false,
-        receiver_address_enabled: configuredReceiptControls.receiver_address_enabled !== false,
+        sender_address_enabled: globalVisibility.sender_address_enabled
+          ?? (configuredReceiptControls.sender_address_enabled !== false),
+        receiver_address_enabled: globalVisibility.receiver_address_enabled
+          ?? (configuredReceiptControls.receiver_address_enabled !== false),
+        receiver_phone_enabled: globalVisibility.receiver_phone_enabled
+          ?? (configuredReceiptControls.receiver_phone_enabled !== false),
         receipt_fee: configuredReceiptControls.receipt_fee ?? "2.00",
         overdue_after_days: String(configuredReceiptControls.overdue_after_days ?? 30),
       });
+      setReceiptBranding(receiptBrandingFor(selected));
+      setReceiptLogoFailed(false);
       setGoodsSuggestions(Array.isArray(selected.config?.goods_suggestions)
         ? selected.config.goods_suggestions : DEFAULT_BOOKING_GOODS);
     }
@@ -498,6 +550,11 @@ export default function SiteConsole({ user, adminOnly = false }) {
     const selected = sites.find((site) => site.id === siteId);
     if (!selected) return;
     try {
+      await api.put("/booking/receipt-controls", {
+        sender_address_enabled: receiptControls.sender_address_enabled,
+        receiver_address_enabled: receiptControls.receiver_address_enabled,
+        receiver_phone_enabled: receiptControls.receiver_phone_enabled,
+      });
       await api.put(`/sites/${siteId}`, {
         config: {
           ...(selected.config || {}),
@@ -505,16 +562,33 @@ export default function SiteConsole({ user, adminOnly = false }) {
           receipt_controls: {
             hindi_conversion_enabled: receiptControls.hindi_conversion_enabled,
             receipt_language: receiptControls.receipt_language,
-            sender_address_enabled: receiptControls.sender_address_enabled,
-            receiver_address_enabled: receiptControls.receiver_address_enabled,
             receipt_fee: receiptControls.receipt_fee,
             overdue_after_days: Number(receiptControls.overdue_after_days),
           },
+          receipt_branding: receiptBranding,
         },
       });
       setMessage("Booking settings updated.");
       await refresh(siteId);
     } catch (e) { setError(errMsg(e)); }
+  };
+
+  const uploadReceiptLogo = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setReceiptLogoUploading(true);
+    setError("");
+    try {
+      const logoUrl = await uploadFile(file, "logo");
+      setReceiptBranding((current) => ({ ...current, logo_url: logoUrl }));
+      setReceiptLogoFailed(false);
+      setMessage("Logo uploaded. Save booking settings to assign it to this site's receipts.");
+    } catch (uploadError) {
+      setError(`Receipt logo upload failed: ${errMsg(uploadError)}`);
+    } finally {
+      setReceiptLogoUploading(false);
+      event.target.value = "";
+    }
   };
 
   const addCategory = async (kind, event) => {
@@ -577,14 +651,13 @@ export default function SiteConsole({ user, adminOnly = false }) {
         const existingManager = managers.find((manager) => manager.team_member_id === teamMemberId);
         const username = existingManager?.username || managerForm.username.trim().toLowerCase();
         try {
-          await api.post(`/sites/${result.data.id}/manager`, {
+          const assignment = await api.post(`/sites/${result.data.id}/manager`, {
             name: teamMember.name,
             username,
             team_member_id: teamMemberId,
-            ...(existingManager ? {} : { password: managerForm.password }),
           });
-          if (!existingManager) {
-            setTemporaryCredential({ username, password: managerForm.password });
+          if (!existingManager && assignment.data.temporary_password) {
+            setTemporaryCredential({ username, password: assignment.data.temporary_password });
             setCredentialCopied(false);
           }
           setMessage(`Site ${result.data.name} created and manager ${teamMember.name} assigned.`);
@@ -599,7 +672,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
       setSiteManagerTeamId("");
       setNewSiteManager(false);
       setNewTeamManager({ name: "", mobile: "", role: "Manager" });
-      setManagerForm({ name: "", username: "", password: "" });
+      setManagerForm({ name: "", username: "" });
       await refresh(result.data.id);
     } catch (e) { setError(errMsg(e)); }
   };
@@ -612,7 +685,6 @@ export default function SiteConsole({ user, adminOnly = false }) {
       ...current,
       name: member?.name || "",
       username: "",
-      password: "",
     }));
     setNewTeamManager((current) => ({ ...current, name: "" }));
   };
@@ -620,11 +692,10 @@ export default function SiteConsole({ user, adminOnly = false }) {
   const assignManager = async (event) => {
     event.preventDefault();
     try {
-      const body = { ...managerForm };
-      if (!body.password) delete body.password;
-      const username = body.username.trim().toLowerCase();
-      const temporaryPassword = body.password;
-      await api.post(`/sites/${siteId}/manager`, body);
+      const body = { ...managerForm, username: managerForm.username.trim().toLowerCase() };
+      const response = await api.post(`/sites/${siteId}/manager`, body);
+      const temporaryPassword = response.data.temporary_password;
+      const username = response.data.username;
       if (temporaryPassword) {
         setTemporaryCredential({ username, password: temporaryPassword });
         setCredentialCopied(false);
@@ -633,7 +704,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
         setTemporaryCredential(null);
         setMessage("Site manager assigned.");
       }
-      setManagerForm({ name: "", username: "", password: "" });
+      setManagerForm({ name: "", username: "" });
       await refresh(siteId);
     } catch (e) { setError(errMsg(e)); }
   };
@@ -717,7 +788,9 @@ export default function SiteConsole({ user, adminOnly = false }) {
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 <label className="text-sm">Site name
                   <input className={field} placeholder="Site name" required value={siteForm.name}
+                    aria-invalid={newSiteNameDuplicate}
                     onChange={(e) => setSiteForm({ ...siteForm, name: e.target.value })} />
+                  {newSiteNameDuplicate && <span className="mt-1 block text-xs text-red-700">A site with this name already exists.</span>}
                 </label>
                 <label className="text-sm">Short code
                   <input className={field} placeholder="e.g. NGP" required value={siteForm.code}
@@ -725,7 +798,9 @@ export default function SiteConsole({ user, adminOnly = false }) {
                 </label>
                 <label className="text-sm">Location (optional)
                   <input className={field} placeholder="Street, area, or landmark" value={siteForm.location}
+                    aria-invalid={newSiteLocationDuplicate}
                     onChange={(e) => setSiteForm({ ...siteForm, location: e.target.value })} />
+                  {newSiteLocationDuplicate && <span className="mt-1 block text-xs text-red-700">A site with this location already exists.</span>}
                 </label>
                 <label className="text-sm">Time zone
                   <input className={field} aria-label="IANA time zone" value={siteForm.timezone}
@@ -749,8 +824,8 @@ export default function SiteConsole({ user, adminOnly = false }) {
               {newSiteManager && <div className="space-y-3 rounded-lg border border-line bg-canvas p-3">
                 <h3 className="font-semibold">Add manager to Office Team</h3>
                 <div className="grid gap-3 md:grid-cols-3">
-                  <label className="text-sm">Manager name
-                    <input className={field} required value={newTeamManager.name}
+                  <label className="text-sm">Manager full name
+                    <input className={field} placeholder="First and last name" autoComplete="name" maxLength={100} required value={newTeamManager.name}
                       onChange={(e) => {
                         setNewTeamManager({ ...newTeamManager, name: e.target.value });
                         setManagerForm({ ...managerForm, name: e.target.value });
@@ -775,23 +850,19 @@ export default function SiteConsole({ user, adminOnly = false }) {
               {(newSiteManager || (siteManagerTeamId && siteManagerTeamId !== "__new__"
                 && !managers.some((manager) => manager.team_member_id === siteManagerTeamId))) && (
                 <div className="grid gap-3 md:grid-cols-2">
-                  <label className="text-sm">Manager login ID
-                    <input className={field} aria-label="Manager login ID" required minLength={3} value={managerForm.username}
+                  <label className="text-sm">Manager ID (set by admin)
+                    <input className={field} aria-label="Manager login ID" placeholder="Enter the ID to give this manager" required maxLength={60} value={managerForm.username}
                       onChange={(e) => setManagerForm({ ...managerForm, username: e.target.value })} />
-                  </label>
-                  <label className="text-sm">Manager password
-                    <input className={field} aria-label="Manager password" type="password" required value={managerForm.password}
-                      onChange={(e) => setManagerForm({ ...managerForm, password: e.target.value })} />
                   </label>
                 </div>
               )}
               {(newSiteManager || (siteManagerTeamId && siteManagerTeamId !== "__new__"
                 && !managers.some((manager) => manager.team_member_id === siteManagerTeamId))) && (
                 <p className="text-xs text-muted">
-                  Any non-empty password is accepted. Short passwords are easier to guess; the password is stored as a hash and shown once after creation.
+                  The ID is saved in lowercase; spaces and punctuation are allowed, but slashes and control characters are not. A secure temporary password is generated automatically and shown once after creation.
                 </p>
               )}
-              <Btn type="submit">Create site</Btn>
+              <Btn type="submit" disabled={newSiteNameDuplicate || newSiteLocationDuplicate}>Create site</Btn>
             </form>
           </Card>
           {siteId && <Card className="p-4">
@@ -799,17 +870,21 @@ export default function SiteConsole({ user, adminOnly = false }) {
             <form onSubmit={saveSite} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               <label className="text-xs font-medium text-muted">Site name
                 <input className={field} aria-label="Site name" required value={siteEdit.name}
+                  aria-invalid={editedSiteNameDuplicate}
                   onChange={(e) => {
                     siteEditDirtyFields.current.name = true;
                     setSiteEdit({ ...siteEdit, name: e.target.value });
                   }} />
+                {editedSiteNameDuplicate && <span className="mt-1 block text-xs text-red-700">A site with this name already exists.</span>}
               </label>
               <label className="text-xs font-medium text-muted">Location (optional)
                 <input className={field} aria-label="Location" placeholder="Street, area, or landmark" value={siteEdit.location}
+                  aria-invalid={editedSiteLocationDuplicate}
                   onChange={(e) => {
                     siteEditDirtyFields.current.location = true;
                     setSiteEdit({ ...siteEdit, location: e.target.value });
                   }} />
+                {editedSiteLocationDuplicate && <span className="mt-1 block text-xs text-red-700">A site with this location already exists.</span>}
               </label>
               <label className="text-xs font-medium text-muted">City (optional)
                 <input className={field} aria-label="City" placeholder="City" value={siteEdit.city}
@@ -825,7 +900,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
                     setSiteEdit({ ...siteEdit, timezone: e.target.value });
                   }} />
               </label>
-              <Btn type="submit">Save site</Btn>
+              <Btn type="submit" disabled={editedSiteNameDuplicate || editedSiteLocationDuplicate}>Save site</Btn>
             </form>
             {sites.find((site) => site.id === siteId)?.is_default && <div className="mt-3">
               <Btn variant="s" onClick={previewMigration}>Preview legacy-data migration</Btn>
@@ -840,11 +915,150 @@ export default function SiteConsole({ user, adminOnly = false }) {
         </div>
       </details>
 
-      <details className="rounded-xl border border-line bg-white p-4">
-        <summary className="min-h-11 cursor-pointer content-center font-semibold text-brand-700">Booking settings</summary>
+      <details open className="rounded-xl border border-line bg-white p-4">
+        <summary className="min-h-11 cursor-pointer content-center font-semibold text-brand-700">
+          Booking settings
+        </summary>
         {siteId ? <form onSubmit={saveReceiptControls} className="mt-3 space-y-4">
           <Card className="space-y-4 p-4">
-            <h2 className="text-lg font-semibold">Receipt controls</h2>
+            <div className="rounded-lg bg-brand-50 p-3">
+              <h2 className="font-semibold">Set up receipts for {sites.find((site) => site.id === siteId)?.name || "this site"}</h2>
+              <p className="mt-1 text-sm text-muted">
+                Choose how printed receipts look, what staff can enter, and which goods are suggested. Save once after making changes.
+              </p>
+            </div>
+            <section className="booking-settings-group space-y-3">
+              <div>
+                <h3 className="font-semibold">1. Printed receipt header</h3>
+                <p className="mt-1 text-sm text-muted">
+                  These details appear on receipts for this site. The company name and logo identify the business; branch phone lines and legal text appear in the header.
+                </p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-sm">Company name on receipt
+                  <input className={field} aria-label="Receipt company name" maxLength={120}
+                    value={receiptBranding.company_name}
+                    onChange={(event) => setReceiptBranding((current) => ({
+                      ...current, company_name: event.target.value,
+                    }))} />
+                </label>
+                <label className="text-sm">Court / jurisdiction line
+                  <input className={field} aria-label="Receipt legal line" maxLength={160}
+                    placeholder="Optional printed legal heading"
+                    value={receiptBranding.legal_line}
+                    onChange={(event) => setReceiptBranding((current) => ({
+                      ...current, legal_line: event.target.value,
+                    }))} />
+                </label>
+                <label className="text-sm sm:col-span-2">Printed company address
+                  <input className={field} aria-label="Receipt company address" maxLength={300}
+                    value={receiptBranding.address}
+                    onChange={(event) => setReceiptBranding((current) => ({
+                      ...current, address: event.target.value,
+                    }))} />
+                </label>
+              </div>
+              <div className="rounded-lg border border-line p-3">
+                <h4 className="text-sm font-semibold">Logo shown on printed receipts</h4>
+                <p className="mt-1 text-xs text-muted">
+                  Upload a clear image file. It is saved to the application and shown in the receipt header.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <span className="grid h-16 w-28 place-items-center border border-line bg-white p-1">
+                    {receiptBranding.logo_url && !receiptLogoFailed
+                      ? <img src={assetUrl(receiptBranding.logo_url)} alt="Receipt logo preview"
+                        className="max-h-full max-w-full object-contain"
+                        onError={() => setReceiptLogoFailed(true)} />
+                      : <span className="font-bold">{(receiptBranding.company_name || siteId || "LR").slice(0, 2)}</span>}
+                  </span>
+                  <label className="text-sm">
+                    <span className="sr-only">Upload receipt logo</span>
+                    <input type="file" accept=".jpg,.jpeg,.png,.webp,.gif" aria-label="Upload receipt logo"
+                      disabled={!siteId || receiptLogoUploading} onChange={uploadReceiptLogo} />
+                  </label>
+                  {receiptLogoUploading && <span role="status" className="text-sm">Uploading logo…</span>}
+                  {receiptBranding.logo_url && <button type="button" className="btn-s min-h-9"
+                    onClick={() => {
+                      setReceiptBranding((current) => ({ ...current, logo_url: "" }));
+                      setReceiptLogoFailed(false);
+                    }}>Remove logo</button>}
+                </div>
+              </div>
+              <section className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-sm font-semibold">Branch phone lines (up to three)</h4>
+                    <p className="mt-1 text-xs text-muted">
+                      Each line prints at the upper-right. Enter a branch name and its phone number; a second number and labels such as (O) or (G) are optional.
+                    </p>
+                  </div>
+                </div>
+                {receiptBranding.contacts.map((contact, index) => <div key={`receipt-contact-${index}`}
+                  className="grid items-end gap-2 rounded-lg border border-line p-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_0.65fr_1fr_0.65fr]">
+                  <h5 className="text-sm font-semibold lg:col-span-5">Branch contact {index + 1}</h5>
+                  <label className="text-xs text-muted">Branch / office
+                    <input className={field} aria-label={`Receipt branch name ${index + 1}`} maxLength={60}
+                      value={contact.label} onChange={(event) => setReceiptBranding((current) => ({
+                        ...current, contacts: current.contacts.map((item, itemIndex) => itemIndex === index
+                          ? { ...item, label: event.target.value } : item),
+                      }))} />
+                  </label>
+                  <label className="text-xs text-muted">Contact number
+                    <input className={field} aria-label={`Receipt branch phone ${index + 1}`} maxLength={40}
+                      value={contact.phone} onChange={(event) => setReceiptBranding((current) => ({
+                        ...current, contacts: current.contacts.map((item, itemIndex) => itemIndex === index
+                          ? { ...item, phone: event.target.value } : item),
+                      }))} />
+                  </label>
+                  <label className="text-xs text-muted">Number label (optional)
+                    <input className={field} aria-label={`Receipt branch phone label ${index + 1}`} maxLength={12}
+                      placeholder="(O)"
+                      value={contact.phone_label} onChange={(event) => setReceiptBranding((current) => ({
+                        ...current, contacts: current.contacts.map((item, itemIndex) => itemIndex === index
+                          ? { ...item, phone_label: event.target.value } : item),
+                      }))} />
+                  </label>
+                  <label className="text-xs text-muted">Second number (optional)
+                    <input className={field} aria-label={`Receipt branch alternate phone ${index + 1}`} maxLength={40}
+                      value={contact.alternate_phone} onChange={(event) => setReceiptBranding((current) => ({
+                        ...current, contacts: current.contacts.map((item, itemIndex) => itemIndex === index
+                          ? { ...item, alternate_phone: event.target.value } : item),
+                      }))} />
+                  </label>
+                  <label className="text-xs text-muted">Second number label (optional)
+                    <input className={field} aria-label={`Receipt branch alternate phone label ${index + 1}`} maxLength={12}
+                      placeholder="(G)"
+                      value={contact.alternate_phone_label} onChange={(event) => setReceiptBranding((current) => ({
+                        ...current, contacts: current.contacts.map((item, itemIndex) => itemIndex === index
+                          ? { ...item, alternate_phone_label: event.target.value } : item),
+                      }))} />
+                  </label>
+                </div>)}
+              </section>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-sm">Terms / conditions
+                  <textarea className={`${field} min-h-20`} aria-label="Receipt terms" maxLength={500}
+                    value={receiptBranding.terms}
+                    onChange={(event) => setReceiptBranding((current) => ({
+                      ...current, terms: event.target.value,
+                    }))} />
+                </label>
+                <label className="text-sm">Footer line (optional)
+                  <textarea className={`${field} min-h-20`} aria-label="Receipt footer" maxLength={300}
+                    value={receiptBranding.footer}
+                    onChange={(event) => setReceiptBranding((current) => ({
+                      ...current, footer: event.target.value,
+                    }))} />
+                </label>
+              </div>
+            </section>
+            <section className="booking-settings-group space-y-3">
+              <div>
+                <h3 className="font-semibold">2. Receipt defaults</h3>
+                <p className="mt-1 text-sm text-muted">
+                  Set the print language, Hindi conversion, default fee, and when unpaid bookings become overdue.
+                </p>
+              </div>
             <label className="flex items-start gap-3 text-sm">
               <input type="checkbox" className="mt-1 h-4 w-4 accent-brand-700"
                 checked={receiptControls.hindi_conversion_enabled}
@@ -855,7 +1069,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
                 <span className="mt-1 block text-muted">Receipt entry and editing remain in English. Disabling conversion applies to new and edited receipts.</span>
               </span>
             </label>
-            <label className="block max-w-xs text-sm">Receipt print language
+            <label className="block max-w-xs text-sm">Language printed on new receipts
               <select className={field} value={receiptControls.receipt_language}
                 onChange={(event) => setReceiptControls((current) => ({
                   ...current, receipt_language: event.target.value,
@@ -864,13 +1078,13 @@ export default function SiteConsole({ user, adminOnly = false }) {
                 <option value="english">English</option>
               </select>
             </label>
-            <label className="block max-w-xs text-sm">Receipt fee (₹)
+            <label className="block max-w-xs text-sm">Receipt fee (₹) — default for new receipts
               <input className={field} type="number" min="0" step="0.01" required
                 value={receiptControls.receipt_fee}
                 onChange={(event) => setReceiptControls((current) => ({
                   ...current, receipt_fee: event.target.value,
                 }))} />
-              <span className="mt-1 block text-muted">Applies to receipts created after this setting is saved. Existing receipts keep their recorded fee.</span>
+              <span className="mt-1 block text-muted">Used for new receipts after you save. Existing receipts keep their current fee.</span>
             </label>
             <label className="block max-w-xs text-sm">Overdue after (days)
               <input className={field} type="number" min="1" max="3650" step="1" required
@@ -878,22 +1092,25 @@ export default function SiteConsole({ user, adminOnly = false }) {
                 onChange={(event) => setReceiptControls((current) => ({
                   ...current, overdue_after_days: event.target.value,
                 }))} />
-              <span className="mt-1 block text-muted">Outstanding booking payments are overdue when they are unpaid for this many days or more.</span>
+              <span className="mt-1 block text-muted">A payment becomes overdue after this many days without payment.</span>
             </label>
+            </section>
             <section className="space-y-3 border-t border-line pt-4">
               <div>
-                <h3 className="font-semibold">Addresses on the printed receipt</h3>
+                <h3 className="font-semibold">3. Optional contact details</h3>
                 <p className="mt-1 text-sm text-muted">
-                  Choose independently whether each address field can be entered and appears on printed receipts.
+                  These switches apply to every site. Turn a detail on to let staff enter it and include it on printed receipts.
                 </p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 {[
                   ["sender_address_enabled", "Include sender address in receipt", "Collects the optional sender address during entry and prints it on the receipt."],
                   ["receiver_address_enabled", "Include receiver address in receipt", "Collects the optional receiver address during entry and prints it on the receipt."],
+                  ["receiver_phone_enabled", "Include receiver phone in receipt", "Collects the optional receiver phone during entry and prints it on the receipt."],
                 ].map(([key, label, hint]) => <label key={key} className="flex items-start gap-3 rounded-lg border border-line p-3 text-sm">
                 <input type="checkbox" aria-label={label} className="mt-0.5 h-4 w-4 accent-brand-700"
                   checked={receiptControls[key]}
+                  disabled={!owner}
                   onChange={(event) => setReceiptControls((current) => ({
                     ...current, [key]: event.target.checked,
                   }))} />
@@ -901,16 +1118,16 @@ export default function SiteConsole({ user, adminOnly = false }) {
               </label>)}
               </div>
             </section>
-            <section className="space-y-3 border-t border-line pt-4">
+            <section className="booking-settings-group space-y-3">
               <div>
-                <h3 className="font-semibold">Goods suggestions</h3>
+                <h3 className="font-semibold">4. Suggested goods names</h3>
                 <p className="mt-1 text-sm text-muted">
-                  Manage the options shown while entering a receipt. Staff can still type any goods description.
+                  These options appear in the goods field while creating a receipt. Staff can always type a different name.
                 </p>
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <input className={field} aria-label="New goods suggestion" maxLength={80}
-                  placeholder="Add a goods name, e.g. स्थानीय अनाज"
+                  placeholder="Type a goods name, e.g. स्थानीय अनाज"
                   value={goodsSuggestionDraft}
                   onChange={(event) => setGoodsSuggestionDraft(event.target.value)}
                   onKeyDown={(event) => {
@@ -948,26 +1165,18 @@ export default function SiteConsole({ user, adminOnly = false }) {
           {siteId && <Card className="p-4">
             <h2 className="mb-3 font-semibold">Assign or replace the site manager</h2>
             <form onSubmit={assignManager} className="grid gap-3 md:grid-cols-4">
-              <label className="text-sm">Manager name
-                <input className={field} placeholder="Manager name" required value={managerForm.name}
+              <label className="text-sm">Manager full name
+                <input className={field} placeholder="First and last name" autoComplete="name" maxLength={100} required value={managerForm.name}
                   onChange={(e) => setManagerForm({ ...managerForm, name: e.target.value })} />
               </label>
-              <label className="text-sm">Manager ID
-                <input className={field} placeholder="Username" required value={managerForm.username}
+              <label className="text-sm">Manager ID (set by admin)
+                <input className={field} placeholder="Enter the ID to give this manager" required maxLength={60} value={managerForm.username}
                   onChange={(e) => setManagerForm({ ...managerForm, username: e.target.value })} />
-              </label>
-              <label className="text-sm">Manager password
-                <input className={field} type="password" aria-label="Manager password for assignment"
-                  placeholder={managers.some((manager) => manager.username === managerForm.username.trim().toLowerCase())
-                    ? "Leave blank to keep current" : "Required for a new login"}
-                  required={!managers.some((manager) => manager.username === managerForm.username.trim().toLowerCase())}
-                  autoComplete="new-password" value={managerForm.password}
-                  onChange={(e) => setManagerForm({ ...managerForm, password: e.target.value })} />
               </label>
               <Btn type="submit">Assign manager</Btn>
             </form>
             <p className="mt-2 text-xs text-muted">
-              For a new manager, use any non-empty password and share it securely. It is stored as a hash and shown once after assignment. Replacing a manager revokes that site’s access without removing historical records.
+              Enter the manager’s first and last name and the ID you choose for their login. IDs are saved in lowercase; spaces and punctuation are allowed, but slashes and control characters are not. A secure temporary password is generated and shown once for a new account. Replacing a manager revokes that site’s access without removing historical records.
             </p>
           </Card>}
           <Card className="p-4">
@@ -1041,7 +1250,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
                   <strong className="block">Temporary credential — copy it now</strong>
                   <p className="mt-1 text-sm">Manager ID: <code>{temporaryCredential.username}</code></p>
                   <p className="mt-1 break-all text-sm">Temporary password: <code>{temporaryCredential.password}</code></p>
-                  <p className="mt-1 text-xs text-muted">Held only in this page’s memory; it is not returned by the server.</p>
+                  <p className="mt-1 text-xs text-muted">Held only in this page’s memory. Copy it now because it will not be shown again.</p>
                 </div>
                 <button type="button" className="rounded p-1 text-muted hover:text-ink" aria-label="Dismiss temporary credential"
                   onClick={() => setTemporaryCredential(null)}><X size={18} /></button>
@@ -1339,13 +1548,13 @@ export default function SiteConsole({ user, adminOnly = false }) {
               loadBoardLrs(siteId, e.target.value);
             }}>
               <option value="">Choose a trip</option>
-              {tripRows.map((trip) => <option key={trip.id} value={trip.id}>{trip.trip_ref} · {trip.operating_date}</option>)}
+              {tripRows.map((trip) => <option key={trip.id} value={trip.id}>{trip.trip_ref} · {dmy(trip.operating_date)}</option>)}
             </select>
           </label>
         </div>
         {selectedBoardTrip && <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-canvas p-3 text-sm">
           <span><strong>{selectedBoardTrip.trip_ref}</strong> · {selectedBoardTrip.truck_no} · {selectedBoardTrip.driver_name}</span>
-          <span>{selectedBoardTrip.operating_date} · <strong>{selectedBoardTrip.status}</strong></span>
+          <span>{dmy(selectedBoardTrip.operating_date)} · <strong>{selectedBoardTrip.status}</strong></span>
           <Link className="min-h-11 content-center text-brand-700 underline" to={`/sites/${siteId}/trips/${selectedBoardTrip.id}`}>Open trip</Link>
         </div>}
         {!selectedBoardTrip && <p className="text-sm text-muted">Select a trip to view its LR context.</p>}
@@ -1442,7 +1651,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
             to={`/sites/${siteId}/trips/${trip.id}`}>
             <div className="flex items-start justify-between gap-2"><strong>{trip.trip_ref}</strong><span className="text-xs">{trip.status}</span></div>
             <p className="mt-1 break-words text-sm">{trip.truck_no} · {trip.driver_name}</p>
-            <p className="mt-1 text-xs text-muted">{trip.operating_date}</p>
+            <p className="mt-1 text-xs text-muted">{dmy(trip.operating_date)}</p>
           </Link>)}</div>}
         {tripRows.length < tripTotal && <Btn variant="s" className="mt-3" onClick={loadMoreTrips}>Load more bookings</Btn>}
       </Card>}

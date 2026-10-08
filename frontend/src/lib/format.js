@@ -11,6 +11,25 @@ export const dmy = (iso) => {
   if (!d) return iso;
   return `${d}-${m}-${y}`;
 };
+export const dmyDateTime = (value, includeSeconds = false) => {
+  if (!value) return "—";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const parts = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    ...(includeSeconds ? { second: "2-digit" } : {}),
+    hour12: true,
+    timeZoneName: "short",
+  }).formatToParts(date);
+  const part = (type) => parts.find((item) => item.type === type)?.value || "";
+  const time = `${part("hour")}:${part("minute")}${includeSeconds ? `:${part("second")}` : ""} ${part("dayPeriod")}`;
+  return `${part("day")}-${part("month")}-${part("year")}, ${time} ${part("timeZoneName")}`;
+};
 export const todayISO = () => {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;

@@ -1,8 +1,9 @@
 """Local disk uploads so logos and photos work without a cloud key."""
+import os
 import uuid
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent / "data" / "uploads"
+ROOT = Path(os.environ.get("FMS_UPLOADS_DIR") or Path(__file__).resolve().parent / "data" / "uploads")
 APP_NAME = "fleet-manager"
 MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp",
         "gif": "image/gif", "pdf": "application/pdf"}

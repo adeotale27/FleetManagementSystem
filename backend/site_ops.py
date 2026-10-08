@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import re
+import secrets
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from difflib import SequenceMatcher
@@ -83,14 +84,21 @@ class ReceiptControls(StrictModel):
     receipt_language: Literal["hindi", "english"] = "hindi"
     sender_address_enabled: bool = True
     receiver_address_enabled: bool = True
+    receiver_phone_enabled: bool = True
     receipt_fee: Decimal = Field(default=Decimal("2.00"), ge=0, decimal_places=2)
     overdue_after_days: int = Field(default=30, ge=1, le=3650)
 
 
+class BookingReceiptVisibility(StrictModel):
+    sender_address_enabled: bool = True
+    receiver_address_enabled: bool = True
+    receiver_phone_enabled: bool = True
+
+
 class ManagerAssignment(StrictModel):
     name: str = Field(min_length=2, max_length=100)
-    username: str = Field(min_length=3, max_length=60)
-    password: Optional[str] = Field(default=None, min_length=1)
+    username: str = Field(min_length=1, max_length=60)
+    password: Optional[str] = None
     team_member_id: Optional[str] = Field(default=None, min_length=1, max_length=100)
     permissions: list[str] = Field(default_factory=lambda: list(DEFAULT_MANAGER_PERMISSIONS))
 
@@ -375,6 +383,18 @@ def _receipt_controls(site):
         raise HTTPException(500, "Receipt controls are invalid; ask an administrator to review site settings") from error
 
 
+def _booking_receipt_visibility(stored, sites):
+    if stored and isinstance(stored.get("controls"), dict):
+        return BookingReceiptVisibility.model_validate(stored["controls"]).model_dump(mode="json")
+    return {
+        field: all(
+            (site.get("config") or {}).get("receipt_controls", {}).get(field) is not False
+            for site in sites
+        )
+        for field in BookingReceiptVisibility.model_fields
+    }
+
+
 def _normalize_label(value, field, maximum=160):
     if not isinstance(value, str):
         raise HTTPException(422, f"{field} must be text")
@@ -398,6 +418,23 @@ def _normalize_code(value):
     if not re.fullmatch(r"[A-Z0-9]{2,8}", code):
         raise HTTPException(422, "Site code must contain 2–8 letters or numbers")
     return code
+
+
+def _site_identity_key(value):
+    return " ".join(str(value or "").split()).casefold()
+
+
+async def _ensure_unique_site_identity(business_id, name, location, exclude_site_id=None):
+    sites = await db.sites.find({"business_id": business_id}).to_list(500)
+    name_key = _site_identity_key(name)
+    location_key = _site_identity_key(location)
+    for existing in sites:
+        if existing.get("_id") == exclude_site_id:
+            continue
+        if _site_identity_key(existing.get("name")) == name_key:
+            raise HTTPException(409, "A site with that name already exists in this business")
+        if location_key and _site_identity_key(existing.get("location")) == location_key:
+            raise HTTPException(409, "A site with that location already exists in this business")
 
 
 def _decimal(value, field, allow_none=False):
@@ -499,9 +536,10 @@ def _charge_editor_marker(record: dict[str, Any]) -> str:
 
 def _entry_by(record: dict[str, Any]) -> str:
     role = record.get("created_by_role")
-    label = "Admin" if role in {"owner", "admin"} else "Manager" if role == "site_manager" else ""
+    label = "A" if role in {"owner", "admin"} else "M" if role == "site_manager" else ""
     name = str(record.get("created_by_name") or "").strip()
-    return f"{label} - {name}" if label and name else ""
+    first_name = name.split(maxsplit=1)[0] if name else ""
+    return f"{label}-{first_name}" if label and first_name else (label if label else "")
 
 
 def _hindi_digits(value: Any) -> str:
@@ -513,6 +551,7 @@ def _ledger_hindi_text(value: Any) -> str:
     if not text:
         return text
     common_goods = {
+        "saman": "सामान", "dag": "डाग",
         "auto": "ऑटो", "truck": "ट्रक", "cement": "सीमेंट",
         "gadi": "गाड़ी", "gaadi": "गाड़ी", "bhada": "भाड़ा", "bhaada": "भाड़ा",
         "gadi bhada": "गाड़ी भाड़ा", "gaadi bhada": "गाड़ी भाड़ा",
@@ -864,6 +903,34 @@ async def list_sites(u=Depends(site_user)):
     return [_doc_for_user(s, u) for s in sites]
 
 
+@router.get("/booking/receipt-controls")
+async def read_booking_receipt_visibility(u=Depends(site_user)):
+    _tenant_id(u)
+    stored = await db.settings.find_one({"_id": "booking_receipt_visibility"})
+    sites = await db.sites.find({}, {"config.receipt_controls": 1}).to_list(500)
+    try:
+        return _booking_receipt_visibility(stored, sites)
+    except ValidationError as error:
+        raise HTTPException(
+            500, "Global booking receipt controls are invalid; ask an administrator to review settings",
+        ) from error
+
+
+@router.put("/booking/receipt-controls")
+async def update_booking_receipt_visibility(
+    body: BookingReceiptVisibility, u=Depends(site_user),
+):
+    _owner(u)
+    _tenant_id(u)
+    controls = body.model_dump(mode="json")
+    await db.settings.update_one(
+        {"_id": "booking_receipt_visibility"},
+        {"$set": {"controls": controls, "updated_at": now_iso()}},
+        upsert=True,
+    )
+    return controls
+
+
 @router.post("/sites")
 async def create_site(body: SiteCreate, u=Depends(site_user)):
     _owner(u)
@@ -871,14 +938,19 @@ async def create_site(body: SiteCreate, u=Depends(site_user)):
     business_id = _tenant_id(u)
     code = _normalize_code(body.code)
     timezone_name = _valid_timezone(body.timezone)
+    name = _normalize_label(body.name, "Site name", 100)
+    location = " ".join(body.location.split())
+    if location:
+        location = _normalize_label(location, "Location", 250)
+    await _ensure_unique_site_identity(business_id, name, location)
     existing = await db.sites.find_one({"business_id": business_id, "code_normalized": code})
     if existing:
         raise HTTPException(409, "That short code is already used by another site in this business")
     first_site = await db.sites.count_documents({"business_id": business_id}) == 0
     site = {
         "_id": new_id(), "business_id": business_id,
-        "name": _normalize_label(body.name, "Site name", 100), "code": code,
-        "code_normalized": code, "location": " ".join(body.location.split()),
+        "name": name, "code": code,
+        "code_normalized": code, "location": location,
         "city": " ".join(body.city.split()), "timezone": timezone_name,
         "status": "Active", "config": _site_config_with_receipt_controls(body.config),
         "manager_username": None,
@@ -909,6 +981,13 @@ async def update_site(site_id: str, body: SiteUpdate, u=Depends(site_user)):
     for key in ("name", "location", "city"):
         if key in changes and changes[key] is not None:
             changes[key] = _normalize_label(changes[key], key, 250 if key == "location" else 100) if changes[key] else ""
+    if "name" in changes or "location" in changes:
+        await _ensure_unique_site_identity(
+            str(u["tenant_id"]),
+            changes.get("name", site.get("name", "")),
+            changes.get("location", site.get("location", "")),
+            exclude_site_id=site_id,
+        )
     changes.pop("code", None)
     changes.pop("business_id", None)
     changes["updated_at"] = now_iso()
@@ -929,8 +1008,8 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
     business_id = _tenant_id(u)
     actor_login = str(u.get("username") or u.get("_id") or "")
     username = body.username.strip().lower()
-    if not re.fullmatch(r"[a-z0-9._-]{3,60}", username):
-        raise HTTPException(422, "Username may contain lowercase letters, numbers, dot, underscore, and hyphen")
+    if not re.fullmatch(r"[^/\\\x00-\x1f\x7f]{1,60}", username):
+        raise HTTPException(422, "Manager ID must be 1–60 characters and cannot include slashes or control characters")
     permissions = sorted(set(body.permissions))
     if not permissions or set(permissions) - MANAGER_PERMISSIONS:
         raise HTTPException(422, "One or more requested manager permissions are not allowed")
@@ -953,7 +1032,7 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
         raise HTTPException(409, "That username already belongs to another account")
     password = body.password or ""
     if not existing and not password:
-        raise HTTPException(422, "A password is required for a new manager")
+        password = secrets.token_urlsafe(24)
     if existing:
         update_fields = {
             "name": _normalize_label(body.name, "Manager name", 100),
@@ -994,7 +1073,10 @@ async def assign_site_manager(site_id: str, body: ManagerAssignment, u=Depends(s
                  new={"username": username, "permissions": permissions})
     if existing and password:
         await _audit(site, u, "manager.password_reset", "manager", username)
-    return {"site_id": site_id, "username": username, "name": body.name, "permissions": permissions}
+    result = {"site_id": site_id, "username": username, "name": body.name, "permissions": permissions}
+    if not existing:
+        result["temporary_password"] = password
+    return result
 
 
 @router.get("/sites/managers")
@@ -4032,7 +4114,7 @@ def _excel_safe(value):
     return value
 
 
-def _xlsx_response(filename, site_name, date_range, sheets):
+def _xlsx_response(filename, site_name, date_range, sheets, subtitle=None):
     workbook = Workbook()
     workbook.remove(workbook.active)
     for title, headers, rows, widths in sheets:
@@ -4044,8 +4126,8 @@ def _xlsx_response(filename, site_name, date_range, sheets):
         heading.alignment = Alignment(vertical="center")
         sheet.row_dimensions[1].height = 28
         sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
-        subtitle = sheet.cell(2, 1, f"Ledger period: {date_range}")
-        subtitle.font = Font(name="Calibri", size=11, italic=True, color="334155")
+        subtitle_cell = sheet.cell(2, 1, subtitle or f"Ledger period: {date_range}")
+        subtitle_cell.font = Font(name="Calibri", size=11, italic=True, color="334155")
         header_row = 4
         for column, label in enumerate(headers, start=1):
             cell = sheet.cell(header_row, column, label)
@@ -4380,11 +4462,19 @@ async def export_site_ledger_csv(
     ).limit(10001).to_list(10001)
     if len(lrs) > 10000:
         raise HTTPException(413, "This ledger contains more than 10,000 receipts; export a shorter period")
+    selected_trip_id = trip_id
     trips = {}
-    for trip_id in {row["trip_id"] for row in lrs}:
-        trip = await db.site_trips.find_one(_scoped(str(site["business_id"]), site_id, _id=trip_id))
+    for ledger_trip_id in {row["trip_id"] for row in lrs}:
+        trip = await db.site_trips.find_one(
+            _scoped(str(site["business_id"]), site_id, _id=ledger_trip_id),
+        )
         if trip:
-            trips[trip_id] = trip
+            trips[ledger_trip_id] = trip
+    selected_trip = trips.get(selected_trip_id) if selected_trip_id else None
+    if selected_trip_id and not selected_trip:
+        selected_trip = await db.site_trips.find_one(
+            _scoped(str(site["business_id"]), site_id, _id=selected_trip_id),
+        )
     columns = (
         "Date", "Trip number", "LR number", "Sender", "Sender address",
         "Receiver", "Receiver address", "Goods", "Quantity", "Bhada",
@@ -4520,12 +4610,19 @@ async def export_site_ledger_xlsx(
     to_date: str = Query(...),
     trip_id: Optional[str] = None,
     u=Depends(site_user),
+    columns: Optional[str] = None,
 ):
     site = await _site_for_user(site_id, u, "lrs:read")
     if u.get("role") == "site_manager" and "ledger:export" not in (
         (u.get("site_permissions") or {}).get(site_id, [])
     ):
         raise HTTPException(403, "Ledger export permission is required for this site")
+    selected_trip_id = trip_id
+    selected_trip = None
+    if selected_trip_id:
+        selected_trip = await db.site_trips.find_one(_scoped(
+            str(site["business_id"]), site_id, _id=selected_trip_id,
+        ))
     start = _validate_iso_date(from_date).isoformat()
     end = _validate_iso_date(to_date).isoformat()
     if start > end:
@@ -4554,8 +4651,60 @@ async def export_site_ledger_xlsx(
             trips[trip_id] = trip
 
     can_read_finances = _can_view_site_lr_charges(u, site_id)
+    requested_columns = None
+    column_labels = {
+        "date": "दिनांक",
+        "receipt": "रसीद नंबर",
+        "sender": "भेजने वाला",
+        "senderAddress": "भेजने वाले का पता",
+        "senderPhone": "भेजने वाले का फ़ोन",
+        "receiver": "प्राप्तकर्ता",
+        "receiverAddress": "प्राप्तकर्ता का पता",
+        "receiverPhone": "प्राप्तकर्ता का फ़ोन",
+        "receiverCity": "प्राप्तकर्ता का शहर",
+        "goods": "माल एवं मात्रा",
+        "goodsType": "माल का प्रकार",
+        "goodsDescription": "माल का विवरण",
+        "quantity": "कुल मात्रा",
+        "bhada": "भाड़ा",
+        "hamali": "हमाली",
+        "receiptFee": "रसीद शुल्क",
+        "totalAmount": "कुल रकम",
+        "amountReceived": "प्राप्त रकम",
+        "balanceDue": "बाकी रकम",
+        "paymentStatus": "भुगतान की स्थिति",
+        "amountPaid": "Amount paid",
+        "tripNumber": "ट्रिप नंबर",
+        "truckNumber": "ट्रक नंबर",
+        "driver": "ड्राइवर",
+        "site": "साइट",
+        "createdAt": "बनाने का समय",
+    }
+    finance_columns = {
+        "bhada", "hamali", "receiptFee", "totalAmount", "amountReceived",
+        "balanceDue", "paymentStatus",
+    }
+    if columns is not None:
+        if len(columns) > 500:
+            raise HTTPException(422, "Too many ledger export columns")
+        selected_columns = columns.split(",")
+        if (not selected_columns or len(selected_columns) != len(set(selected_columns))
+                or any(key not in column_labels and key != "enteredBy" for key in selected_columns)):
+            raise HTTPException(422, "Unknown ledger export column")
+        requested_columns = [
+            key for key in selected_columns
+            if key != "enteredBy"
+            and (key not in finance_columns or can_read_finances)
+            and (key != "amountPaid" or u.get("role") == "owner")
+        ]
+        if not requested_columns:
+            raise HTTPException(422, "Select at least one exportable ledger column")
     paid_by_trip = {}
-    if u.get("role") == "owner":
+    if u.get("role") == "owner" or (
+        requested_columns is not None
+        and can_read_finances
+        and {"amountReceived", "balanceDue", "paymentStatus"}.intersection(requested_columns)
+    ):
         for ledger_trip_id in trips:
             paid_by_trip[ledger_trip_id] = await _payments_by_lr(
                 site, ledger_trip_id,
@@ -4576,9 +4725,11 @@ async def export_site_ledger_xlsx(
             totals["rent"] += rent
             totals["hamali"] += hamali
             totals["receipt_fee"] += receipt_fee
-        row_values = (
-            lr.get("receipt_date", lr.get("operating_date", "")),
-            trip.get("trip_ref", ""), lr.get("lr_ref", ""),
+        row_values = (lr.get("receipt_date", lr.get("operating_date", "")),)
+        if not selected_trip_id:
+            row_values += (trip.get("trip_ref", ""),)
+        row_values += (
+            lr.get("lr_ref", ""),
             _ledger_hindi_text(lr.get("sender_name_hindi")),
             _ledger_hindi_text(lr.get("receiver_name_hindi")),
             ", ".join(
@@ -4591,10 +4742,11 @@ async def export_site_ledger_xlsx(
                 ) if part)
                 for line in goods
             ),
+            sum(line.get("quantity", 0) for line in goods),
             rent if can_read_finances else "",
             hamali if can_read_finances else "",
             receipt_fee,
-            _entry_by(lr),
+            rent + hamali + receipt_fee if can_read_finances else "",
         )
         if u.get("role") == "owner":
             paid = paid_by_trip.get(lr["trip_id"], {}).get(lr["_id"], Decimal("0.00"))
@@ -4602,26 +4754,124 @@ async def export_site_ledger_xlsx(
                 "✓" if not lr.get("voided") and lr.get("rent") is not None
                 and paid >= rent + receipt_fee else "",
             )
+        if requested_columns is not None:
+           paid = paid_by_trip.get(lr["trip_id"], {}).get(lr["_id"], Decimal("0.00"))
+           amount_due = rent + receipt_fee if lr.get("rent") is not None else None
+           goods_text = ", ".join(
+               " - ".join(part for part in (
+                   _hindi_digits(line.get("quantity", 0)),
+                   "/".join(goods_part for goods_part in (
+                       _ledger_hindi_text(line.get("type_hindi") or line.get("type")),
+                       _ledger_hindi_text(line.get("description_hindi") or line.get("description")),
+                   ) if goods_part),
+               ) if part)
+               for line in goods
+           )
+           values_by_column = {
+               "date": lr.get("receipt_date", lr.get("operating_date", "")),
+               "receipt": lr.get("lr_ref", ""),
+               "sender": _ledger_hindi_text(lr.get("sender_name_hindi") or lr.get("sender_name")),
+               "senderAddress": _ledger_hindi_text(
+                   lr.get("sender_address_hindi") or lr.get("sender_address")),
+               "senderPhone": lr.get("sender_phone", ""),
+               "receiver": _ledger_hindi_text(lr.get("receiver_name_hindi") or lr.get("receiver_name")),
+               "receiverAddress": _ledger_hindi_text(
+                   lr.get("receiver_address_hindi") or lr.get("receiver_address")),
+               "receiverPhone": lr.get("receiver_phone", ""),
+               "receiverCity": _ledger_hindi_text(lr.get("city_hindi") or lr.get("city")),
+               "goods": goods_text,
+               "goodsType": _ledger_hindi_text(lr.get("goods_type_hindi") or lr.get("goods_type")),
+               "goodsDescription": ", ".join(
+                   _ledger_hindi_text(line.get("description_hindi") or line.get("description"))
+                   for line in goods
+                   if line.get("description_hindi") or line.get("description")
+               ),
+               "quantity": sum(line.get("quantity", 0) for line in goods),
+               "bhada": rent if can_read_finances else "",
+               "hamali": hamali if can_read_finances else "",
+               "receiptFee": receipt_fee if can_read_finances else "",
+               "totalAmount": rent + hamali + receipt_fee if can_read_finances else "",
+               "amountReceived": paid if can_read_finances else "",
+               "balanceDue": max(amount_due - paid, Decimal("0.00"))
+               if can_read_finances and amount_due is not None else "",
+               "paymentStatus": _payment_status(amount_due, paid)
+               if can_read_finances else "",
+               "amountPaid": "✓" if not lr.get("voided") and lr.get("rent") is not None
+               and paid >= amount_due else "",
+               "tripNumber": trip.get("trip_ref", ""),
+               "truckNumber": trip.get("truck_no", ""),
+               "driver": trip.get("driver_name", ""),
+               "site": site.get("name", ""),
+               "createdAt": lr.get("created_at", ""),
+           }
+           row_values = tuple(values_by_column[key] for key in requested_columns)
         ledger_rows.append(row_values)
 
+    if requested_columns is not None:
+        totals_by_column = {
+           "bhada": totals["rent"] if can_read_finances else "",
+           "hamali": totals["hamali"] if can_read_finances else "",
+           "receiptFee": totals["receipt_fee"] if can_read_finances else "",
+           "totalAmount": (
+               f"Grand total: ₹{totals['rent'] + totals['hamali'] + totals['receipt_fee']:.2f}"
+               if can_read_finances else ""
+           ),
+           "amountReceived": "",
+           "balanceDue": "",
+           "paymentStatus": "",
+           "amountPaid": "",
+        }
+        ledger_rows.append(tuple(
+           "कुल (रद्द रसीद छोड़कर)" if index == 0 else totals_by_column.get(key, "")
+           for index, key in enumerate(requested_columns)
+        ))
+        columns = tuple(column_labels[key] for key in requested_columns)
+        width_by_column = {
+           "date": 14, "receipt": 24, "sender": 24, "senderAddress": 32,
+           "senderPhone": 18, "receiver": 24, "receiverAddress": 32,
+           "receiverPhone": 18, "receiverCity": 20, "goods": 48,
+           "goodsType": 24, "goodsDescription": 36, "quantity": 14,
+           "bhada": 14, "hamali": 14, "receiptFee": 14, "totalAmount": 18,
+           "amountReceived": 18, "balanceDue": 18, "paymentStatus": 18,
+           "amountPaid": 14, "tripNumber": 24, "truckNumber": 18,
+           "driver": 24, "site": 24, "createdAt": 24,
+        }
+        widths = tuple(width_by_column[key] for key in requested_columns)
+        filename = f"{site.get('code', site_id)}-ledger-{start}-{end}.xlsx"
+        return _xlsx_response(
+           filename, site.get("name", "Booking ledger"), f"{start} to {end}",
+           [("बही", columns, ledger_rows, widths)],
+           subtitle=(
+               f"Trip number: {selected_trip.get('trip_ref', selected_trip_id)}"
+               if selected_trip_id and selected_trip else None
+           ),
+        )
+
+    leading_columns = 6 + (0 if selected_trip_id else 1)
     total_row = (
-        "कुल (रद्द रसीद छोड़कर)", "", "", "", "", "",
+        ("कुल (रद्द रसीद छोड़कर)",) + ("",) * (leading_columns - 1) + (
         totals["rent"] if can_read_finances else "",
         totals["hamali"] if can_read_finances else "",
         totals["receipt_fee"],
         f"Grand total: ₹{totals['rent'] + totals['hamali'] + totals['receipt_fee']:.2f}"
         if can_read_finances else "",
+        )
     )
     if u.get("role") == "owner":
         total_row += ("",)
     ledger_rows.append(total_row)
 
     filename = f"{site.get('code', site_id)}-ledger-{start}-{end}.xlsx"
-    columns = (
-        "दिनांक", "ट्रिप नंबर", "रसीद नंबर", "भेजने वाला", "प्राप्तकर्ता",
-        "माल एवं मात्रा", "भाड़ा", "हमाली", "रसीद शुल्क", "प्रविष्टि करने वाला",
+    columns = ("दिनांक",)
+    widths = (14,)
+    if not selected_trip_id:
+        columns += ("ट्रिप नंबर",)
+        widths += (24,)
+    columns += (
+        "रसीद नंबर", "भेजने वाला", "प्राप्तकर्ता", "माल एवं मात्रा",
+        "कुल मात्रा", "भाड़ा", "हमाली", "रसीद शुल्क", "कुल रकम",
     )
-    widths = (14, 24, 24, 24, 24, 48, 14, 14, 14, 24)
+    widths += (24, 24, 24, 48, 14, 14, 14, 14, 18)
     if u.get("role") == "owner":
         columns += ("Amount paid",)
         widths += (14,)
@@ -4630,6 +4880,10 @@ async def export_site_ledger_xlsx(
         [
             ("बही", columns, ledger_rows, widths),
         ],
+        subtitle=(
+            f"Trip number: {selected_trip.get('trip_ref', selected_trip_id)}"
+            if selected_trip_id and selected_trip else None
+        ),
     )
 
 

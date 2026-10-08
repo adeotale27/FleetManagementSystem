@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Download, Fuel, Plus } from "lucide-react";
 import { useMaster, useFetch } from "../lib/hooks";
-import { money, dmy } from "../lib/format";
+import { money, dmy, dmyDateTime } from "../lib/format";
 import { exportCSV } from "../lib/export";
 import MasterForm from "../components/MasterForm";
 import {
@@ -146,7 +146,7 @@ export default function Vehicles() {
                     { key: "location", label: "Current Location" },
                     { key: "speed", label: "Speed (km/h)", right: true },
                     { key: "ignition", label: "Ignition", render: (r) => (r.ignition ? "ON" : "OFF") },
-                    { key: "updated_at", label: "Last Update" },
+                    { key: "updated_at", label: "Last Update", render: (row) => dmyDateTime(row.updated_at) },
                   ]}
                   rows={track.data.vehicles}
                   empty={<EmptyState title="No live data" text="WheelsEye returned no vehicles for this token." />}

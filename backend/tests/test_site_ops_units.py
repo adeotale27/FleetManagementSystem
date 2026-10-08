@@ -42,10 +42,10 @@ def test_creation_metadata_records_login_identity_and_role():
         "created_at": metadata["created_at"],
     }
     assert metadata["created_at"]
-    assert site_ops._entry_by(metadata) == "Manager - Manager Name"
+    assert site_ops._entry_by(metadata) == "M-Manager"
     assert site_ops._entry_by({
         "created_by_name": "Owner Name", "created_by_role": "owner",
-    }) == "Admin - Owner Name"
+    }) == "A-Owner"
     assert site_ops._ledger_hindi_text("AUTO") == "ऑटो"
     assert site_ops._ledger_hindi_text("Cement bag") == "सीमेंट बोरा"
     assert site_ops._ledger_hindi_text("gadi bhada") == "गाड़ी भाड़ा"
@@ -445,6 +445,49 @@ def test_new_manager_login_keeps_owner_creator_metadata(monkeypatch):
     assert "password" not in result
 
 
+def test_new_manager_accepts_admin_id_and_generates_password_when_omitted(monkeypatch):
+    inserted = []
+
+    class Users:
+        async def find_one(self, _query):
+            return None
+
+        async def insert_one(self, user):
+            inserted.append(user)
+
+    class Sites:
+        async def update_one(self, *_args, **_kwargs):
+            return None
+
+    async def site_for_user(*_args, **_kwargs):
+        return {"_id": "site-1", "business_id": "business-1", "manager_username": None}
+
+    async def replace_access(*_args):
+        return None
+
+    monkeypatch.setattr(site_ops, "_owner", lambda _user: None)
+    monkeypatch.setattr(site_ops, "_site_for_user", site_for_user)
+    monkeypatch.setattr(site_ops, "_tenant_id", lambda _user: "business-1")
+    monkeypatch.setattr(site_ops, "_replace_manager_access", replace_access)
+    monkeypatch.setattr(site_ops, "_audit", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(site_ops, "hash_manager_pw", lambda _password: "hashed")
+    monkeypatch.setattr(site_ops.secrets, "token_urlsafe", lambda _length: "auto-generated-password")
+    monkeypatch.setattr(site_ops, "platform_db", SimpleNamespace(users=Users()))
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(sites=Sites(), team=SimpleNamespace()))
+
+    result = asyncio.run(site_ops.assign_site_manager(
+        "site-1",
+        site_ops.ManagerAssignment(name="Saoji Naidu", username="Saoji Ngp"),
+        {"username": "owner-login", "name": "Business Owner", "role": "owner"},
+    ))
+
+    assert result["username"] == "saoji ngp"
+    assert result["name"] == "Saoji Naidu"
+    assert result["temporary_password"] == "auto-generated-password"
+    assert inserted[0]["name"] == "Saoji Naidu"
+    assert inserted[0]["password"] == "hashed"
+
+
 def test_manager_password_models_accept_short_and_long_nonempty_passwords():
     short_password = site_ops.ManagerAssignment(
         name="Manager One", username="manager-one", password="x",
@@ -674,6 +717,7 @@ def test_site_receipt_controls_keep_fee_configurable_and_validate_display_option
     assert default_config["receipt_controls"] == {
         "hindi_conversion_enabled": True, "receipt_language": "hindi",
         "sender_address_enabled": True, "receiver_address_enabled": True,
+        "receiver_phone_enabled": True,
         "receipt_fee": "2.00", "overdue_after_days": 30,
     }
     updated_config = site_ops._site_config_with_receipt_controls(
@@ -687,6 +731,7 @@ def test_site_receipt_controls_keep_fee_configurable_and_validate_display_option
     assert updated_config["receipt_controls"] == {
         "hindi_conversion_enabled": True, "receipt_language": "english",
         "sender_address_enabled": False, "receiver_address_enabled": True,
+        "receiver_phone_enabled": True,
         "receipt_fee": "5.00", "overdue_after_days": 30,
     }
     with pytest.raises(ValidationError):
@@ -701,6 +746,101 @@ def test_site_receipt_controls_keep_fee_configurable_and_validate_display_option
         site_ops._site_config_with_receipt_controls({
             "receipt_controls": {"overdue_after_days": 0},
         })
+
+
+def test_booking_receipt_visibility_is_tenant_wide_and_migrates_legacy_site_flags():
+    old_sites = [
+        {"config": {"receipt_controls": {
+            "sender_address_enabled": False, "receiver_address_enabled": False,
+        }}},
+        {"config": {"receipt_controls": {
+            "sender_address_enabled": True, "receiver_address_enabled": False,
+            "receiver_phone_enabled": False,
+        }}},
+    ]
+    assert site_ops._booking_receipt_visibility(None, old_sites) == {
+        "sender_address_enabled": False,
+        "receiver_address_enabled": False,
+        "receiver_phone_enabled": False,
+    }
+    assert site_ops._booking_receipt_visibility(
+        {"controls": {
+            "sender_address_enabled": True,
+            "receiver_address_enabled": False,
+            "receiver_phone_enabled": True,
+        }},
+        old_sites,
+    ) == {
+        "sender_address_enabled": True,
+        "receiver_address_enabled": False,
+        "receiver_phone_enabled": True,
+    }
+
+
+def test_booking_receipt_visibility_endpoints_share_saved_values_with_managers(monkeypatch):
+    class Cursor:
+        def __init__(self, rows):
+            self.rows = rows
+
+        async def to_list(self, _limit):
+            return self.rows
+
+    class Sites:
+        def find(self, _query, _projection):
+            return Cursor([
+                {"config": {"receipt_controls": {
+                    "sender_address_enabled": False,
+                    "receiver_address_enabled": False,
+                    "receiver_phone_enabled": False,
+                }}},
+                {"config": {"receipt_controls": {
+                    "sender_address_enabled": True,
+                    "receiver_address_enabled": True,
+                    "receiver_phone_enabled": True,
+                }}},
+            ])
+
+    class Settings:
+        record = None
+
+        async def find_one(self, _query):
+            return self.record
+
+        async def update_one(self, _query, update, upsert):
+            assert upsert is True
+            self.record = {"_id": "booking_receipt_visibility", **update["$set"]}
+
+    settings = Settings()
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(settings=settings, sites=Sites()))
+    manager = {"role": "site_manager", "tenant_id": "business-1"}
+    owner = {"role": "owner", "tenant_id": "business-1"}
+
+    legacy = asyncio.run(site_ops.read_booking_receipt_visibility(manager))
+    assert legacy == {
+        "sender_address_enabled": False,
+        "receiver_address_enabled": False,
+        "receiver_phone_enabled": False,
+    }
+    saved = asyncio.run(site_ops.update_booking_receipt_visibility(
+        site_ops.BookingReceiptVisibility(
+            sender_address_enabled=False,
+            receiver_address_enabled=True,
+            receiver_phone_enabled=False,
+        ),
+        owner,
+    ))
+    assert saved == {
+        "sender_address_enabled": False,
+        "receiver_address_enabled": True,
+        "receiver_phone_enabled": False,
+    }
+    assert asyncio.run(site_ops.read_booking_receipt_visibility(manager)) == saved
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(site_ops.update_booking_receipt_visibility(
+            site_ops.BookingReceiptVisibility(), manager,
+        ))
+    assert error.value.status_code == 403
 
 
 def test_booking_receipt_accepts_multiple_hindi_goods_rows_and_preserves_legacy_fields():
@@ -800,6 +940,38 @@ def test_document_serializer_preserves_top_level_identifier():
     assert result["id"] == "stable-record-id"
     assert "_id" not in result
     assert "_id" not in result["nested"]
+
+
+def test_site_identity_rejects_duplicate_name_or_location(monkeypatch):
+    class Sites:
+        def find(self, _query):
+            return self
+
+        async def to_list(self, _limit):
+            return [
+                {"_id": "site-1", "name": "North  Depot", "location": "Main Road"},
+                {"_id": "site-2", "name": "South Depot", "location": "Market Square"},
+            ]
+
+    monkeypatch.setattr(site_ops, "db", SimpleNamespace(sites=Sites()))
+
+    with pytest.raises(HTTPException) as name_error:
+        asyncio.run(site_ops._ensure_unique_site_identity(
+            "business-1", " north depot ", "Another Road",
+        ))
+    assert name_error.value.status_code == 409
+    assert "name" in name_error.value.detail
+
+    with pytest.raises(HTTPException) as location_error:
+        asyncio.run(site_ops._ensure_unique_site_identity(
+            "business-1", "New Depot", "market  square",
+        ))
+    assert location_error.value.status_code == 409
+    assert "location" in location_error.value.detail
+
+    asyncio.run(site_ops._ensure_unique_site_identity(
+        "business-1", "North Depot", "Main Road", exclude_site_id="site-1",
+    ))
 
 
 def test_reassigning_existing_manager_hashes_supplied_password(monkeypatch):
@@ -1151,17 +1323,18 @@ def test_site_ledger_xlsx_omits_addresses_and_exports_hindi_ledger_values(monkey
     sheet = workbook["बही"]
     headers = [sheet.cell(4, column).value for column in range(1, sheet.max_column + 1)]
     assert headers == [
-        "दिनांक", "ट्रिप नंबर", "रसीद नंबर", "भेजने वाला", "प्राप्तकर्ता",
-        "माल एवं मात्रा", "भाड़ा", "हमाली", "रसीद शुल्क", "प्रविष्टि करने वाला",
-        "Amount paid",
+        "दिनांक", "रसीद नंबर", "भेजने वाला", "प्राप्तकर्ता", "माल एवं मात्रा",
+        "कुल मात्रा", "भाड़ा", "हमाली", "रसीद शुल्क", "कुल रकम", "Amount paid",
     ]
-    assert sheet["D5"].value == "भेजने वाला"
-    assert sheet["E5"].value == "प्राप्तकर्ता"
-    assert sheet["F5"].value == "२ - हार्डवेयर/औज़ार, १० - सीमेंट बोरी, ३० - अनाज डिब्बा"
+    assert sheet["A2"].value == "Trip number: NGP29092026-01"
+    assert sheet["C5"].value == "भेजने वाला"
+    assert sheet["D5"].value == "प्राप्तकर्ता"
+    assert sheet["E5"].value == "२ - हार्डवेयर/औज़ार, १० - सीमेंट बोरी, ३० - अनाज डिब्बा"
+    assert sheet["F5"].value == 42
     assert sheet["G5"].value == 100
     assert sheet["H5"].value == 10
     assert sheet["I5"].value == 2
-    assert sheet["J5"].value == "Manager - Saoji"
+    assert sheet["J5"].value == 112
     assert sheet["K5"].value is None
     assert sheet["G7"].value == 100
     assert sheet["H7"].value == 10
@@ -1174,6 +1347,26 @@ def test_site_ledger_xlsx_omits_addresses_and_exports_hindi_ledger_values(monkey
     assert "Hidden sender address" not in all_values
     assert "Hidden receiver address" not in all_values
     assert workbook.sheetnames == ["बही"]
+
+    selected_response = asyncio.run(site_ops.export_site_ledger_xlsx(
+        "site-1", "2026-09-29", "2026-09-29", "trip-1",
+        {"username": "owner", "role": "owner"},
+        columns="receipt,senderAddress,receiverPhone,goods,quantity,bhada,amountPaid",
+    ))
+    selected_sheet = load_workbook(
+        io.BytesIO(selected_response.body), data_only=True,
+    )["बही"]
+    selected_headers = [
+        selected_sheet.cell(4, column).value
+        for column in range(1, selected_sheet.max_column + 1)
+    ]
+    assert selected_headers == [
+        "रसीद नंबर", "भेजने वाले का पता", "प्राप्तकर्ता का फ़ोन",
+        "माल एवं मात्रा", "कुल मात्रा", "भाड़ा", "Amount paid",
+    ]
+    assert selected_sheet["D5"].value == "२ - हार्डवेयर/औज़ार, १० - सीमेंट बोरी, ३० - अनाज डिब्बा"
+    assert selected_sheet["E5"].value == 42
+    assert selected_sheet["F5"].value == 100
 
 
 def test_lr_models_accept_contact_phones():

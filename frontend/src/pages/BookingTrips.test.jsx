@@ -32,17 +32,11 @@ describe("simple booking workflow", () => {
     });
 
     await renderBooking("dashboard", "owner");
-    await waitFor(() => expect(container.querySelector("button.card")).not.toBeNull());
+    const firstTripCard = await screen.findByRole("button", { name: /NGP-TRIP-01/ });
+    const firstTripActions = firstTripCard.parentElement;
+    await waitFor(() => expect(within(firstTripActions).getByRole("button", { name: "Close Trip" }).disabled).toBe(false));
     await act(async () => {
-      Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent.includes(firstTrip.trip_ref)).click();
-      await flushMicrotasks();
-    });
-    await waitFor(() => expect(Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent.includes("Close Trip") && !button.disabled)).not.toBeUndefined());
-    await act(async () => {
-      Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent.includes("Close Trip")).click();
+      within(firstTripActions).getByRole("button", { name: "Close Trip" }).click();
       await flushMicrotasks();
     });
     expect(screen.getByRole("dialog", { name: /Check trip money before closing/ })).not.toBeNull();
@@ -145,8 +139,6 @@ describe("simple booking workflow", () => {
     }];
     mockBookingApi({ trips: [trip], receipts });
     await renderBooking("dashboard", "owner");
-    await waitFor(() => expect(screen.getByRole("button", { name: /NGP29092026-01/ })).not.toBeNull());
-    await clickButton("NGP29092026-01");
     await waitFor(() => expect(screen.getByRole("button", { name: "Close Trip" }).disabled).toBe(false));
     await clickButton("Close Trip");
 
@@ -185,9 +177,7 @@ describe("simple booking workflow", () => {
       }
       return Promise.resolve({ data: trip });
     });
-    localStorage.setItem("booking_site_id", site.id);
-    localStorage.setItem("booking_trip_id", trip.id);
-    await renderBooking("receipts", "owner");
+    await renderBooking("dashboard", "owner");
     await waitFor(() => expect(screen.getByRole("button", { name: "Close Trip" }).disabled).toBe(false));
     await clickButton("Close Trip");
 
@@ -228,18 +218,16 @@ describe("simple booking workflow", () => {
       }
       return Promise.resolve({ data: trip });
     });
-    localStorage.setItem("booking_site_id", site.id);
-    localStorage.setItem("booking_trip_id", trip.id);
-    await renderBooking("receipts", "owner");
+    await renderBooking("dashboard", "owner");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close Trip" }).disabled).toBe(false));
+    await clickButton("Close Trip");
 
-    await waitFor(() => expect(screen.getByText(/Could not load the full receipt summary/)).not.toBeNull());
-    expect(screen.getByRole("button", { name: "Close Trip" }).disabled).toBe(true);
-    expect(screen.queryByRole("dialog", { name: /Check trip money before closing/ })).toBeNull();
+    await waitFor(() => expect(screen.getAllByText("Could not load the final page.").length).toBeGreaterThan(0));
+    const closeout = screen.getByRole("dialog", { name: /Check trip money before closing/ });
+    expect(within(closeout).getByRole("button", { name: "✓ Close trip" }).disabled).toBe(true);
     expect(api.post).not.toHaveBeenCalled();
 
     await clickButton("Retry receipt summary");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Close Trip" }).disabled).toBe(false));
-    await clickButton("Close Trip");
     const summary = screen.getByRole("dialog", { name: /Check trip money before closing/ });
     expect(within(summary).getByText("101")).not.toBeNull();
     expect(within(summary).getByText("₹10,302")).not.toBeNull();
@@ -258,10 +246,6 @@ describe("simple booking workflow", () => {
       ...closedTrip, truck_no: "MH 31 AB 1234", driver_name: "Ramesh",
     } });
     await renderBooking("dashboard");
-    await act(async () => {
-      container.querySelector("button.card").click();
-      await flushMicrotasks();
-    });
     await act(async () => {
       Array.from(container.querySelectorAll("button"))
         .find((button) => button.textContent.includes("Edit trip details")).click();
@@ -296,10 +280,6 @@ describe("simple booking workflow", () => {
 
     await renderBooking("dashboard", "owner");
     await act(async () => {
-      container.querySelector("button.card").click();
-      await flushMicrotasks();
-    });
-    await act(async () => {
       Array.from(container.querySelectorAll("button"))
         .find((button) => button.textContent.includes("Edit trip details")).click();
     });
@@ -321,7 +301,6 @@ describe("simple booking workflow", () => {
     mockBookingApi({ trips: [trip] });
     await renderBooking("dashboard");
     await waitFor(() => expect(screen.getByRole("button", { name: /NGP29092026-01/ })).not.toBeNull());
-    await clickButton("NGP29092026-01");
     await clickButton("Edit trip details");
 
     expect(screen.queryByRole("button", { name: /Delete trip/ })).toBeNull();
@@ -342,10 +321,6 @@ describe("simple booking workflow", () => {
     });
 
     await renderBooking("dashboard", "owner");
-    await act(async () => {
-      container.querySelector("button.card").click();
-      await flushMicrotasks();
-    });
     await act(async () => {
       Array.from(container.querySelectorAll("button"))
         .find((button) => button.textContent.includes("Edit trip details")).click();

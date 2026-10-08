@@ -1,9 +1,11 @@
 import axios from "axios";
 import { scheduleMutationSuccess, toast } from "../components/ui";
 import { publishDataChange } from "./realtime";
+import { assetUrl } from "./assetUrl";
 
-const BASE = process.env.REACT_APP_BACKEND_URL;
+const BASE = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 export const api = axios.create({ baseURL: `${BASE}/api`, timeout: 60000 });
+export { assetUrl };
 
 const isWriteRequest = (config) => {
   const method = String(config?.method || "").toLowerCase();
@@ -135,6 +137,8 @@ export const errMsg = (e) => {
 export const uploadFile = async (file, kind = "misc") => {
   const fd = new FormData();
   fd.append("file", file);
-  const r = await api.post(`/upload?kind=${kind}`, fd, { headers: { "Content-Type": "multipart/form-data" } });
-  return `${BASE}${r.data.url}`;
+  const r = await api.post(`/upload?kind=${encodeURIComponent(kind)}`, fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return assetUrl(r.data.url);
 };

@@ -2,9 +2,10 @@ import { act } from "react";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { api } from "../lib/api";
 import { registerBookingTestHarness } from "./Booking.testUtils";
-import { romanHindi } from "./Booking";
+import { matchingGoodsSuggestions, romanHindi } from "./Booking";
 jest.mock("../lib/api", () => ({
   api: { get: jest.fn(), post: jest.fn(), patch: jest.fn(), delete: jest.fn() },
+  assetUrl: (value) => value || "",
   errMsg: (error) => error?.response?.data?.detail || "Request failed",
 }));
 
@@ -26,6 +27,29 @@ describe("simple booking workflow", () => {
     expect(romanHindi("vehicle rent")).toBe("गाड़ी भाड़ा");
     expect(romanHindi("hamali")).toBe("हमाली");
     expect(romanHindi("कपड़ा")).toBe("कपड़ा");
+    expect(matchingGoodsSuggestions("s", ["सामान"])).toContain("सामान");
+    expect(matchingGoodsSuggestions("sa", ["सामान"])).toContain("सामान");
+    expect(matchingGoodsSuggestions("sam", ["सामान"])).toContain("सामान");
+    expect(matchingGoodsSuggestions("cem", ["सीमेंट"])).toContain("सीमेंट");
+  });
+
+  it("places the site selector between the page title and language controls", async () => {
+    localStorage.setItem("booking_trip_id", trip.id);
+    mockBookingApi({ trips: [trip] });
+    await renderBooking("receipts", "owner");
+
+    const header = container.querySelector(".booking-page-header");
+    expect(header.children).toHaveLength(3);
+    expect(header.children[0].textContent).toContain("Receipts");
+    expect(header.children[1].classList.contains("booking-trip-ref")).toBe(true);
+    expect(header.children[1].textContent).toContain(trip.trip_ref);
+    expect(header.children[0].textContent).not.toContain(site.name);
+    expect(header.children[2].querySelector(".booking-header-site label").textContent)
+      .toContain("Site / Garage");
+    expect(header.children[2].querySelector('[role="group"]').getAttribute("aria-label"))
+      .toBe("Display language");
+    expect(container.querySelectorAll(".booking-trip-ref")).toHaveLength(1);
+    expect(container.querySelector(".booking-trip-ref").parentElement).toBe(header);
   });
 
   describe("trip and receipt entry", () => {
@@ -42,6 +66,8 @@ describe("simple booking workflow", () => {
     expect(dailySummary.textContent).toContain("बाकी यात्राएँ");
     expect(dailySummary.textContent).toContain("बनी हुई रसीदें");
     expect(dailySummary.textContent).toContain("अभी लेना बाकी");
+    expect(dailySummary.querySelector(".booking-today-summary-metrics")).not.toBeNull();
+    expect(dailySummary.textContent).not.toContain("अब यह करें");
     await clickButton("यात्रा बनाएँ");
     await act(async () => {
       container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -50,7 +76,7 @@ describe("simple booking workflow", () => {
 
     expect(getByLabelText("प्राप्तकर्ता का नाम")).not.toBeNull();
     expect(getByLabelText("सामान का नाम · 1").placeholder).toBe("सामान का नाम");
-    expect(getByLabelText("मात्रा · 1").placeholder).toBe("मात्रा लिखें");
+    expect(getByLabelText("मात्रा · 1").placeholder).toBe("मात्रा");
     expect(container.textContent).toContain("कुल रकम");
 
     await act(async () => {
@@ -66,6 +92,7 @@ describe("simple booking workflow", () => {
 
     const [, submittedReceipt] = api.post.mock.calls.find(([path]) => path.endsWith("/lrs"));
     expect(submittedReceipt.receiver_name).toBe("Suresh");
+    expect(submittedReceipt.receipt_date).toBe(trip.operating_date);
     expect(submittedReceipt.goods_rows).toEqual([{ type: "Cement", type_hindi: "सीमेंट", description: "", description_hindi: "", quantity: 3 }]);
   });
 
@@ -92,28 +119,59 @@ describe("simple booking workflow", () => {
       operating_date: expect.any(String), truck_no: "", driver_name: "",
     });
     expect(container.textContent).toContain("New receipt");
+    expect(container.querySelector(".receipt-form-title").textContent).toContain("New receipt");
+    expect(Array.from(container.querySelector("#receipt-entry-form .receipt-form-actions").children,
+      (button) => button.textContent.trim())).toEqual([
+      "Save receipt", "Print paper (saves receipt first)", "Cancel receipt",
+    ]);
+    expect(container.querySelector(".receipt-form-heading-line").textContent).toContain(trip.trip_ref);
+    expect(container.querySelector(".receipt-form-heading-line").nextElementSibling.textContent)
+      .toBe("29-09-2026");
+    expect(getByLabelText("Receipt date").value).toBe(trip.operating_date);
+    expect(getByLabelText("Receipt date").disabled).toBe(true);
+    expect(container.querySelectorAll(".receipt-form-trip")).toHaveLength(1);
+    expect(container.querySelector(".receipt-form-card .receipt-total-heading")).not.toBeNull();
+    const senderDateCityRow = container.querySelector('[aria-label="Sender name in English"]').closest(".grid");
+    expect(Array.from(senderDateCityRow.querySelectorAll("label .lbl"), (label) => label.textContent.trim()))
+      .toEqual(["Sender (optional)", "Receipt date", "Receiver city"]);
+    expect(senderDateCityRow.className).toContain("md:grid-cols-3");
+    const receiverAndPhoneRow = container.querySelector('[aria-label="Receiver name in English"]').closest(".grid");
+    expect(Array.from(receiverAndPhoneRow.querySelectorAll("label .lbl"), (label) => label.textContent.trim()))
+      .toEqual(["Receiver *", "Receiver phone (10 digits, optional)"]);
+    expect(receiverAndPhoneRow.className).toContain("md:grid-cols-2");
+    expect(container.querySelector('[aria-label="Trip number"]')).toBeNull();
     expect(container.querySelectorAll('[aria-label^="Goods and description row "]')).toHaveLength(3);
     expect(container.querySelectorAll('[aria-label^="Quantity row "]')).toHaveLength(3);
     expect(container.querySelector('[aria-label="Goods and description row 1"]').parentElement.parentElement.parentElement.className)
-      .toContain("grid-cols-[minmax(0,1fr)_2.75rem]");
+      .toContain("grid-cols-[8.5rem_minmax(0,1fr)_2.25rem]");
     expect(container.querySelector('[aria-label="Goods and description row 1"]').placeholder)
       .toBe("Goods and description");
+    expect(container.querySelector('[aria-label="Quantity row 1"]').placeholder).toBe("Quantity");
     expect(container.querySelector('[aria-label="Goods and description row 1"]').parentElement.className)
       .toContain("relative block");
     expect(container.querySelector('[aria-label="Quantity row 1"]').parentElement.querySelector("svg").className.baseVal)
       .toContain("top-1/2");
     expect(container.querySelector("#receipt-entry-form .sticky.bottom-0")).not.toBeNull();
+    expect(container.querySelector("#receipt-entry-form .receipt-form-actions")).not.toBeNull();
     expect(container.querySelector('[aria-label="Receipt Bhada"]').value).toBe("0");
     expect(container.querySelector('[aria-label="Receipt Hamali"]').value).toBe("0");
     expect(container.textContent).toContain("Bhada (₹)");
     expect(container.textContent).toContain("Hamali (₹)");
+    const receiptTotal = container.querySelector(".receipt-total-summary");
+    expect(receiptTotal.querySelector(".receipt-total-heading")).not.toBeNull();
+    expect(receiptTotal.querySelector(".receipt-total-breakdown").children).toHaveLength(3);
+    expect(receiptTotal.querySelector(".receipt-grand-total").textContent).toContain("₹2");
     const receiverAddress = container.querySelector('[aria-label="Receiver address (optional)"]');
     const receiverPhone = container.querySelector('[aria-label="Receiver phone (10 digits, optional)"]');
-    expect(receiverAddress.parentElement.parentElement)
-      .toBe(receiverPhone.parentElement.parentElement);
-    expect(receiverAddress.parentElement.parentElement.className).toContain("md:grid-cols-2");
-    expect(Array.from(container.querySelectorAll("#booking-goods-suggestions option"))
-      .map((option) => option.value)).toEqual(["स्थानीय अनाज", "सीमेंट"]);
+    expect(receiverAndPhoneRow.contains(receiverPhone)).toBe(true);
+    expect(receiverAndPhoneRow.contains(receiverAddress)).toBe(false);
+    expect(receiverAddress.parentElement.parentElement.className).toBe("grid gap-3");
+    fireEvent.focus(getByLabelText("Goods and description row 1"));
+    fireEvent.change(getByLabelText("Goods and description row 1"), { target: { value: "सीमेंट" } });
+    const goodsSuggestions = screen.getByRole("listbox", { name: "Suggestions for goods row 1" });
+    expect(goodsSuggestions.className).toContain("w-full");
+    expect(goodsSuggestions.className).toContain("bg-white");
+    expect(goodsSuggestions.textContent).toContain("सीमेंट");
   });
 
   it("removes goods rows with the X button and restores three blank rows", async () => {
@@ -233,7 +291,7 @@ describe("simple booking workflow", () => {
     expect(localStorage.getItem(otherUserDraftKey)).not.toBeNull();
   });
 
-  it("suggests past receivers and copies goods without carrying forward charges", async () => {
+  it("suggests past receivers and fills their saved phone number without a copy-receipt action", async () => {
     const previousReceipt = {
       id: "lr-previous", lr_ref: "NGP-LR-01", receiver_name: "Suresh",
       receiver_phone: "9876543210", sender_name: "Ramesh", rent: "500",
@@ -243,22 +301,115 @@ describe("simple booking workflow", () => {
     localStorage.setItem("booking_trip_id", trip.id);
     mockBookingApi({ trips: [trip], receipts: [previousReceipt] });
     await renderBooking("receipts");
-    await waitFor(() => expect(screen.getByLabelText("Use a previous receiver")).not.toBeNull());
-
-    fireEvent.change(screen.getByLabelText("Use a previous receiver"), {
-      target: { value: previousReceipt.id },
-    });
+    const receiverInput = getByLabelText("Receiver name in English");
+    await waitFor(() => expect(receiverInput.getAttribute("list")).toBe("previous-receiver-options"));
+    expect(Array.from(container.querySelectorAll("#previous-receiver-options option"))
+      .map((option) => option.value)).toContain("Suresh");
+    fireEvent.change(receiverInput, { target: { value: "Suresh" } });
     expect(getByLabelText("Receiver name in English").value).toBe("Suresh");
     expect(getByLabelText("Receiver phone (10 digits, optional)").value).toBe("9876543210");
 
-    await clickButton("Copy previous receipt");
-    expect(getByLabelText("Sender name in English").value).toBe("Ramesh");
+    expect(screen.queryByRole("button", { name: /Copy previous receipt/i })).toBeNull();
+    expect(getByLabelText("Sender name in English").value).toBe("");
     expect(getByLabelText("Receiver name in English").value).toBe("Suresh");
-    expect(getByLabelText("Goods and description row 1").value).toBe("Cement");
-    expect(getByLabelText("Quantity row 1").value).toBe("4");
+    expect(getByLabelText("Goods and description row 1").value).toBe("");
+    expect(getByLabelText("Quantity row 1").value).toBe("");
     expect(getByLabelText("Receipt Bhada").value).toBe("0");
     expect(getByLabelText("Receipt Hamali").value).toBe("0");
     expect(api.post.mock.calls.some(([path]) => path.endsWith("/lrs"))).toBe(false);
+  });
+
+  it("reloads booking receipt controls and hides saved addresses and phone on older receipts", async () => {
+    let globalReceiptControls = {
+      sender_address_enabled: true, receiver_address_enabled: true, receiver_phone_enabled: true,
+    };
+    let configuredSite = {
+      ...site,
+      config: { receipt_controls: {
+        sender_address_enabled: true, receiver_address_enabled: true, receiver_phone_enabled: true,
+      }, receipt_branding: {
+        contacts: [
+          { label: "Nagpur", phone: "2767741", phone_label: "(O)" },
+          { label: "Wadi", phone: "9420681470" },
+          { label: "Hinganghat", phone: "244240", phone_label: "(O)", alternate_phone: "9764424190", alternate_phone_label: "(G)" },
+        ],
+      } },
+    };
+    const savedReceipt = {
+      id: "lr-existing", lr_ref: "NGP-LR-OLD", sender_name: "Ramesh",
+      sender_address: "Sender Road", receiver_name: "Suresh",
+      receiver_address: "Receiver Road", receiver_phone: "9876543210",
+      goods_rows: [{ type: "Rice", quantity: 2 }],
+    };
+    localStorage.setItem("booking_site_id", site.id);
+    localStorage.setItem("booking_trip_id", trip.id);
+    api.get.mockImplementation((path) => {
+      if (path === "/booking/receipt-controls") return Promise.resolve({ data: globalReceiptControls });
+      if (path === "/sites") return Promise.resolve({ data: [configuredSite] });
+      if (path === `/sites/${site.id}/trips`) {
+        return Promise.resolve({ data: { rows: [trip], total: 1 } });
+      }
+      if (path === `/sites/${site.id}/trips/${trip.id}/lrs`) {
+        return Promise.resolve({ data: { rows: [savedReceipt], total: 1 } });
+      }
+      return Promise.resolve({ data: trip });
+    });
+    const printSpy = jest.spyOn(window, "print").mockImplementation(() => {});
+    const popupSpy = jest.spyOn(window, "open");
+
+    await renderBooking("receipts");
+    await waitFor(() => expect(container.textContent).toContain("9876543210"));
+    globalReceiptControls = {
+      sender_address_enabled: false, receiver_address_enabled: false, receiver_phone_enabled: false,
+    };
+    configuredSite = {
+      ...site,
+      config: { receipt_controls: {
+        sender_address_enabled: true, receiver_address_enabled: true, receiver_phone_enabled: true,
+      }, receipt_branding: {
+        contacts: [
+          { label: "Nagpur", phone: "2767741", phone_label: "(O)" },
+          { label: "Wadi", phone: "9420681470" },
+          { label: "Hinganghat", phone: "244240", phone_label: "(O)", alternate_phone: "9764424190", alternate_phone_label: "(G)" },
+        ],
+      } },
+    };
+    await act(async () => {
+      window.dispatchEvent(new Event("fms:refresh"));
+      await flushMicrotasks();
+    });
+
+    await waitFor(() => expect(container.textContent).not.toContain("9876543210"));
+    expect(container.querySelector('[aria-label="Sender address (optional)"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Receiver address (optional)"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Receiver phone (10 digits, optional)"]')).toBeNull();
+    expect(api.get.mock.calls.filter(([path]) => path === "/sites")).toHaveLength(2);
+    expect(api.get.mock.calls.filter(([path]) => path === "/booking/receipt-controls")).toHaveLength(2);
+    await act(async () => {
+      screen.getByRole("button", { name: "Print", exact: true }).click();
+      await flushMicrotasks();
+    });
+    await waitFor(() => expect(document.querySelector(".booking-print-portal img")).not.toBeNull());
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 400)));
+    await act(async () => fireEvent.load(document.querySelector(".booking-print-portal img")));
+    await waitFor(() => expect(printSpy).toHaveBeenCalled());
+    const printReceipt = document.querySelector(".booking-print-portal .transport-lr");
+    expect(printReceipt.textContent).toContain("NGP-LR-OLD");
+    expect(printReceipt.textContent).not.toContain("Sender Road");
+    expect(printReceipt.textContent).not.toContain("Receiver Road");
+    expect(printReceipt.textContent).not.toContain("9876543210");
+    expect(printReceipt.querySelector(".transport-lr-contacts").textContent)
+      .toContain("Nagpur: (O) 2767741");
+    expect(printReceipt.querySelector(".transport-lr-contacts").textContent)
+      .toContain("Hinganghat: (O) 244240 · (G) 9764424190");
+    expect(Array.from(container.querySelectorAll("style")).some((style) =>
+      style.textContent.includes(".booking-print-target .transport-lr-header { display:flex !important; }")))
+      .toBe(true);
+    expect(popupSpy).not.toHaveBeenCalled();
+
+    await act(async () => window.dispatchEvent(new Event("afterprint")));
+    printSpy.mockRestore();
+    popupSpy.mockRestore();
   });
 
   it("searches receipts and filters payment and void status", async () => {
@@ -269,9 +420,10 @@ describe("simple booking workflow", () => {
       { id: "lr-unpaid", lr_ref: "NGP-LR-UNPAID", receiver_name: "Asha", receiver_phone: "1111111111",
         rent: "100", hamali: "0", receipt_fee: "2", paid_total: "0", outstanding: "102",
         payment_status: "unpaid", goods_rows: [{ type: "Cement", quantity: 1 }] },
-      { id: "lr-partial", lr_ref: "NGP-LR-PARTIAL", receiver_name: "Suresh", receiver_phone: "2222222222",
+      { id: "lr-partial", lr_ref: "NGP-LR-PARTIAL", sender_name_hindi: "अनीकेत",
+        receiver_name_hindi: "सुरेश", receiver_phone: "2222222222",
         rent: "100", hamali: "0", receipt_fee: "2", paid_total: "40", outstanding: "62",
-        payment_status: "partial", goods_rows: [{ type: "Grain", quantity: 2 }] },
+        payment_status: "partial", goods_rows: [{ type: "Grain", type_hindi: "अनाज", quantity: 2 }] },
       { id: "lr-unpriced", lr_ref: "NGP-LR-UNPRICED", receiver_name: "Mohan",
         payment_status: "unpriced", goods_rows: [{ type: "Steel", quantity: 3 }] },
       { id: "lr-voided", lr_ref: "NGP-LR-VOID", receiver_name: "Ramesh", voided: true,
@@ -283,11 +435,30 @@ describe("simple booking workflow", () => {
     mockBookingApi({ trips: [trip], receipts: receiptRows });
     await renderBooking("receipts");
     await waitFor(() => expect(container.textContent).toContain("NGP-LR-PARTIAL"));
-    expect(container.textContent).toContain("Still to collect: ₹62");
+    const paymentSummary = Array.from(container.querySelectorAll(".receipt-payment-summary"))
+      .find((summary) => summary.textContent.includes("₹40") && summary.textContent.includes("₹62"));
+    expect(paymentSummary.children).toHaveLength(3);
+    expect(Array.from(paymentSummary.querySelectorAll(".receipt-payment-metric"), (metric) =>
+      metric.querySelector("strong").textContent)).toEqual(["₹102", "₹40", "₹62"]);
+    expect(paymentSummary.textContent).toContain("Due:");
     expect(container.textContent).toContain("Pending payment");
     expect(container.textContent).toContain("Partially paid");
     expect(container.textContent).toContain("Paid");
     expect(container.textContent).toContain("Unpriced");
+    const partialCard = Array.from(container.querySelectorAll(".receipt-list-card"))
+      .find((card) => card.textContent.includes("NGP-LR-PARTIAL"));
+    expect(partialCard.querySelector(".receipt-list-primary").textContent)
+      .toContain("NGP-LR-PARTIALअनीकेत → सुरेश");
+    expect(partialCard.querySelector(".receipt-list-primary").textContent).toContain("2222222222");
+    expect(partialCard.querySelector(".receipt-list-parties").textContent).toBe("अनीकेत → सुरेश");
+    expect(partialCard.querySelector(".receipt-list-goods").textContent).toContain("२ - अनाज");
+    expect(partialCard.querySelector(".receipt-list-print-group .receipt-payment-status"))
+      .toBeTruthy();
+    expect(partialCard.querySelector(".receipt-list-print-group .receipt-payment-status").nextElementSibling.textContent)
+      .toContain("Print");
+    expect(paymentSummary.parentElement).toBe(partialCard.querySelector(".receipt-list-content"));
+    expect(partialCard.querySelector(".receipt-list-secondary").nextElementSibling).toBe(paymentSummary);
+    expect(partialCard.querySelector(".receipt-list-actions")).not.toBeNull();
     expect(container.textContent).toContain("VOID");
     expect(container.querySelector("svg.lucide-circle-check")).not.toBeNull();
     expect(Array.from(container.querySelectorAll("svg"), (icon) => icon.getAttribute("class")))
@@ -365,8 +536,7 @@ describe("simple booking workflow", () => {
 
   it("saves English receipt data and resets the form after a successful save", async () => {
     const printSpy = jest.spyOn(window, "print").mockImplementation(() => {});
-    const requestAnimationFrame = window.requestAnimationFrame;
-    window.requestAnimationFrame = (callback) => callback();
+    const popupSpy = jest.spyOn(window, "open");
     const pendingReceiptRefreshes = [];
     api.get.mockImplementation((path) => {
       if (path === "/sites") return Promise.resolve({ data: [{
@@ -414,7 +584,12 @@ describe("simple booking workflow", () => {
       Array.from(container.querySelectorAll("button")).find((button) =>
         button.textContent.includes("Print paper")).click();
     });
-    await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
+    expect(container.querySelector('[role="dialog"][aria-label="Lorry receipt preview"]')).toBeNull();
+    await waitFor(() => expect(document.querySelector(".booking-print-portal img")).not.toBeNull());
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 400)));
+    await act(async () => fireEvent.load(document.querySelector(".booking-print-portal img")));
+    await waitFor(() => expect(printSpy).toHaveBeenCalled());
+    expect(popupSpy).not.toHaveBeenCalled();
 
     const receiptRequest = api.post.mock.calls.find(([path]) => path.endsWith("/lrs"));
     expect(receiptRequest[1]).toMatchObject({
@@ -433,39 +608,27 @@ describe("simple booking workflow", () => {
     expect(receiptRequest[1]).not.toHaveProperty("sender_phone");
     expect(receiptRequest[1]).not.toHaveProperty("sender_address");
     expect(receiptRequest[1]).not.toHaveProperty("receiver_address");
-    expect(printSpy).toHaveBeenCalledTimes(1);
-    expect(document.body.textContent).toContain("12:34:05 IST");
     expect(receiptRequest[1]).not.toHaveProperty("receipt_created_at");
-    expect(document.querySelector(".receipt-print-goods").textContent).not.toContain("Roof repair bags");
-    expect(document.querySelector(".receipt-print-goods").textContent).toContain("३ - सीमेंट");
-    expect(document.querySelector(".receipt-print-parties").textContent).toContain("9876543210");
-    expect(document.querySelector(".receipt-print-parties").textContent)
-      .not.toContain("Old Sender Road");
-    expect(document.querySelector(".receipt-print-parties").textContent)
-      .not.toContain("Old Receiver Road");
-    expect(document.querySelector(".receipt-print-company").textContent).toContain("नायडू गुड्स ट्रांसपोर्ट");
-    const printHeader = document.querySelector(".receipt-print-header");
-    expect(printHeader.querySelector(".receipt-print-company")).not.toBeNull();
-    expect(document.querySelector("style").textContent).toContain(
-      ".receipt-print-logo { position:absolute; top:50%; left:0; width:270px; height:190px;",
-    );
-    expect(document.querySelector("style").textContent).toContain(
-      ".receipt-print-company { width:100%; text-align:center; }",
-    );
+    const printedReceipt = document.querySelector(".booking-print-portal .transport-lr");
+    expect(printedReceipt.textContent).not.toContain("Roof repair bags");
+    expect(printedReceipt.textContent).toContain("३");
+    expect(printedReceipt.textContent).toContain("सीमेंट");
+    expect(printedReceipt.textContent).toContain("9876543210");
+    expect(printedReceipt.textContent).not.toContain("Old Sender Road");
+    expect(printedReceipt.textContent).not.toContain("Old Receiver Road");
+    expect(printedReceipt.textContent).toContain("Mama Garage");
     expect(container.querySelector('[aria-label="Receiver name in English"]').value).toBe("");
     expect(container.querySelector('[aria-label="Goods and description row 1"]').value).toBe("");
-    expect(document.querySelector(".receipt-print-charges").textContent).toContain("₹30");
-    expect(document.querySelector(".receipt-print-charges").textContent).toContain("₹5");
-    expect(document.querySelector(".receipt-print-charges").textContent).toContain("₹37");
+    expect(printedReceipt.textContent).toContain("30");
+    expect(printedReceipt.textContent).toContain("5");
+    expect(printedReceipt.textContent).toContain("37");
+    await act(async () => window.dispatchEvent(new Event("afterprint")));
     await act(async () => {
       pendingReceiptRefreshes.forEach((resolve) => resolve({ data: { rows: [], total: 0 } }));
       await flushMicrotasks();
     });
-    await act(async () => {
-      window.dispatchEvent(new Event("afterprint"));
-    });
     printSpy.mockRestore();
-    window.requestAnimationFrame = requestAnimationFrame;
+    popupSpy.mockRestore();
   });
 
   it("lets the user cancel receipt edits without submitting them", async () => {
@@ -672,7 +835,7 @@ describe("simple booking workflow", () => {
     });
     expect(container.querySelectorAll('[aria-label^="Goods and description row "]')).toHaveLength(3);
     expect(container.querySelector('[aria-label="Quantity row 1"]').parentElement.parentElement.parentElement.className)
-      .toContain("grid-cols-[2rem_minmax(0,1fr)_10rem_2.25rem]");
+      .toContain("grid-cols-[8.5rem_minmax(0,1fr)_2.25rem]");
     await act(async () => {
       setInput('[aria-label="Receiver name in English"]', "Suresh");
       setInput('[aria-label="Goods and description row 1"]', "Cement");
@@ -696,7 +859,7 @@ describe("simple booking workflow", () => {
     });
   });
 
-  it("still asks for duplicate-receiver confirmation after copying a previous receipt", async () => {
+  it("still asks for duplicate-receiver confirmation when a saved receiver is selected", async () => {
     const previousReceipt = {
       id: "lr-previous", lr_ref: "NGP-LR-01", sender_name: "Ramesh",
       receiver_name: "Suresh", receiver_phone: "9876543210", rent: "500",
@@ -719,8 +882,13 @@ describe("simple booking workflow", () => {
       return Promise.resolve({ data: { id: "lr-new", lr_ref: "NGP-LR-02" } });
     });
     await renderBooking("receipts");
-    await waitFor(() => expect(screen.getByLabelText("Use a previous receiver")).not.toBeNull());
-    await clickButton("Copy previous receipt");
+    await waitFor(() => expect(getByLabelText("Receiver name in English")
+      .getAttribute("list")).toBe("previous-receiver-options"));
+    await act(async () => {
+      setInput("Receiver name in English", "Suresh");
+      setInput("Goods and description row 1", "Cement");
+      setInput("Quantity row 1", "4");
+    });
     await clickButton("Save receipt");
 
     expect(screen.getByText("Check the receiver before saving")).not.toBeNull();
