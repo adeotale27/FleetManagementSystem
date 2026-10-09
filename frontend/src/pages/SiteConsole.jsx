@@ -281,6 +281,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
   const [siteEdit, setSiteEdit] = useState({ name: "", location: "", city: "", timezone: "" });
   const [receiptControls, setReceiptControls] = useState({
     hindi_conversion_enabled: true, receipt_language: "hindi",
+    receipt_print_size: "default",
     sender_address_enabled: true, receiver_address_enabled: true, receiver_phone_enabled: true,
     receipt_fee: "2.00",
     overdue_after_days: "30",
@@ -408,6 +409,8 @@ export default function SiteConsole({ user, adminOnly = false }) {
         setReceiptControls({
           hindi_conversion_enabled: configuredReceiptControls.hindi_conversion_enabled !== false,
           receipt_language: configuredReceiptControls.receipt_language === "english" ? "english" : "hindi",
+          receipt_print_size: ["80mm", "58mm"].includes(configuredReceiptControls.receipt_print_size)
+            ? configuredReceiptControls.receipt_print_size : "default",
           sender_address_enabled: globalVisibility.sender_address_enabled
             ?? (configuredReceiptControls.sender_address_enabled !== false),
           receiver_address_enabled: globalVisibility.receiver_address_enabled
@@ -483,6 +486,8 @@ export default function SiteConsole({ user, adminOnly = false }) {
       setReceiptControls({
         hindi_conversion_enabled: configuredReceiptControls.hindi_conversion_enabled !== false,
         receipt_language: configuredReceiptControls.receipt_language === "english" ? "english" : "hindi",
+        receipt_print_size: ["80mm", "58mm"].includes(configuredReceiptControls.receipt_print_size)
+          ? configuredReceiptControls.receipt_print_size : "default",
         sender_address_enabled: globalVisibility.sender_address_enabled
           ?? (configuredReceiptControls.sender_address_enabled !== false),
         receiver_address_enabled: globalVisibility.receiver_address_enabled
@@ -562,6 +567,7 @@ export default function SiteConsole({ user, adminOnly = false }) {
           receipt_controls: {
             hindi_conversion_enabled: receiptControls.hindi_conversion_enabled,
             receipt_language: receiptControls.receipt_language,
+            receipt_print_size: receiptControls.receipt_print_size,
             receipt_fee: receiptControls.receipt_fee,
             overdue_after_days: Number(receiptControls.overdue_after_days),
           },
@@ -1077,6 +1083,20 @@ export default function SiteConsole({ user, adminOnly = false }) {
                 <option value="hindi">Hindi</option>
                 <option value="english">English</option>
               </select>
+            </label>
+            <label className="block max-w-xs text-sm">Receipt printer paper size
+              <select className={field} aria-label="Receipt printer paper size"
+                value={receiptControls.receipt_print_size}
+                onChange={(event) => setReceiptControls((current) => ({
+                  ...current, receipt_print_size: event.target.value,
+                }))}>
+                <option value="default">Standard receipt (default)</option>
+                <option value="80mm">Thermal printer · 80 mm</option>
+                <option value="58mm">Thermal printer · 58 mm</option>
+              </select>
+              <span className="mt-1 block text-muted">
+                Thermal receipts use a compact roll layout and grow with the receipt contents. Choose the same roll width in your printer settings.
+              </span>
             </label>
             <label className="block max-w-xs text-sm">Receipt fee (₹) — default for new receipts
               <input className={field} type="number" min="0" step="0.01" required

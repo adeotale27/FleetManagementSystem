@@ -57,7 +57,8 @@ function ReceiptLogo({ src, name }) {
 
 export default function TransportReceipt({
   receipt, settings = {}, company = {}, showCharges = true, language = "hindi",
-  transportDetails = [], extraDetails = [], showSenderAddress = true, showReceiverAddress = true,
+  printSize = "default", transportDetails = [], extraDetails = [],
+  showSenderAddress = true, showReceiverAddress = true,
   showReceiverPhone = true,
 }) {
   if (!receipt) return null;
@@ -88,7 +89,10 @@ export default function TransportReceipt({
   ];
 
   return (
-    <article className={`transport-lr transport-lr--${goodsDensity}`} lang="hi" data-goods-count={goods.length}>
+    <article className={`transport-lr transport-lr--${goodsDensity} ${
+      printSize === "80mm" ? "transport-lr--thermal-80"
+        : printSize === "58mm" ? "transport-lr--thermal-58" : ""
+    }`} lang="hi" data-print-size={printSize} data-goods-count={goods.length}>
       <header className="transport-lr-header">
         <div className="transport-lr-header-left">
           {settings.legal_line && <p className="transport-lr-jurisdiction">{settings.legal_line}</p>}
@@ -172,10 +176,13 @@ export default function TransportReceipt({
       <section className="transport-lr-body" aria-label="Goods and charges">
         <div className="transport-lr-goods">
           <div className="transport-lr-table-heading">
-            <strong>{labelValue("नं.", "No.", language)}</strong><strong>{labelValue("माल का विवरण", "Goods description", language)}</strong>
+            <strong>{labelValue("नं.", "No.", language)}</strong>
+            <strong>{labelValue("मात्रा", "Quantity", language)}</strong>
+            <strong>{labelValue("माल का विवरण", "Goods description", language)}</strong>
           </div>
           <div className="transport-lr-goods-lines">
             <span className="transport-lr-serial-divider" aria-hidden="true" />
+            <span className="transport-lr-quantity-divider" aria-hidden="true" />
             <div className="transport-lr-goods-list">
               {goods.map((line, index) => {
                 const description = [
@@ -184,9 +191,10 @@ export default function TransportReceipt({
                 ].filter(Boolean).join(" / ");
                 return <p key={`${line.id || line.type || "goods"}-${index}`}>
                   <span>{index + 1}</span>
+                  <strong className="transport-lr-writing">
+                    {line.quantity != null && line.quantity !== "" && quantityValue(line.quantity, language)}
+                  </strong>
                   <span className="transport-lr-writing">{description}</span>
-                  {line.quantity != null && line.quantity !== "" &&
-                    <strong className="transport-lr-writing">{quantityValue(line.quantity, language)}</strong>}
                 </p>;
               })}
             </div>

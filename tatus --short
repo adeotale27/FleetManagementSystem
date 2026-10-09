@@ -1,0 +1,154 @@
+warning: in the working copy of 'frontend/src/pages/Booking.test.jsx', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/frontend/src/components/TransportReceipt.jsx b/frontend/src/components/TransportReceipt.jsx[m
+[1mindex fc59e83..914617f 100644[m
+[1m--- a/frontend/src/components/TransportReceipt.jsx[m
+[1m+++ b/frontend/src/components/TransportReceipt.jsx[m
+[36m@@ -172,10 +172,13 @@[m [mexport default function TransportReceipt({[m
+       <section className="transport-lr-body" aria-label="Goods and charges">[m
+         <div className="transport-lr-goods">[m
+           <div className="transport-lr-table-heading">[m
+[31m-            <strong>{labelValue("नं.", "No.", language)}</strong><strong>{labelValue("माल का विवरण", "Goods description", language)}</strong>[m
+[32m+[m[32m            <strong>{labelValue("नं.", "No.", language)}</strong>[m
+[32m+[m[32m            <strong>{labelValue("मात्रा", "Quantity", language)}</strong>[m
+[32m+[m[32m            <strong>{labelValue("माल का विवरण", "Goods description", language)}</strong>[m
+           </div>[m
+           <div className="transport-lr-goods-lines">[m
+             <span className="transport-lr-serial-divider" aria-hidden="true" />[m
+[32m+[m[32m            <span className="transport-lr-quantity-divider" aria-hidden="true" />[m
+             <div className="transport-lr-goods-list">[m
+               {goods.map((line, index) => {[m
+                 const description = [[m
+[36m@@ -184,9 +187,10 @@[m [mexport default function TransportReceipt({[m
+                 ].filter(Boolean).join(" / ");[m
+                 return <p key={`${line.id || line.type || "goods"}-${index}`}>[m
+                   <span>{index + 1}</span>[m
+[32m+[m[32m                  <strong className="transport-lr-writing">[m
+[32m+[m[32m                    {line.quantity != null && line.quantity !== "" && quantityValue(line.quantity, language)}[m
+[32m+[m[32m                  </strong>[m
+                   <span className="transport-lr-writing">{description}</span>[m
+[31m-                  {line.quantity != null && line.quantity !== "" &&[m
+[31m-                    <strong className="transport-lr-writing">{quantityValue(line.quantity, language)}</strong>}[m
+                 </p>;[m
+               })}[m
+             </div>[m
+[1mdiff --git a/frontend/src/components/TransportReceipt.test.jsx b/frontend/src/components/TransportReceipt.test.jsx[m
+[1mindex 6973281..f9161db 100644[m
+[1m--- a/frontend/src/components/TransportReceipt.test.jsx[m
+[1m+++ b/frontend/src/components/TransportReceipt.test.jsx[m
+[36m@@ -40,6 +40,11 @@[m [mdescribe("TransportReceipt", () => {[m
+     expect(container.querySelector(".transport-lr-contacts").textContent).toContain("0000000000");[m
+     expect(container.querySelector('.transport-lr-meta [aria-hidden="true"].transport-lr-field-icon')).not.toBeNull();[m
+     expect(container.querySelector(".transport-lr-serial-divider")).not.toBeNull();[m
+[32m+[m[32m    expect(container.querySelector(".transport-lr-quantity-divider")).not.toBeNull();[m
+[32m+[m[32m    expect([...container.querySelectorAll(".transport-lr-table-heading strong")][m
+[32m+[m[32m      .map((heading) => heading.textContent)).toEqual(["नं.", "मात्रा", "माल का विवरण"]);[m
+[32m+[m[32m    expect([...container.querySelector(".transport-lr-goods-list > p").children][m
+[32m+[m[32m      .map((cell) => cell.textContent)).toEqual(["1", "२", "चावल"]);[m
+     expect(container.querySelectorAll(".transport-lr-parties .transport-lr-field-icon").length)[m
+       .toBeGreaterThanOrEqual(3);[m
+     const amountCells = [...container.querySelectorAll(".transport-lr-charges tbody tr:last-child td")][m
+[36m@@ -87,6 +92,7 @@[m [mdescribe("TransportReceipt", () => {[m
+     const totalRow = container.querySelector(".transport-lr-quantity-total");[m
+     expect(totalRow.textContent).toContain("कुल मात्रा");[m
+     expect(totalRow.textContent).toContain("७०");[m
+[32m+[m[32m    expect(totalRow.lastElementChild.textContent).toBe("७०");[m
+     expect(container.querySelectorAll(".transport-lr-goods-list > p")).toHaveLength(3);[m
+   });[m
+ [m
+[1mdiff --git a/frontend/src/index.css b/frontend/src/index.css[m
+[1mindex 8f2135a..f969d61 100644[m
+[1m--- a/frontend/src/index.css[m
+[1m+++ b/frontend/src/index.css[m
+[36m@@ -300,32 +300,34 @@[m [minput, select, textarea { color-scheme: light; }[m
+ .transport-lr-details { display: flex; flex-wrap: wrap; gap: 0.5mm 5mm; border-bottom: 1px solid #222; padding: 1mm 3mm; font-size: 7.5pt; }[m
+ .transport-lr-body { display: grid; min-height: 64mm; flex: 1; grid-template-columns: minmax(0, 1fr) 31%; }[m
+ .transport-lr-goods { display: flex; min-width: 0; flex-direction: column; border-right: 2px solid #222; }[m
+[31m-.transport-lr-table-heading { display: grid; min-height: 8mm; grid-template-columns: 13mm minmax(0, 1fr); border-bottom: 1px solid #222; text-align: center; }[m
+[32m+[m[32m.transport-lr-table-heading { display: grid; min-height: 8mm; grid-template-columns: 13mm 15mm minmax(0, 1fr); border-bottom: 1px solid #222; text-align: center; }[m
+ .transport-lr-table-heading strong { display: grid; place-items: center; padding: 1mm; }[m
+[31m-.transport-lr-table-heading strong + strong { border-left: 1px solid #222; font-size: 12pt; }[m
+[32m+[m[32m.transport-lr-table-heading strong + strong { border-left: 1px solid #222; }[m
+[32m+[m[32m.transport-lr-table-heading strong:last-child { font-size: 12pt; }[m
+ .transport-lr-goods-lines { position: relative; display: flex; min-height: 0; flex: 1; flex-direction: column; }[m
+ .transport-lr-serial-divider { position: absolute; top: 0; bottom: 0; left: 13mm; border-left: 1px solid #222; pointer-events: none; }[m
+[32m+[m[32m.transport-lr-quantity-divider { position: absolute; top: 0; bottom: 0; left: 28mm; border-left: 1px solid #222; pointer-events: none; }[m
+ .transport-lr-goods-list { flex: 1; }[m
+[31m-.transport-lr-goods-list > p { display: grid; min-height: 8mm; grid-template-columns: 13mm minmax(0, 1fr) 15mm; align-items: start; margin: 0; }[m
+[32m+[m[32m.transport-lr-goods-list > p { display: grid; min-height: 8mm; grid-template-columns: 13mm 15mm minmax(0, 1fr); align-items: start; margin: 0; }[m
+ .transport-lr-goods-list > p > span:first-child { align-self: stretch; padding: 2mm; text-align: center; }[m
+[31m-.transport-lr-goods-list > p > span:nth-child(2) { min-width: 0; padding: 2mm 3mm; overflow-wrap: anywhere; }[m
+[31m-.transport-lr-goods-list > p > strong { padding: 2mm 2mm 2mm 0; text-align: right; }[m
+[31m-.transport-lr-quantity-total { display: grid; min-height: 8mm; grid-template-columns: 13mm minmax(0, 1fr) 15mm; align-items: center; border-top: 1px solid #222; padding: 0.5mm 2mm 0.5mm 0; font-size: 9pt; }[m
+[31m-.transport-lr-quantity-total strong:first-child { grid-column: 2; padding-right: 2mm; text-align: right; }[m
+[31m-.transport-lr-quantity-total strong:last-child { grid-column: 3; text-align: right; }[m
+[32m+[m[32m.transport-lr-goods-list > p > strong { padding: 2mm 1mm; text-align: center; }[m
+[32m+[m[32m.transport-lr-goods-list > p > span:last-child { min-width: 0; padding: 2mm 3mm; overflow-wrap: anywhere; }[m
+[32m+[m[32m.transport-lr-quantity-total { display: grid; min-height: 8mm; grid-template-columns: 13mm 15mm minmax(0, 1fr); align-items: center; border-top: 1px solid #222; padding: 0.5mm 2mm 0.5mm 0; font-size: 9pt; }[m
+[32m+[m[32m.transport-lr-quantity-total strong:first-child { grid-column: 3; padding-right: 2mm; text-align: right; }[m
+[32m+[m[32m.transport-lr-quantity-total strong:last-child { grid-column: 2; grid-row: 1; text-align: center; }[m
+ .transport-lr--compact .transport-lr-goods-list,[m
+ .transport-lr--dense .transport-lr-goods-list { display: flex; min-height: 0; flex-direction: column; }[m
+ .transport-lr--compact .transport-lr-goods-list > p,[m
+ .transport-lr--dense .transport-lr-goods-list > p { min-height: 0; flex: 1 1 0; align-items: center; line-height: 1.05; }[m
+ .transport-lr--compact .transport-lr-goods-list > p > span:first-child,[m
+[31m-.transport-lr--compact .transport-lr-goods-list > p > span:nth-child(2),[m
+[32m+[m[32m.transport-lr--compact .transport-lr-goods-list > p > span:last-child,[m
+ .transport-lr--compact .transport-lr-goods-list > p > strong { padding-top: 0.75mm; padding-bottom: 0.75mm; }[m
+[31m-.transport-lr--compact .transport-lr-goods-list > p > span:nth-child(2),[m
+[32m+[m[32m.transport-lr--compact .transport-lr-goods-list > p > span:last-child,[m
+ .transport-lr--compact .transport-lr-goods-list > p > strong { font-size: 10pt; }[m
+ .transport-lr--dense .transport-lr-goods-list > p > span:first-child,[m
+[31m-.transport-lr--dense .transport-lr-goods-list > p > span:nth-child(2),[m
+[32m+[m[32m.transport-lr--dense .transport-lr-goods-list > p > span:last-child,[m
+ .transport-lr--dense .transport-lr-goods-list > p > strong { padding-top: 0.4mm; padding-bottom: 0.4mm; }[m
+[31m-.transport-lr--dense .transport-lr-goods-list > p > span:nth-child(2),[m
+[32m+[m[32m.transport-lr--dense .transport-lr-goods-list > p > span:last-child,[m
+ .transport-lr--dense .transport-lr-goods-list > p > strong { font-size: 8pt; }[m
+ .transport-lr--dense .transport-lr-quantity-total { min-height: 6mm; font-size: 8pt; }[m
+ .transport-lr-charges { width: 100%; border-collapse: collapse; table-layout: fixed; }[m
+[36m@@ -366,6 +368,7 @@[m [minput, select, textarea { color-scheme: light; }[m
+   .booking-workspace--receipts .booking-trip-ref { min-height: 2.5rem; }[m
+   .booking-workspace--receipts .receipt-form-card { padding: 0.875rem; }[m
+   .booking-workspace--receipts .receipt-form-card .fld { min-height: 2.75rem; font-size: 16px; }[m
+[32m+[m[32m  .booking-workspace--receipts .receipt-form-actions { bottom: calc(4.5rem + env(safe-area-inset-bottom)); }[m
+   .booking-workspace--receipts .receipt-form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }[m
+   .booking-workspace--receipts .receipt-form-actions > :last-child { grid-column: 1 / -1; }[m
+   .booking-workspace--receipts .receipt-goods-row { grid-template-columns: 6.5rem minmax(0, 1fr) 2rem; gap: 0.375rem; padding: 0.375rem; }[m
+[1mdiff --git a/frontend/src/pages/Booking.jsx b/frontend/src/pages/Booking.jsx[m
+[1mindex a07849a..a00540c 100644[m
+[1m--- a/frontend/src/pages/Booking.jsx[m
+[1m+++ b/frontend/src/pages/Booking.jsx[m
+[36m@@ -436,6 +436,13 @@[m [mfunction ReceiptForm({[m
+   const [saving, setSaving] = useState(false);[m
+   const savingRef = useRef(false);[m
+   const [saveKey] = useState(keyForRequest);[m
+[32m+[m[32m  const senderNameInput = useRef(null);[m
+[32m+[m[32m  useEffect(() => {[m
+[32m+[m[32m    if (!receipt) return;[m
+[32m+[m[32m    const input = senderNameInput.current;[m
+[32m+[m[32m    input?.scrollIntoView?.({ behavior: "smooth", block: "center" });[m
+[32m+[m[32m    input?.focus({ preventScroll: true });[m
+[32m+[m[32m  }, [receipt?.id]);[m
+   useEffect(() => {[m
+     if (receipt || draftRecovery.draft || draftRecovery.error) return;[m
+     const hasContent = Boolean([m
+[36m@@ -631,6 +638,7 @@[m [mfunction ReceiptForm({[m
+       <form onSubmit={(event) => save(event)} className="space-y-4">[m
+         <div className="grid gap-3 md:grid-cols-3">[m
+           <label><span className="lbl flex items-center gap-2"><UserRound size={16} aria-hidden="true" />{t("Sender (optional)", "भेजने वाला (ज़रूरी नहीं)")}</span><input className={field} aria-label={t("Sender name in English", "भेजने वाले का नाम")}[m
+[32m+[m[32m            ref={senderNameInput}[m
+             value={form.sender_name} onChange={(event) => patch({ sender_name: event.target.value })} /></label>[m
+           <label><span className="lbl">{t("Receipt date", "रसीद की तारीख")}</span><input className={field} type="date" required[m
+             disabled={!receipt} value={receipt ? form.receipt_date : trip.operating_date}[m
+[1mdiff --git a/frontend/src/pages/Booking.test.jsx b/frontend/src/pages/Booking.test.jsx[m
+[1mindex 60513de..11704e7 100644[m
+[1m--- a/frontend/src/pages/Booking.test.jsx[m
+[1m+++ b/frontend/src/pages/Booking.test.jsx[m
+[36m@@ -656,6 +656,7 @@[m [mdescribe("simple booking workflow", () => {[m
+       Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Edit").click();[m
+     });[m
+     expect(container.querySelector('[aria-label="Goods and description row 1"]').value).toBe("Cement Sacks");[m
+[32m+[m[32m    expect(document.activeElement).toBe(container.querySelector('[aria-label="Sender name in English"]'));[m
+     await act(async () => {[m
+       Array.from(container.querySelectorAll("button")).find((button) =>[m
+         button.textContent.includes("Cancel editing")).click();[m
