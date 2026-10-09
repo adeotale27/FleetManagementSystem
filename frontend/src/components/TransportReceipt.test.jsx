@@ -40,12 +40,33 @@ describe("TransportReceipt", () => {
     expect(container.querySelector(".transport-lr-contacts").textContent).toContain("0000000000");
     expect(container.querySelector('.transport-lr-meta [aria-hidden="true"].transport-lr-field-icon')).not.toBeNull();
     expect(container.querySelector(".transport-lr-serial-divider")).not.toBeNull();
+    expect(container.querySelector(".transport-lr-quantity-divider")).not.toBeNull();
+    expect([...container.querySelectorAll(".transport-lr-table-heading strong")]
+      .map((heading) => heading.textContent)).toEqual(["नं.", "मात्रा", "माल का विवरण"]);
+    expect([...container.querySelector(".transport-lr-goods-list > p").children]
+      .map((cell) => cell.textContent)).toEqual(["1", "२", "चावल"]);
     expect(container.querySelectorAll(".transport-lr-parties .transport-lr-field-icon").length)
       .toBeGreaterThanOrEqual(3);
     const amountCells = [...container.querySelectorAll(".transport-lr-charges tbody tr:last-child td")]
       .map((cell) => cell.textContent);
     expect(amountCells).toEqual(["₹37", "00"]);
     expect(container.querySelectorAll(".transport-lr-currency-symbol")).toHaveLength(4);
+  });
+
+  it("renders thermal receipt layouts at the configured roll width", () => {
+    const { container, rerender } = render(<TransportReceipt receipt={receipt} printSize="80mm" />);
+    const receiptElement = container.querySelector(".transport-lr");
+
+    expect(receiptElement.classList.contains("transport-lr--thermal-80")).toBe(true);
+    expect(receiptElement.getAttribute("data-print-size")).toBe("80mm");
+    expect(receiptElement.textContent).toContain("NGP-LR-01");
+    expect(receiptElement.textContent).toContain("चावल");
+    expect(receiptElement.textContent).toContain("₹30");
+
+    rerender(<TransportReceipt receipt={receipt} printSize="58mm" />);
+    expect(container.querySelector(".transport-lr").classList.contains("transport-lr--thermal-58"))
+      .toBe(true);
+    expect(container.querySelector(".transport-lr").getAttribute("data-print-size")).toBe("58mm");
   });
 
   it("prints configurable branch contact lines in the right-side header block", () => {
@@ -87,6 +108,7 @@ describe("TransportReceipt", () => {
     const totalRow = container.querySelector(".transport-lr-quantity-total");
     expect(totalRow.textContent).toContain("कुल मात्रा");
     expect(totalRow.textContent).toContain("७०");
+    expect(totalRow.lastElementChild.textContent).toBe("७०");
     expect(container.querySelectorAll(".transport-lr-goods-list > p")).toHaveLength(3);
   });
 

@@ -382,6 +382,12 @@ describe("SiteConsole fetch cycles", () => {
     expect(controls.textContent).toContain("4. Suggested goods names");
     expect(controls.textContent).toContain("These switches apply to every site.");
     expect(controls.querySelectorAll('[aria-label^="Receipt branch name "]')).toHaveLength(3);
+    const printSize = controls.querySelector('[aria-label="Receipt printer paper size"]');
+    expect(printSize.value).toBe("default");
+    printSize.value = "58mm";
+    await act(async () => {
+      printSize.dispatchEvent(new Event("change", { bubbles: true }));
+    });
 
     const companyName = controls.querySelector('[aria-label="Receipt company name"]');
     await act(async () => {
@@ -473,6 +479,7 @@ describe("SiteConsole fetch cycles", () => {
         goods_suggestions: expect.arrayContaining(["स्थानीय अनाज"]),
         receipt_controls: expect.objectContaining({
           receipt_language: "english",
+          receipt_print_size: "58mm",
           receipt_fee: "5.00",
           overdue_after_days: 5,
         }),

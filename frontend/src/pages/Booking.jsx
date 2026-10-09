@@ -20,6 +20,14 @@ const DEFAULT_LEDGER_COLUMN_KEYS = [
   "date", "receipt", "sender", "receiver", "goods", "quantity", "bhada", "hamali",
   "receiptFee", "enteredBy", "amountPaid",
 ];
+const DEFAULT_LEDGER_COLUMN_WIDTHS = {
+  date: 96, receipt: 170, sender: 110, senderAddress: 180, senderPhone: 120,
+  receiver: 110, receiverAddress: 180, receiverPhone: 125, receiverCity: 120,
+  goods: 440, goodsType: 180, goodsDescription: 240, quantity: 115, bhada: 120,
+  hamali: 120, receiptFee: 100, totalAmount: 125, amountReceived: 135,
+  balanceDue: 120, paymentStatus: 140, enteredBy: 140, amountPaid: 150,
+  tripNumber: 150, truckNumber: 125, driver: 140, site: 160, createdAt: 180,
+};
 const ALL_LEDGER_COLUMN_KEYS = [
   "date", "receipt", "sender", "senderAddress", "senderPhone", "receiver",
   "receiverAddress", "receiverPhone", "receiverCity", "goods", "goodsType",
@@ -28,6 +36,64 @@ const ALL_LEDGER_COLUMN_KEYS = [
   "tripNumber", "truckNumber", "driver", "site", "createdAt",
 ];
 const ledgerColumnStorageKey = (siteId) => `booking_ledger_columns:${encodeURIComponent(siteId)}`;
+const ledgerColumnWidthsStorageKey = (siteId) => `booking_ledger_column_widths:${encodeURIComponent(siteId)}`;
+const minimumLedgerColumnWidth = (key) => ({
+  date: 100, receipt: 170, sender: 90, receiver: 90, goods: 220,
+  quantity: 95, bhada: 100, hamali: 100, receiptFee: 85, amountPaid: 125,
+}[key] || 60);
+
+function normalizeLedgerColumnWidths(widths) {
+  return Object.fromEntries(Object.entries(DEFAULT_LEDGER_COLUMN_WIDTHS).map(([key, defaultWidth]) => {
+    const width = Number(widths?.[key]);
+    return [key, Number.isFinite(width)
+      ? Math.min(1000, Math.max(minimumLedgerColumnWidth(key), width)) : defaultWidth];
+  }));
+}
+
+function fitLedgerColumnWidths(columns, savedWidths, availableWidth) {
+  const widths = columns.map(({ key }) => ({
+    key,
+    width: Math.max(minimumLedgerColumnWidth(key), savedWidths[key] || DEFAULT_LEDGER_COLUMN_WIDTHS[key]),
+  }));
+  const minimumTotal = widths.reduce((total, column) => total + minimumLedgerColumnWidth(column.key), 0);
+  const preferredTotal = widths.reduce((total, column) => total + column.width, 0);
+  const targetWidth = Math.max(Math.round(availableWidth), minimumTotal);
+  const remaining = targetWidth - preferredTotal;
+
+  if (remaining > 0) {
+    const weights = widths.map(({ key }) => key === "goods" ? 4 : 1);
+    const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+    widths.forEach((column, index) => {
+      column.width += remaining * weights[index] / totalWeight;
+    });
+  } else if (remaining < 0) {
+    const shrinkable = widths.reduce((total, column) =>
+      total + Math.max(0, column.width - minimumLedgerColumnWidth(column.key)), 0);
+    const deficit = -remaining;
+    if (shrinkable > 0) {
+      widths.forEach((column) => {
+        const capacity = Math.max(0, column.width - minimumLedgerColumnWidth(column.key));
+        const reduction = Math.min(capacity, deficit * capacity / shrinkable);
+        column.width -= reduction;
+      });
+    }
+  }
+  const fitted = Object.fromEntries(widths.map(({ key, width }) => [key, Math.round(width)]));
+  const roundingDifference = targetWidth
+    - Object.values(fitted).reduce((total, width) => total + width, 0);
+  const adjustmentKey = fitted.goods !== undefined ? "goods" : widths[0]?.key;
+  if (adjustmentKey) fitted[adjustmentKey] += roundingDifference;
+  return fitted;
+}
+
+function readLedgerColumnWidths(siteId) {
+  if (!siteId) return DEFAULT_LEDGER_COLUMN_WIDTHS;
+  try {
+    return normalizeLedgerColumnWidths(JSON.parse(localStorage.getItem(ledgerColumnWidthsStorageKey(siteId))));
+  } catch {
+    return DEFAULT_LEDGER_COLUMN_WIDTHS;
+  }
+}
 
 function normalizeLedgerColumnKeys(keys) {
   const uniqueKeys = keys.filter((key, index) =>
@@ -352,6 +418,8 @@ function hindiLedgerGoodsLine(line) {
 function ReceiptPrint({ receipt, trip, site, branding, showCharges, controls, active }) {
   if (!receipt) return null;
   const configured = site?.config?.receipt_branding || {};
+  const printSize = ["80mm", "58mm"].includes(controls.receipt_print_size)
+    ? controls.receipt_print_size : "default";
   const hindi = controls.receipt_language !== "english";
   const globalAddress = [branding?.address, branding?.city, branding?.state]
     .filter(Boolean).join(", ");
@@ -370,7 +438,8 @@ function ReceiptPrint({ receipt, trip, site, branding, showCharges, controls, ac
   const total = receipt.total_rent ?? Number(receipt.rent || 0) + Number(receipt.hamali || 0)
     + Number(receipt.receipt_fee ?? 2);
   return (
-    <div className="booking-print-target" data-active={active ? "true" : "false"}>
+    <div className="booking-print-target" data-active={active ? "true" : "false"}
+      data-print-size={printSize}>
       <TransportReceipt
         receipt={{
           ...receipt,
@@ -393,6 +462,7 @@ function ReceiptPrint({ receipt, trip, site, branding, showCharges, controls, ac
         company={branding || {}}
         showCharges={showCharges}
         language={hindi ? "hindi" : "english"}
+        printSize={printSize}
         showSenderAddress={controls.sender_address_enabled}
         showReceiverAddress={controls.receiver_address_enabled}
         showReceiverPhone={controls.receiver_phone_enabled}
@@ -432,10 +502,18 @@ function ReceiptForm({
   });
   const [error, setError] = useState("");
   const [activeGoodsRow, setActiveGoodsRow] = useState(-1);
+  const [activeGoodsSuggestion, setActiveGoodsSuggestion] = useState(-1);
   const [receiverMatch, setReceiverMatch] = useState(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [saveKey] = useState(keyForRequest);
+  const senderNameInput = useRef(null);
+  useEffect(() => {
+    if (!receipt) return;
+    const input = senderNameInput.current;
+    input?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    input?.focus({ preventScroll: true });
+  }, [receipt?.id]);
   useEffect(() => {
     if (receipt || draftRecovery.draft || draftRecovery.error) return;
     const hasContent = Boolean(
@@ -471,6 +549,12 @@ function ReceiptForm({
   const changeGoods = (index, key, value) => {
     setForm((current) => ({ ...current, goods_rows: current.goods_rows.map((line, row) =>
       row === index ? { ...line, [key]: value } : line) }));
+  };
+  const selectGoodsSuggestion = (index, suggestion) => {
+    changeGoods(index, "type", suggestion);
+    changeGoods(index, "type_hindi", suggestion);
+    setActiveGoodsSuggestion(-1);
+    setActiveGoodsRow(-1);
   };
   const printAfterSave = useRef(false);
   const saveAndPrint = (event) => {
@@ -631,6 +715,7 @@ function ReceiptForm({
       <form onSubmit={(event) => save(event)} className="space-y-4">
         <div className="grid gap-3 md:grid-cols-3">
           <label><span className="lbl flex items-center gap-2"><UserRound size={16} aria-hidden="true" />{t("Sender (optional)", "भेजने वाला (ज़रूरी नहीं)")}</span><input className={field} aria-label={t("Sender name in English", "भेजने वाले का नाम")}
+            ref={senderNameInput}
             value={form.sender_name} onChange={(event) => patch({ sender_name: event.target.value })} /></label>
           <label><span className="lbl">{t("Receipt date", "रसीद की तारीख")}</span><input className={field} type="date" required
             disabled={!receipt} value={receipt ? form.receipt_date : trip.operating_date}
@@ -684,7 +769,10 @@ function ReceiptForm({
             </button>
           </div>
             <div className="space-y-1.5">
-            {form.goods_rows.map((line, index) => <div key={index}
+            {form.goods_rows.map((line, index) => {
+              const suggestions = matchingGoodsSuggestions(line.type, goodsSuggestions);
+              const listId = `goods-suggestions-${index + 1}`;
+              return <div key={index}
                 className="receipt-goods-row grid grid-cols-[8.5rem_minmax(0,1fr)_2.25rem] items-start gap-2 rounded-xl border border-line p-1.5">
               <label className="relative col-start-2 row-start-1 block min-w-0">
                 <span className="lbl">{t("Goods and description", "सामान का नाम")} · {index + 1}</span>
@@ -695,24 +783,51 @@ function ReceiptForm({
                     placeholder={t("Goods and description", "सामान का नाम")} aria-label={language === "hi"
                       ? `${t("Goods and description", "सामान का नाम")} · ${index + 1}`
                       : `Goods and description row ${index + 1}`}
-                    onFocus={() => setActiveGoodsRow(index)}
+                    aria-autocomplete="list"
+                    aria-controls={activeGoodsRow === index && suggestions.length ? listId : undefined}
+                    aria-activedescendant={activeGoodsRow === index && activeGoodsSuggestion >= 0
+                      ? `${listId}-option-${activeGoodsSuggestion}` : undefined}
+                    onFocus={() => {
+                      setActiveGoodsRow(index);
+                      setActiveGoodsSuggestion(-1);
+                    }}
                     onBlur={() => window.setTimeout(() =>
                       setActiveGoodsRow((active) => active === index ? -1 : active), 120)}
                     onChange={(event) => {
+                      setActiveGoodsSuggestion(-1);
                       changeGoods(index, "type", event.target.value);
                       changeGoods(index, "type_hindi", convertHindi
                         ? romanHindi(event.target.value) : event.target.value);
+                    }}
+                    onKeyDown={(event) => {
+                      if (!suggestions.length || activeGoodsRow !== index) return;
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        setActiveGoodsSuggestion((current) => (current + 1) % suggestions.length);
+                      } else if (event.key === "ArrowUp") {
+                        event.preventDefault();
+                        setActiveGoodsSuggestion((current) =>
+                          current <= 0 ? suggestions.length - 1 : current - 1);
+                      } else if (event.key === "Enter" && activeGoodsSuggestion >= 0) {
+                        event.preventDefault();
+                        selectGoodsSuggestion(index, suggestions[activeGoodsSuggestion]);
+                      } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        setActiveGoodsRow(-1);
+                        setActiveGoodsSuggestion(-1);
+                      }
                     }} />
-                  {activeGoodsRow === index && matchingGoodsSuggestions(line.type, goodsSuggestions).length > 0 && <div
+                  {activeGoodsRow === index && suggestions.length > 0 && <div
+                    id={listId}
                     className="absolute left-0 top-full z-30 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-slate-300 bg-white py-1 text-left text-sm text-slate-900 shadow-xl"
                     role="listbox" aria-label={`Suggestions for goods row ${index + 1}`}>
-                    {matchingGoodsSuggestions(line.type, goodsSuggestions).map((suggestion) => <button key={suggestion} type="button"
-                      className="block w-full px-3 py-2 text-left text-slate-900 hover:bg-emerald-50 focus:bg-emerald-50"
+                    {suggestions.map((suggestion, suggestionIndex) => <button key={suggestion}
+                      id={`${listId}-option-${suggestionIndex}`} type="button" role="option"
+                      aria-selected={activeGoodsSuggestion === suggestionIndex}
+                      className={`block w-full px-3 py-2 text-left text-slate-900 hover:bg-emerald-50 focus:bg-emerald-50 ${
+                        activeGoodsSuggestion === suggestionIndex ? "bg-emerald-50" : ""}`}
                       onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        changeGoods(index, "type_hindi", suggestion);
-                        setActiveGoodsRow(-1);
-                      }}>
+                      onClick={() => selectGoodsSuggestion(index, suggestion)}>
                       {suggestion}
                     </button>)}
                   </div>}
@@ -740,7 +855,8 @@ function ReceiptForm({
                 }}>
                 <X size={18} />
               </button>
-            </div>)}
+            </div>;
+            })}
           </div>
         </section>
         {canEditFinance && <section className="receipt-finance-fields grid gap-3 rounded-xl border border-line p-3 sm:grid-cols-2">
@@ -833,6 +949,7 @@ export default function Booking({ user }) {
   const [printReceipt, setPrintReceipt] = useState(null);
   const [receiptPreview, setReceiptPreview] = useState(null);
   const [printMode, setPrintMode] = useState(null);
+  const thermalPrintPageStyle = useRef(null);
   const [success, setSuccess] = useState("");
   const [ledgerRows, setLedgerRows] = useState([]);
   const [ledgerTrips, setLedgerTrips] = useState([]);
@@ -844,10 +961,14 @@ export default function Booking({ user }) {
   const [ledgerError, setLedgerError] = useState("");
   const [ledgerDate, setLedgerDate] = useState(todayISO());
   const [ledgerColumnKeys, setLedgerColumnKeys] = useState(DEFAULT_LEDGER_COLUMN_KEYS);
+  const [ledgerColumnWidths, setLedgerColumnWidths] = useState(DEFAULT_LEDGER_COLUMN_WIDTHS);
   const [ledgerColumnPreferencesSite, setLedgerColumnPreferencesSite] = useState("");
   const [ledgerColumnPreferenceError, setLedgerColumnPreferenceError] = useState("");
   const ledgerColumnPicker = useRef(null);
+  const ledgerTableContainer = useRef(null);
   const draggedLedgerColumn = useRef("");
+  const resizingLedgerColumn = useRef(null);
+  const [ledgerTableAvailableWidth, setLedgerTableAvailableWidth] = useState(0);
   const [ledgerSearch, setLedgerSearch] = useState("");
   const [ledgerPaymentFilter, setLedgerPaymentFilter] = useState("all");
   const [ledgerStateFilter, setLedgerStateFilter] = useState("all");
@@ -874,6 +995,7 @@ export default function Booking({ user }) {
   const previousPage = useRef(page);
   useEffect(() => {
     setLedgerColumnKeys(readLedgerColumnKeys(siteId));
+    setLedgerColumnWidths(readLedgerColumnWidths(siteId));
     setLedgerColumnPreferencesSite(siteId);
   }, [siteId]);
   useEffect(() => {
@@ -885,6 +1007,15 @@ export default function Booking({ user }) {
       setLedgerColumnPreferenceError("Column preferences could not be saved on this device.");
     }
   }, [ledgerColumnKeys, ledgerColumnPreferencesSite, siteId]);
+  useEffect(() => {
+    if (!siteId || ledgerColumnPreferencesSite !== siteId) return;
+    try {
+      localStorage.setItem(ledgerColumnWidthsStorageKey(siteId), JSON.stringify(ledgerColumnWidths));
+      setLedgerColumnPreferenceError("");
+    } catch {
+      setLedgerColumnPreferenceError("Column widths could not be saved on this device.");
+    }
+  }, [ledgerColumnWidths, ledgerColumnPreferencesSite, siteId]);
   useEffect(() => {
     if (page !== "ledger") return undefined;
     const closePicker = (event) => {
@@ -904,6 +1035,47 @@ export default function Booking({ user }) {
       document.removeEventListener("keydown", closePickerOnEscape);
     };
   }, [page]);
+  useEffect(() => {
+    if (page !== "ledger") return undefined;
+    const container = ledgerTableContainer.current;
+    if (!container) return undefined;
+    const measure = () => {
+      const width = container.clientWidth || container.getBoundingClientRect().width;
+      setLedgerTableAvailableWidth(width);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [page, ledgerTripId]);
+  useEffect(() => {
+    const resizeColumn = (event) => {
+      const resize = resizingLedgerColumn.current;
+      if (!resize) return;
+      const delta = document.documentElement.dir === "rtl"
+        ? resize.startX - event.clientX : event.clientX - resize.startX;
+      setLedgerColumnWidths((current) => ({
+        ...current,
+        [resize.key]: Math.min(1000,
+          Math.max(minimumLedgerColumnWidth(resize.key), resize.startWidth + delta)),
+      }));
+    };
+    const finishResize = () => {
+      resizingLedgerColumn.current = null;
+    };
+    window.addEventListener("pointermove", resizeColumn);
+    window.addEventListener("pointerup", finishResize);
+    window.addEventListener("pointercancel", finishResize);
+    return () => {
+      window.removeEventListener("pointermove", resizeColumn);
+      window.removeEventListener("pointerup", finishResize);
+      window.removeEventListener("pointercancel", finishResize);
+    };
+  }, []);
   const site = sites.find((item) => item.id === siteId);
   const ledgerTrip = ledgerTrips.find((trip) => trip.id === ledgerTripId);
   const ledgerSummaryKey = `${siteId}:${ledgerDate}:${ledgerTripId}`;
@@ -999,6 +1171,8 @@ export default function Booking({ user }) {
     ...(site?.config?.receipt_controls || {}),
     ...(globalReceiptControls || {}),
   };
+  const receiptPrintSize = ["80mm", "58mm"].includes(receiptControls.receipt_print_size)
+    ? receiptControls.receipt_print_size : "default";
   const goodsSuggestions = Array.isArray(site?.config?.goods_suggestions)
     ? site.config.goods_suggestions : DEFAULT_BOOKING_GOODS;
   const convertHindi = receiptControls.hindi_conversion_enabled !== false;
@@ -1217,6 +1391,7 @@ export default function Booking({ user }) {
     const finishPrint = () => {
       if (finished) return;
       finished = true;
+      if (thermalPrintPageStyle.current) thermalPrintPageStyle.current.textContent = "";
       setPrintMode(null);
       setReceiptPreview(null);
       setPrintReceipt(null);
@@ -1247,8 +1422,24 @@ export default function Booking({ user }) {
             image.addEventListener("error", finish, { once: true });
           })));
         if (!cancelled) {
-          printStarted = true;
-          window.print();
+            if (printMode === "receipt" && receiptPrintSize !== "default") {
+              const portal = document.querySelector(
+                ".booking-print-portal[data-mode='receipt']",
+              );
+              const target = portal?.querySelector(".booking-print-target");
+              const receiptElement = target?.querySelector(".transport-lr");
+              if (!portal || !target || !receiptElement) {
+                throw new Error("The receipt print layout is not available.");
+              }
+              portal.style.cssText = "display:block;position:fixed;left:-100000px;top:0;visibility:hidden";
+              target.style.cssText = "display:block;visibility:hidden";
+              const measuredHeight = receiptElement.getBoundingClientRect().height;
+              const heightMm = Math.max(100, Math.ceil(measuredHeight * 25.4 / 96) + 2);
+              thermalPrintPageStyle.current.textContent =
+                `@page { size: ${receiptPrintSize} ${heightMm}mm; margin: 0; }`;
+            }
+            printStarted = true;
+            window.print();
         }
       });
     }, 350);
@@ -1258,7 +1449,7 @@ export default function Booking({ user }) {
       window.removeEventListener("afterprint", onAfterPrint);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [printMode]);
+  }, [printMode, receiptPrintSize]);
 
   const selectSite = (value) => {
     setSiteId(value);
@@ -1925,6 +2116,14 @@ export default function Booking({ user }) {
     ...visibleLedgerColumns,
     ...availableLedgerColumns.filter((column) => !ledgerColumnKeys.includes(column.key)),
   ];
+  const fittedLedgerColumnWidths = fitLedgerColumnWidths(
+    orderedLedgerColumns,
+    ledgerColumnWidths,
+    ledgerTableAvailableWidth || orderedLedgerColumns.reduce((total, column) =>
+      total + ledgerColumnWidths[column.key], 0),
+  );
+  const fittedLedgerTableWidth = orderedLedgerColumns.reduce((total, column) =>
+    total + fittedLedgerColumnWidths[column.key], 0);
   const updateLedgerColumnKeys = (update) => {
     setLedgerColumnKeys((current) => normalizeLedgerColumnKeys(
       typeof update === "function" ? update(current) : update,
@@ -1965,7 +2164,8 @@ export default function Booking({ user }) {
         .booking-print-target { display:none; }
         .booking-workspace .lbl { text-transform:none; letter-spacing:normal; font-size:0.875rem; line-height:1.25rem; }
         @page {
-          size:${printMode === "ledger" ? (printableLedgerColumns.length > 12 ? "A3 landscape" : "A4 landscape") : "260mm 160mm"};
+          size:${printMode === "ledger" ? (printableLedgerColumns.length > 12 ? "A3 landscape" : "A4 landscape")
+    : receiptPrintSize === "default" ? "260mm 160mm" : receiptPrintSize};
           margin:${printMode === "ledger" ? "6mm" : "0"};
         }
         @media print {
@@ -1973,9 +2173,9 @@ export default function Booking({ user }) {
           body > :not(.booking-print-portal) { display:none !important; }
           body > .booking-print-portal { display:block !important; position:static !important; width:100% !important; }
           .booking-print-portal, .booking-print-portal * { visibility:visible !important; }
-          .booking-print-target[data-active="true"] { display:block !important; position:static !important; width:260mm !important; color:#111; background:transparent !important; font-family:"Noto Sans Devanagari","Mangal",sans-serif; font-size:10pt; }
+          .booking-print-target[data-active="true"] { display:block !important; position:static !important; width:${receiptPrintSize === "default" ? "260mm" : receiptPrintSize} !important; color:#111; background:transparent !important; font-family:"Noto Sans Devanagari","Mangal",sans-serif; font-size:10pt; }
           .booking-print-target .transport-lr-header { display:flex !important; }
-          .booking-print-portal[data-mode="receipt"] { width:260mm !important; }
+          .booking-print-portal[data-mode="receipt"] { width:${receiptPrintSize === "default" ? "260mm" : receiptPrintSize} !important; }
           .receipt-print-header { position:relative; display:flex; min-height:200px; align-items:center; justify-content:center; border-bottom:1px solid #111; padding:0 126px 8px 290px; text-align:center; }
           .receipt-print-logo { position:absolute; top:50%; left:0; width:270px; height:190px; max-width:270px; max-height:190px; transform:translateY(-50%); object-fit:contain; object-position:left center; }
           .receipt-print-company { width:100%; text-align:center; }
@@ -2485,10 +2685,16 @@ export default function Booking({ user }) {
                         {t("Select the columns to show in the ledger.", "बही में दिखाने के लिए कॉलम चुनें।")}
                       </p>
                     </div>
-                    <button type="button" className="text-xs font-semibold text-brand-700 underline"
-                      onClick={() => setLedgerColumnKeys(DEFAULT_LEDGER_COLUMN_KEYS)}>
-                      {t("Reset", "रीसेट")}
-                    </button>
+                    <div className="flex gap-3">
+                      <button type="button" className="text-xs font-semibold text-brand-700 underline"
+                        onClick={() => setLedgerColumnKeys(DEFAULT_LEDGER_COLUMN_KEYS)}>
+                        {t("Reset columns", "कॉलम रीसेट करें")}
+                      </button>
+                      <button type="button" className="text-xs font-semibold text-brand-700 underline"
+                        onClick={() => setLedgerColumnWidths(DEFAULT_LEDGER_COLUMN_WIDTHS)}>
+                        {t("Reset widths", "चौड़ाई रीसेट करें")}
+                      </button>
+                    </div>
                   </div>
                   <div className="grid grid-cols-1 gap-x-2 overflow-y-auto p-3 sm:grid-cols-2 md:grid-cols-3">
                     {orderedAvailableLedgerColumns.map((column) => {
@@ -2577,8 +2783,19 @@ export default function Booking({ user }) {
             </div>
           </Card>}
           {ledgerBusy ? <Loader label="Loading ledger…" /> : ledgerTripId ? (
-            <div className="overflow-auto border border-gray-500 bg-white">
-              <table aria-label="Selected ledger totals" className="hidden min-w-[1200px] border-collapse text-sm lg:table">
+            <div ref={ledgerTableContainer} className="overflow-auto border border-gray-500 bg-white">
+              <p className="hidden px-2 pt-2 text-xs text-muted lg:block">
+                {t("Drag a column divider to resize; use arrow keys on a focused divider for precise adjustments. Date and receipt numbers stay on one line, while long goods details wrap.",
+                  "चौड़ाई बदलने के लिए कॉलम का विभाजक खींचें; सटीक बदलाव के लिए फ़ोकस करके तीर कुंजियाँ दबाएँ। तारीख और रसीद नंबर एक ही लाइन में रहेंगे, लंबा सामान विवरण अगली लाइन में जाएगा।")}
+              </p>
+              <table aria-label="Selected ledger totals"
+                className="booking-ledger-table hidden border-collapse text-sm lg:table"
+                style={{
+                  tableLayout: "fixed",
+                  width: `${fittedLedgerTableWidth}px`,
+                }}>
+                <colgroup>{orderedLedgerColumns.map((column) =>
+                  <col key={column.key} style={{ width: `${fittedLedgerColumnWidths[column.key]}px` }} />)}</colgroup>
                 <thead className="bg-gray-200">
                   <tr>{orderedLedgerColumns.map((column) =>
                     <th key={column.key}
@@ -2611,16 +2828,46 @@ export default function Booking({ user }) {
                         event.preventDefault();
                         moveLedgerColumnByKeyboard(column.key, event.key === "ArrowLeft" ? -1 : 1);
                       }}
-                      className={`border border-gray-500 px-2 py-2 text-left font-bold ${
+                      className={`relative border border-gray-500 px-2 py-2 text-left font-bold ${
                         owner && column.key !== "amountPaid" ? "cursor-grab active:cursor-grabbing" : ""
                       }`}>
                       {ledgerColumnLabel(column.label, language)}
+                      <span role="separator" aria-orientation="vertical" tabIndex={0}
+                        aria-label={`${t("Resize", "बदलें")} ${ledgerColumnLabel(column.label, language)} ${t("column", "कॉलम")}`}
+                        aria-valuemin={minimumLedgerColumnWidth(column.key)} aria-valuemax={1000}
+                        aria-valuenow={fittedLedgerColumnWidths[column.key]}
+                        title={t("Drag to resize column", "कॉलम का आकार बदलने के लिए खींचें")}
+                        className="booking-ledger-column-resizer"
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          resizingLedgerColumn.current = {
+                            key: column.key,
+                            startX: event.clientX,
+                            startWidth: fittedLedgerColumnWidths[column.key],
+                          };
+                        }}
+                        onKeyDown={(event) => {
+                          if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          const delta = event.key === "ArrowRight" ? 16 : -16;
+                          setLedgerColumnWidths((current) => ({
+                            ...current,
+                            [column.key]: Math.min(1000, Math.max(
+                              minimumLedgerColumnWidth(column.key), current[column.key] + delta,
+                            )),
+                          }));
+                        }} />
                     </th>)}</tr>
                 </thead>
                 <tbody>{filteredLedgerRows.map((row) => {
                   const cell = "border border-gray-400 px-2 py-1 align-middle";
                   return <tr key={row.id} className={row.voided ? "bg-gray-100 text-gray-500" : ""}>
-                    {orderedLedgerColumns.map((column) => <td key={column.key} className={cell}
+                    {orderedLedgerColumns.map((column) => <td key={column.key}
+                      data-ledger-column={column.key}
+                      className={`${cell} ${column.key === "date" || column.key === "receipt"
+                        ? "whitespace-nowrap" : column.key === "goods" ? "break-words" : ""}`}
                       lang={["sender", "senderAddress", "receiver", "receiverAddress", "goods", "goodsType", "goodsDescription"].includes(column.key)
                         ? "hi" : undefined}>
                       {column.render(row)}
@@ -2725,6 +2972,7 @@ export default function Booking({ user }) {
               branding={user?.branding} showCharges={canFinanceRead}
               controls={{
                 receipt_language: receiptLanguage,
+                receipt_print_size: receiptPrintSize,
                 sender_address_enabled: senderAddressEnabled,
                 receiver_address_enabled: receiverAddressEnabled,
                 receiver_phone_enabled: receiverPhoneEnabled,
@@ -2740,6 +2988,7 @@ export default function Booking({ user }) {
             branding={user?.branding} showCharges={canFinanceRead}
             controls={{
               receipt_language: receiptLanguage,
+              receipt_print_size: receiptPrintSize,
               sender_address_enabled: senderAddressEnabled,
               receiver_address_enabled: receiverAddressEnabled,
               receiver_phone_enabled: receiverPhoneEnabled,
@@ -2781,6 +3030,7 @@ export default function Booking({ user }) {
         </div>,
         document.body,
       )}
+      <style ref={thermalPrintPageStyle} />
     </>
   );
 }

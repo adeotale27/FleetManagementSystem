@@ -52,6 +52,61 @@ describe("simple booking workflow", () => {
     expect(container.querySelector(".booking-trip-ref").parentElement).toBe(header);
   });
 
+  it("resizes ledger columns and keeps the date and receipt number on one line", async () => {
+    localStorage.setItem("booking_site_id", site.id);
+    mockBookingApi({
+      trips: [trip],
+      ledgerRows: [createLedgerRow({
+        goods_rows: [{ type: "Tiles", quantity: 123, description: "Large order" }],
+      })],
+    });
+    await renderBooking("ledger");
+    const table = await screen.findByRole("table", { name: "Selected ledger totals" });
+    await waitFor(() => expect(table.querySelector('[data-ledger-column="date"]')).not.toBeNull());
+    const receiptColumn = table.querySelector("colgroup col:nth-child(2)");
+    const resizeHandle = screen.getByRole("separator", { name: "Resize Receipt no. column" });
+
+    expect(receiptColumn.style.width).toBe("170px");
+    expect(table.querySelector('[data-ledger-column="date"]').className).toContain("whitespace-nowrap");
+    expect(table.querySelector('[data-ledger-column="receipt"]').className).toContain("whitespace-nowrap");
+    expect(table.querySelector('[data-ledger-column="goods"]').className).toContain("break-words");
+
+    await act(async () => {
+      resizeHandle.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 100 }));
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 160 }));
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+      await flushMicrotasks();
+    });
+
+    expect(Number.parseFloat(receiptColumn.style.width)).toBeGreaterThan(170);
+    await waitFor(() => expect(JSON.parse(
+      localStorage.getItem(`booking_ledger_column_widths:${encodeURIComponent(site.id)}`),
+    ).receipt).toBe(230));
+  });
+
+  it("uses available ledger width to give long goods details room instead of leaving a blank edge", async () => {
+    localStorage.setItem("booking_site_id", site.id);
+    mockBookingApi({ trips: [trip], ledgerRows: [createLedgerRow()] });
+    await renderBooking("ledger");
+    const table = await screen.findByRole("table", { name: "Selected ledger totals" });
+    await waitFor(() => expect(table.querySelector('[data-ledger-column="goods"]')).not.toBeNull());
+    const wrapper = table.parentElement;
+    Object.defineProperty(wrapper, "clientWidth", { configurable: true, value: 1600 });
+
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+      await flushMicrotasks();
+    });
+
+    const columns = Array.from(table.querySelectorAll("colgroup col"));
+    const tableWidth = columns.reduce((total, column) => total + Number.parseFloat(column.style.width), 0);
+    const goodsColumnIndex = Array.from(table.querySelectorAll("thead th"))
+      .findIndex((header) => header.textContent.includes("Goods & quantity"));
+    expect(tableWidth).toBe(1600);
+    expect(table.style.width).toBe("1600px");
+    expect(Number.parseFloat(columns[goodsColumnIndex].style.width)).toBeGreaterThan(440);
+  });
+
   describe("trip and receipt entry", () => {
   it("switches receipt entry to Hindi, remembers the choice, and keeps saved fields unchanged", async () => {
     api.post.mockImplementation((path, body) => Promise.resolve({
@@ -172,6 +227,85 @@ describe("simple booking workflow", () => {
     expect(goodsSuggestions.className).toContain("w-full");
     expect(goodsSuggestions.className).toContain("bg-white");
     expect(goodsSuggestions.textContent).toContain("सीमेंट");
+  });
+
+  it("saves a clicked Hindi goods suggestion as the goods name when editing", async () => {
+    const existingReceipt = createLedgerRow({
+      sender_name: "Sender", receiver_name: "Receiver",
+      goods_rows: [{ type: "s", type_hindi: "चीनी", quantity: 2 }],
+    });
+    let persistedReceipt = existingReceipt;
+    api.get.mockImplementation((path) => {
+      if (path === "/sites") return Promise.resolve({ data: [site] });
+      if (path === `/sites/${site.id}/trips`) return Promise.resolve({ data: { rows: [trip], total: 1 } });
+      if (path === `/sites/${site.id}/trips/${trip.id}/lrs`) {
+        return Promise.resolve({ data: { rows: [persistedReceipt], total: 1 } });
+      }
+      return Promise.resolve({ data: trip });
+    });
+    api.patch.mockImplementation((_path, body) => Promise.resolve({
+      data: (persistedReceipt = { ...existingReceipt, ...body, updated_at: "version-2" }),
+    }));
+    localStorage.setItem("booking_trip_id", trip.id);
+    await renderBooking("receipts");
+    await waitFor(() => expect(Array.from(container.querySelectorAll("button"))
+      .some((button) => button.textContent === "Edit")).toBe(true));
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent === "Edit").click();
+    });
+
+    const goodsInput = getByLabelText("Goods and description row 1");
+    expect(goodsInput.value).toBe("s");
+    fireEvent.focus(goodsInput);
+    fireEvent.change(goodsInput, { target: { value: "s" } });
+    const listbox = screen.getByRole("listbox", { name: "Suggestions for goods row 1" });
+    expect(within(listbox).getByRole("option", { name: "चीनी" })).not.toBeNull();
+    await act(async () => {
+      fireEvent.click(within(listbox).getByRole("option", { name: "चीनी" }));
+    });
+    expect(goodsInput.value).toBe("चीनी");
+    expect(screen.queryByRole("listbox", { name: "Suggestions for goods row 1" })).toBeNull();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Save changes", exact: true }).click();
+      await flushMicrotasks();
+    });
+    expect(api.patch).toHaveBeenCalledWith(
+      `/sites/${site.id}/trips/${trip.id}/lrs/${existingReceipt.id}`,
+      expect.objectContaining({
+        goods_rows: [expect.objectContaining({
+          type: "चीनी", type_hindi: "चीनी", quantity: 2,
+        })],
+      }),
+    );
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent === "Edit").click();
+    });
+    expect(getByLabelText("Goods and description row 1").value).toBe("चीनी");
+  });
+
+  it("supports arrow-key and Enter selection for goods suggestions", async () => {
+    await renderBooking();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent.includes("Create Trip")).click();
+    });
+    await act(async () => {
+      container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await flushMicrotasks();
+    });
+
+    const goodsInput = getByLabelText("Goods and description row 1");
+    await act(async () => {
+      fireEvent.focus(goodsInput);
+      fireEvent.change(goodsInput, { target: { value: "sam" } });
+    });
+    await act(async () => fireEvent.keyDown(goodsInput, { key: "ArrowDown" }));
+    expect(screen.getByRole("option", { name: "सामान" }).getAttribute("aria-selected")).toBe("true");
+    await act(async () => fireEvent.keyDown(goodsInput, { key: "Enter" }));
+    expect(goodsInput.value).toBe("सामान");
   });
 
   it("removes goods rows with the X button and restores three blank rows", async () => {
@@ -326,6 +460,7 @@ describe("simple booking workflow", () => {
     let configuredSite = {
       ...site,
       config: { receipt_controls: {
+        receipt_print_size: "80mm",
         sender_address_enabled: true, receiver_address_enabled: true, receiver_phone_enabled: true,
       }, receipt_branding: {
         contacts: [
@@ -355,6 +490,8 @@ describe("simple booking workflow", () => {
       return Promise.resolve({ data: trip });
     });
     const printSpy = jest.spyOn(window, "print").mockImplementation(() => {});
+    const receiptHeightSpy = jest.spyOn(Element.prototype, "getBoundingClientRect")
+      .mockReturnValue({ height: 480 });
     const popupSpy = jest.spyOn(window, "open");
 
     await renderBooking("receipts");
@@ -365,6 +502,7 @@ describe("simple booking workflow", () => {
     configuredSite = {
       ...site,
       config: { receipt_controls: {
+        receipt_print_size: "80mm",
         sender_address_enabled: true, receiver_address_enabled: true, receiver_phone_enabled: true,
       }, receipt_branding: {
         contacts: [
@@ -392,8 +530,15 @@ describe("simple booking workflow", () => {
     await waitFor(() => expect(document.querySelector(".booking-print-portal img")).not.toBeNull());
     await act(async () => new Promise((resolve) => window.setTimeout(resolve, 400)));
     await act(async () => fireEvent.load(document.querySelector(".booking-print-portal img")));
-    await waitFor(() => expect(printSpy).toHaveBeenCalled());
     const printReceipt = document.querySelector(".booking-print-portal .transport-lr");
+    expect(receiptHeightSpy).toHaveBeenCalled();
+    await waitFor(() => expect(printSpy).toHaveBeenCalled());
+    expect(printReceipt.getAttribute("data-print-size")).toBe("80mm");
+    expect(printReceipt.classList.contains("transport-lr--thermal-80")).toBe(true);
+    const thermalPrintPageRule = Array.from(container.querySelectorAll("style"))
+      .find((style) => style.textContent.includes("@page { size: 80mm "));
+    expect(thermalPrintPageRule.textContent).toContain("@page { size: 80mm 129mm; margin: 0; }");
+    expect(document.querySelector(".booking-print-portal").style.position).toBe("fixed");
     expect(printReceipt.textContent).toContain("NGP-LR-OLD");
     expect(printReceipt.textContent).not.toContain("Sender Road");
     expect(printReceipt.textContent).not.toContain("Receiver Road");
@@ -408,6 +553,7 @@ describe("simple booking workflow", () => {
     expect(popupSpy).not.toHaveBeenCalled();
 
     await act(async () => window.dispatchEvent(new Event("afterprint")));
+    receiptHeightSpy.mockRestore();
     printSpy.mockRestore();
     popupSpy.mockRestore();
   });
@@ -656,6 +802,7 @@ describe("simple booking workflow", () => {
       Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Edit").click();
     });
     expect(container.querySelector('[aria-label="Goods and description row 1"]').value).toBe("Cement Sacks");
+    expect(document.activeElement).toBe(container.querySelector('[aria-label="Sender name in English"]'));
     await act(async () => {
       Array.from(container.querySelectorAll("button")).find((button) =>
         button.textContent.includes("Cancel editing")).click();

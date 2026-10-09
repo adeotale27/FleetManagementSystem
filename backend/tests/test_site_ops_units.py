@@ -716,6 +716,7 @@ def test_site_receipt_controls_keep_fee_configurable_and_validate_display_option
     default_config = site_ops._site_config_with_receipt_controls({})
     assert default_config["receipt_controls"] == {
         "hindi_conversion_enabled": True, "receipt_language": "hindi",
+        "receipt_print_size": "default",
         "sender_address_enabled": True, "receiver_address_enabled": True,
         "receiver_phone_enabled": True,
         "receipt_fee": "2.00", "overdue_after_days": 30,
@@ -723,6 +724,7 @@ def test_site_receipt_controls_keep_fee_configurable_and_validate_display_option
     updated_config = site_ops._site_config_with_receipt_controls(
         {"receipt_controls": {
             "receipt_fee": "5.00", "receipt_language": "english",
+            "receipt_print_size": "80mm",
             "sender_address_enabled": False,
         }},
         {"branding": {"name": "Garage"}},
@@ -730,6 +732,7 @@ def test_site_receipt_controls_keep_fee_configurable_and_validate_display_option
     assert updated_config["branding"]["name"] == "Garage"
     assert updated_config["receipt_controls"] == {
         "hindi_conversion_enabled": True, "receipt_language": "english",
+        "receipt_print_size": "80mm",
         "sender_address_enabled": False, "receiver_address_enabled": True,
         "receiver_phone_enabled": True,
         "receipt_fee": "5.00", "overdue_after_days": 30,
@@ -741,6 +744,10 @@ def test_site_receipt_controls_keep_fee_configurable_and_validate_display_option
     with pytest.raises(ValidationError):
         site_ops._site_config_with_receipt_controls({
             "receipt_controls": {"receipt_language": "marathi"},
+        })
+    with pytest.raises(ValidationError):
+        site_ops._site_config_with_receipt_controls({
+            "receipt_controls": {"receipt_print_size": "100mm"},
         })
     with pytest.raises(ValidationError):
         site_ops._site_config_with_receipt_controls({

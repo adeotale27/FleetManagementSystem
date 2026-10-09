@@ -82,6 +82,7 @@ class SiteUpdate(StrictModel):
 class ReceiptControls(StrictModel):
     hindi_conversion_enabled: bool = True
     receipt_language: Literal["hindi", "english"] = "hindi"
+    receipt_print_size: Literal["default", "80mm", "58mm"] = "default"
     sender_address_enabled: bool = True
     receiver_address_enabled: bool = True
     receiver_phone_enabled: bool = True
